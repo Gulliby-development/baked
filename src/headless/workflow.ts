@@ -331,10 +331,10 @@ export async function executeWorkflowCommand(
   const runId = args.positional[0] ?? "";
   const artifacts = new WorkflowArtifacts(service);
   /**
-   * Records a decision; with `--resume` the run continues from it when nothing else is pending.
-   * On a feature run of an initiative the answer also carries the initiative's next step, since
-   * only a drive advances it (#2024).
+   * The answer of a command that decides on or drives the run: on a feature run of an initiative
+   * it carries the initiative's next step, since only a drive advances it (#2024, #2880).
    */
+  const finish = <T extends object>(result: T): T => withInitiativeStep(service, runId, result);
   /**
    * Drives the run after a change the command applied. At the workspace's parallel run cap the
    * change stays and the run waits for a slot: the answer is the run with `queued` (exit 0),
@@ -343,12 +343,12 @@ export async function executeWorkflowCommand(
   const driveAfter = async (change: string): Promise<RunSnapshot & { queued?: QueuedResume }> => {
     onDrive?.(runId);
     try {
-      return await service.drive(runId, signal);
+      return finish(await service.drive(runId, signal));
     } catch (error) {
       const queued = queuedResume(error, service.store, runId, change);
       if (!queued) throw error;
       process.stderr.write(`${queued.message}\n`);
-      return { ...service.store.snapshot(runId), queued };
+      return finish({ ...service.store.snapshot(runId), queued });
     }
   };
   /** Resumes the run after a change the command applied, then drives it (`driveAfter`). */
@@ -356,15 +356,12 @@ export async function executeWorkflowCommand(
     await service.resume(runId, { commandId: newId(), expectedRevision: revision });
     return driveAfter(change);
   };
+  /** Records a decision; with `--resume` the run continues from it when nothing else is pending. */
   const decideThenResume = async (decision: Decision): Promise<unknown> => {
     const decided = await service.decide(runId, identity(), decision);
     if (args.flags.resume !== true || !service.canResumeAfterDecision(runId))
-      return withInitiativeStep(service, runId, decided);
-    return withInitiativeStep(
-      service,
-      runId,
-      await resumeAfter(decided.revision, "The decision is recorded"),
-    );
+      return finish(decided);
+    return resumeAfter(decided.revision, "The decision is recorded");
   };
   const identity = () => {
     const revision = Number(stringFlag(args, "expected-revision"));
@@ -550,7 +547,7 @@ export async function executeWorkflowCommand(
       if (args.flags["accept-workspace"] === true)
         return driveAfter("The workspace changes are accepted");
       onDrive?.(runId);
-      return service.drive(runId, signal);
+      return finish(await service.drive(runId, signal));
     case "pause":
       return service.pause(runId, identity());
     case "cancel":
