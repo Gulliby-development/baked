@@ -48,10 +48,19 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       # The shard runs `bun test --timeout 30000` on its files and then the slow-test report (#1656).
+      # Every 20 s (#2919), record the runner's load, memory, CPU and I/O pressure, and its busiest processes.
+      # On 2026-11-04 two shards ran gofmt, cargo and mvn for minutes while other runners took
+      # seconds; a failed shard prints the record, which tells a busy leftover process from a stalled disk.
+      - name: Record runner load
+        run: |
+          nohup bash -c 'while true; do { date -u +%T; cat /proc/loadavg; free -m | sed -n 2p; cat /proc/pressure/cpu /proc/pressure/io 2>/dev/null; ps -eo pid,pcpu,pmem,etimes,stat,comm --sort=-pcpu | head -6; } >> "$RUNNER_TEMP/runner-load.log" 2>&1; sleep 20; done' > /dev/null 2>&1 &
       - name: Test
         env:
           BAKED_REQUIRE_SANDBOX: bwrap
         run: bun scripts/test-shard.ts ${{ matrix.shard }} 5
+      - name: Runner load during the tests
+        if: failure()
+        run: cat "$RUNNER_TEMP/runner-load.log"
 
   # The required check: lint, typecheck and build, and it fails unless every test shard passed. It
   # runs after the shards, so a failed or cancelled shard can never leave it skipped (a skipped
