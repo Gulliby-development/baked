@@ -7,6 +7,12 @@ on:
     branches: [main]
   merge_group:
 
+# A newer push to the same pull request cancels this run, so superseded runs free their runners:
+# the account runs a limited number of jobs at once, and on 2026-11-04 Linux jobs waited for one (#2915).
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # The suite in five shards balanced by measured time (scripts/test-shard.ts, the macOS column of
   # scripts/test-shard-weights.json). One `bun run test` ran 35 to 37 minutes by 2026-11-03, most of it
