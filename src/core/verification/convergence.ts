@@ -869,6 +869,15 @@ export function appendCorrections(
           scope: kind === "convergence" ? "convergence" : scope,
           required,
           taskIds: [...new Set(exhaustedChains.map((c) => c.id))],
+          // Recorded and left without a task: a grant hands them to the next pass (#2878).
+          ...(kind === "convergence" || reviewPass
+            ? {
+                stranded: {
+                  pass: kind === "convergence" ? ("convergence" as const) : ("review" as const),
+                  findingIds: findings.map((f) => f.id),
+                },
+              }
+            : {}),
         },
       },
     );

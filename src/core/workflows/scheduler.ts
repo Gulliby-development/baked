@@ -551,6 +551,7 @@ import {
   HOST_APPLY_KIND,
   HOST_PLAN_CONTENT_DIR,
   type HostApplyRecord,
+  type HostApplyRerun,
   hostAppliableTasks,
   hostApplyContents,
   hostApplyDecision,
@@ -558,6 +559,7 @@ import {
   hostApplyRecord,
   hostApplyRecords,
   hostApplyText,
+  hostRerunDecision,
   hostRowFileTasks,
   rowFileTasks,
 } from "./host-apply.js";
@@ -1032,6 +1034,7 @@ import { forgetProgress } from "./stall.js";
 import { statedRequest } from "./stated-request.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import {
+  type FindingRow,
   type LeaseResource,
   newId,
   type RequestRow,
@@ -3655,6 +3658,14 @@ export class WorkflowScheduler {
               // acceptance needs every automated criterion to pass.
               const repair = ofVerdict("repair");
               const findings = this.recordFindings(runId, review, repair);
+              this.store.transaction(() =>
+                this.retireStranded(
+                  runId,
+                  state,
+                  "convergence",
+                  new Set(findings.map((f) => f.id)),
+                ),
+              );
               const kept = new Set([...repair, ...noted, ...unshown].map((f) => f.id));
               addReviewNotes(
                 state.reviewNotes,
@@ -9249,13 +9260,15 @@ ${note}`;
           )
         : [];
     // The host writes the task's files from the request: its verbatim content (#2333) or its
-    // prescribed rows in the file's shape (#2528).
+    // prescribed rows in the file's shape (#2528). A rerun of a task it applied is the host's
+    // again (#2877), never a session's.
     const applied =
       !checking &&
       task.writes.length > 0 &&
       !hostWritten(task) &&
-      firstRun &&
-      (await this.hostApply(runId, child, state, policy, task));
+      (firstRun
+        ? await this.hostApply(runId, child, state, policy, task)
+        : await this.hostReapply(runId, child, state, policy, task));
     if (
       !checking &&
       (task.writes.length === 0 ||
@@ -9937,11 +9950,15 @@ ${note}`;
           .filter((t) => t.status === "pending")
           .map((t) => t.id),
       );
+      // A rerun of a task the host applied comes here too (#2877): the host decides it again.
       const single =
         checking ??
         ready.find(
           (t) =>
-            t.writes.length === 0 || hostWritten(t) || (appliable.has(t.id) && pending.has(t.id)),
+            t.writes.length === 0 ||
+            hostWritten(t) ||
+            (appliable.has(t.id) &&
+              (pending.has(t.id) || this.appliedRecord(runId, t.id) !== null)),
         );
       signal.throwIfAborted();
       if (single) {
@@ -19578,6 +19595,44 @@ ${note}`;
       }));
     });
   }
+  /**
+   * Retires the findings a refused correction left without a repair task (#2878) once a pass of
+   * the kind that raised them has run after the grant and not raised them again (`live`). Only
+   * a finding still without a task and still open, confirmed or inconclusive is retired; one the
+   * pass raised again keeps its row and gets its correction. The decision is recorded.
+   */
+  private retireStranded(
+    runId: string,
+    state: RuntimeState,
+    pass: "review" | "convergence",
+    live: ReadonlySet<string>,
+  ): void {
+    const handed = state.strandedFindings.filter((f) => f.pass === pass);
+    if (!handed.length) return;
+    state.strandedFindings = state.strandedFindings.filter((f) => f.pass !== pass);
+    const rows = new Map(this.store.findings(runId).map((row) => [row.id, row]));
+    const retired = handed
+      .map((f) => rows.get(f.id))
+      .filter(
+        (row): row is FindingRow =>
+          row !== undefined &&
+          !row.repair_task_id &&
+          !live.has(row.id) &&
+          !["refuted", "resolved"].includes(row.status),
+      );
+    for (const row of retired) this.store.findingStatus(runId, row.id, "resolved");
+    this.store.artifact(
+      runId,
+      "recovery",
+      `stranded-findings/${newId()}.json`,
+      canonical({
+        pass,
+        retired: retired.map((row) => row.id),
+        raisedAgain: handed.filter((f) => live.has(f.id)).map((f) => f.id),
+        reason: `the ${pass} pass after a repair grant did not raise them again`,
+      }),
+    );
+  }
   /** The v1 review stage: correctness, security when triggered and language, each blocking. */
   private v1Reviewers(state: RuntimeState, policy: RunPolicy): Reviewer[] {
     const dimensions = v1ReviewDimensions(state, policy);
@@ -20098,6 +20153,7 @@ ${note}`;
       for (const old of this.store.findings(runId))
         if (old.repair_task_id && !live.has(old.id))
           this.store.findingStatus(runId, old.id, "resolved");
+      this.retireStranded(runId, state, "review", live);
     });
     const open = findings.filter(
       (f) => this.store.findings(runId).find((entry) => entry.id === f.id)?.status !== "refuted",
@@ -20781,6 +20837,12 @@ ${note}`;
                 : stageKind(v2.stage) === "review"
                   ? state.extraReviewRounds
                   : 0);
+          const strandedPass =
+            position.repairKind === "convergence"
+              ? ("convergence" as const)
+              : stageKind(v2.stage) === "review"
+                ? ("review" as const)
+                : null;
           if (count > bound)
             throw new WorkflowFault(
               "RECOVERY_REQUIRED",
@@ -20798,6 +20860,10 @@ ${note}`;
                   scope: "transition",
                   transitionId: transition.id,
                   required: count - bound,
+                  // The loop's findings got no task: a grant hands them to the next pass (#2878).
+                  ...(strandedPass
+                    ? { stranded: { pass: strandedPass, findingIds: findings.map((f) => f.id) } }
+                    : {}),
                 },
               },
             );
@@ -21920,10 +21986,95 @@ ${note}`;
           content: c.content,
         })),
       });
-      record = { ...record, applied: true };
+      record = {
+        ...record,
+        applied: true,
+        written: Object.fromEntries(contents.map((c) => [c.path, hashBytes(c.content)])),
+      };
     } else if (record.applied === undefined) record = { ...record, applied: false };
     this.store.artifact(runId, HOST_APPLY_KIND, path, canonical(record));
     return applied;
+  }
+  /**
+   * A rerun of a planned task the host applied before (#2877): a corrective's edit invalidated it,
+   * or a drive resumes it. The host decides it, never a session it did not need on the first run:
+   * `hostRerunDecision` keeps the files that hold the host's content and writes a changed row file
+   * again through `writeHostFiles`; true when no session is needed. Each decision is added to the
+   * task's `host-apply/tasks/<task>.json` (`rerun`) for a replay. False (the implementer runs, as
+   * before) when the host did not apply the task, its setting is off now, or a file a correction
+   * changed is not the host's to rewrite. Every path that reruns a task asks this before a session:
+   * the single-writer path calls it, and the batch path sends such a task there (`implement`).
+   */
+  private async hostReapply(
+    runId: string,
+    child: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): Promise<boolean> {
+    const record = this.appliedRecord(runId, task.id);
+    if (
+      !record ||
+      task.origin !== "planned" ||
+      !record.writes.every((w) => (w.rows ? policy.rowFileWrite : policy.hostApply) === "on")
+    )
+      return false;
+    const root = runRoot(this.store.workspace, state);
+    let computed: { path: string; content: string }[] | null = null;
+    try {
+      computed = await hostApplyContents(
+        root,
+        state.requestText || state.prompt,
+        task,
+        state.graph,
+      );
+    } catch {}
+    const current = new Map(
+      record.writes.map((w) => [w.path, fileHash(workspacePath(root, w.path))] as const),
+    );
+    const decided = hostRerunDecision(record, current, computed, hashBytes);
+    if (decided.writes.length)
+      this.writeHostFiles(runId, child, state, policy, {
+        writes: decided.writes.map((w) => ({ ...w, action: "modify" as const })),
+      });
+    const generation = this.store.tasks(runId).find((t) => t.id === task.id)?.generation ?? 0;
+    const rerun: HostApplyRerun = {
+      generation,
+      decision: decided.decision,
+      reason: decided.reason,
+      ...(decided.writes.length ? { writes: decided.writes.map((w) => w.path) } : {}),
+    };
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        HOST_APPLY_KIND,
+        `${HOST_APPLY_DIR}${task.id}.json`,
+        canonical({
+          ...record,
+          ...(decided.writes.length
+            ? {
+                written: {
+                  ...record.written,
+                  ...Object.fromEntries(decided.writes.map((w) => [w.path, hashBytes(w.content)])),
+                },
+              }
+            : {}),
+          rerun: [...(record.rerun ?? []), rerun],
+        }),
+      ),
+    );
+    return decided.decision !== "session";
+  }
+  /** The task's latest host apply record when the host applied it (`applied: true`, #2877). */
+  private appliedRecord(runId: string, taskId: string): HostApplyRecord | null {
+    const artifact = this.store.latestArtifact(runId, `${HOST_APPLY_DIR}${taskId}.json`);
+    if (!artifact) return null;
+    try {
+      const record = JSON.parse(this.store.readArtifact(runId, artifact.id)) as HostApplyRecord;
+      return record.applied === true ? record : null;
+    } catch {
+      return null;
+    }
   }
 
   /**

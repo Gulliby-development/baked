@@ -495,6 +495,7 @@ export class NativeWorkflowService implements WorkflowService {
       correctedSinceRepair: false,
       extraCorrectiveTasks: 0,
       decidedFindings: [],
+      strandedFindings: [],
       autoExtensions: 0,
       limitations: [],
       reviewNotes: [],
@@ -1510,6 +1511,11 @@ export class NativeWorkflowService implements WorkflowService {
             state.extraRepeatRepairs += extra;
             break;
         }
+        // The findings the refused correction was for have no repair task: the next pass of their
+        // scope retires those it does not raise again (#2878).
+        for (const id of block.stranded?.findingIds ?? [])
+          if (block.stranded && !state.strandedFindings.some((f) => f.id === id))
+            state.strandedFindings.push({ id, pass: block.stranded.pass });
         this.store.artifact(
           runId,
           "recovery",
@@ -2420,6 +2426,7 @@ export class NativeWorkflowService implements WorkflowService {
         state.correctedSinceRepair = false;
         state.extraCorrectiveTasks = 0;
         state.decidedFindings = [];
+        state.strandedFindings = [];
         state.autoExtensions = 0;
         state.limitations = [];
         state.reviewNotes = [];
@@ -3002,6 +3009,7 @@ export class NativeWorkflowService implements WorkflowService {
       state.correctedSinceRepair = false;
       state.extraCorrectiveTasks = 0;
       state.decidedFindings = [];
+      state.strandedFindings = [];
       state.autoExtensions = 0;
       state.limitations = [];
       state.reviewNotes = [];
