@@ -1,4 +1,4 @@
-import { type ConvergenceGate, type ConvergenceGateFinding, convergenceGateDecision, convergenceGateDocKeeps, convergenceReproCandidates, type GateFinding, gateFinding, type ReviewGate, reviewGateCandidates, reviewGateDecision, reviewGateDocKeeps } from "../src/core/workflows/review-gate.js";
+import { type ConvergenceGate, type ConvergenceGateFinding, convergenceGateDecision, convergenceGateDocCarries, convergenceGateDocKeeps, convergenceGateDocRepeats, convergenceReproCandidates, type GateFinding, gateFinding, type ReviewGate, reviewGateCandidates, reviewGateDecision, reviewGateDocCarries, reviewGateDocKeeps, reviewGateDocRepeats } from "../src/core/workflows/review-gate.js";
 import { literalPropertyProblems, rowFiles, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
 import { clearBannedProperties } from "../src/core/verification/initiative-ownership.js";
 import { CALL_COST_MODELS, NEXT_CALL, perCallCostScenario } from "./helpers/per-call-cost-scenario.js";
@@ -6059,6 +6059,39 @@ describe("review and converge gates: a documentation finding marked noRepro (#28
     expect(reviewGateDecision(gate([doc({ kind: "partial" })]))).toEqual(["F1"]);
     expect(convergenceGateDecision(convergence([doc()])).verdicts).toEqual([{ id: "F1", verdict: "repro" }]);
     expect(reproAllows({ kind: "correctness", severity: "medium" }, undefined, true)).toBe(false);
+  });
+
+  // #2868, R92 tailclose: F1 (correctness, noRepro, README) stayed out of the corrective that F3
+  // (missing, the same README) opened, and its medium repeat after that correction recorded nothing.
+  test("a kept documentation finding rides a correction the gate starts, and only then", () => {
+    const missing = doc({ id: "F3", kind: "missing", noRepro: false });
+    const source = doc({ id: "F4", kind: "partial", doc: undefined, noRepro: false });
+    expect(reviewGateDecision(gate([doc(), missing]))).toEqual(["F3"]);
+    expect(reviewGateDocCarries(gate([doc(), missing]))).toEqual(["F1"]);
+    expect(reviewGateDocCarries(gate([doc(), source]))).toEqual(["F1"]);
+    expect(reviewGateDocCarries(gate([doc()]))).toEqual([]);
+    expect(reviewGateDocCarries(gate([doc({ doc: undefined }), missing]))).toEqual([]);
+    const converge = convergence([doc(), missing]);
+    converge.failing = ["AC-002"];
+    converge.findings[1].criterionIds = ["AC-002"];
+    converge.criteria.push({ criterionId: "AC-002", verdict: "fail", evidence: 1 });
+    expect(convergenceGateDocCarries(converge)).toEqual(["F1"]);
+    expect(convergenceGateDocCarries(convergence([doc()]))).toEqual([]);
+  });
+
+  test("a repeat kept out only by a later round's severity floor would open one more correction", () => {
+    const later = (findings: GateFinding[]): ReviewGate => ({ ...gate(findings), severities: ["critical", "high"] });
+    const repeat = doc({ id: "F1-2" });
+    expect(reviewGateDocKeeps(later([repeat]))).toEqual([]);
+    expect(reviewGateDocRepeats(later([repeat]), new Set(["F1-2"]))).toEqual(["F1-2"]);
+    // Not a repeat, not documentation, a partial repeat (decided live in a first round), or already kept.
+    expect(reviewGateDocRepeats(later([repeat]), new Set())).toEqual([]);
+    expect(reviewGateDocRepeats(later([doc({ id: "F1-2", doc: undefined })]), new Set(["F1-2"]))).toEqual([]);
+    expect(reviewGateDocRepeats(later([doc({ id: "F1-2", kind: "partial" })]), new Set(["F1-2"]))).toEqual([]);
+    expect(reviewGateDocRepeats(gate([repeat]), new Set(["F1-2"]))).toEqual([]);
+    const converge = { ...convergence([repeat]), severities: ["critical", "high"] };
+    expect(convergenceGateDocRepeats(converge, new Set(["F1-2"]))).toEqual(["F1-2"]);
+    expect(convergenceGateDocRepeats(converge, new Set())).toEqual([]);
   });
 
   // #2866, R92 tailclose: `enforce` is a mode of the reason, and under it the gates repair the
