@@ -33,10 +33,13 @@ describe("stop reasons", () => {
   test("hard limits take only enforce; the forecasts and the approval scope take every mode", () => {
     for (const [id, reason] of Object.entries(STOP_REASONS)) {
       expect(reason.modes).toContain(reason.defaultMode);
-      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "initiative-pool-growth", "initiative-time-share", "initiative-plan-share", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "chain_rewrite_repeat", "corrective_restores_removed", "generated_case", "edge_crash_finding", "repro_blind", "upstream_symbol", "baseline_unrepairable", "baseline_signature", "check-config-approval", "ci_check_drift", "host_content_conflict", "fixer_unusable", "worktree_environment", "supplied_drift", "transcript_drift", "row_block_drift", "case_not_prescribed", "committed_tree", "host-resume-on-stored-limit", "cost_refusal_wait", "upstream_baseline_debt", "written_tests_unselected", "test_cap", "silent_check_failure", "host-settle-interrupted-check", "attempt_green_checkpoint", "upstream_stale_file", "initiative-row-owner", "stream_output_limit"].includes(id))
+      if (!["cost-forecast", "approval-scope", "initiative-forecast", "initiative-dollar-share", "initiative-dollar-cap", "initiative-plan-charge", "initiative-pool-growth", "initiative-time-share", "initiative-plan-share", "repeated_failure", "corrective_scope", "corrective_unowned_file", "repeat_without_change", "chain_rewrite_repeat", "corrective_restores_removed", "generated_case", "edge_crash_finding", "repro_blind", "upstream_symbol", "baseline_unrepairable", "baseline_signature", "check-config-approval", "ci_check_drift", "host_content_conflict", "fixer_unusable", "worktree_environment", "supplied_drift", "transcript_drift", "doc_finding_unrepaired", "row_block_drift", "unfinished_row_split", "case_not_prescribed", "slice_foreign_conflict", "committed_tree", "host-resume-on-stored-limit", "cost_refusal_wait", "upstream_baseline_debt", "written_tests_unselected", "test_cap", "silent_check_failure", "host-settle-interrupted-check", "attempt_green_checkpoint", "upstream_stale_file", "initiative-row-owner", "stream_output_limit"].includes(id))
         expect(reason.modes).toEqual(["enforce"]);
     }
     expect(STOP_REASONS["cost-forecast"].modes).toEqual(STOP_MODES);
+    // Shadow until its promotion (#2476): a row slice's conflict about another slice's literals.
+    expect(STOP_REASONS.slice_foreign_conflict.modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS.slice_foreign_conflict.defaultMode).toBe("shadow");
     // Shadow until its promotion (#1996): a policy cannot enforce it yet.
     expect(STOP_REASONS.repeated_failure.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.repeated_failure.defaultMode).toBe("shadow");
@@ -97,8 +100,14 @@ describe("stop reasons", () => {
     // Shadow until its promotion (#2486): a delivered test file that lacks a prescribed row's literal.
     expect(STOP_REASONS.transcript_drift.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.transcript_drift.defaultMode).toBe("shadow");
+    // Shadow until its promotion (#2458).
+    expect(STOP_REASONS.unfinished_row_split.modes).toEqual(["shadow", "advisory"]);
+    expect(STOP_REASONS.unfinished_row_split.defaultMode).toBe("shadow");
     expect(STOP_REASONS.row_block_drift.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.row_block_drift.defaultMode).toBe("shadow");
+    // Promoted after R92-R93 (#2835): `enforce` repairs it in the gates (#2866); shadow stays a mode.
+    expect(STOP_REASONS.doc_finding_unrepaired.modes).toEqual(["shadow", "advisory", "enforce"]);
+    expect(STOP_REASONS.doc_finding_unrepaired.defaultMode).toBe("enforce");
     // Shadow until its promotion (#2501): a criterion literal no prescribed row holds.
     expect(STOP_REASONS.case_not_prescribed.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.case_not_prescribed.defaultMode).toBe("shadow");
@@ -132,6 +141,8 @@ describe("stop reasons", () => {
     expect(parse({ transcript_drift: "enforce" })).toBe(false);
     expect(parse({ row_block_drift: "advisory" })).toBe(true);
     expect(parse({ row_block_drift: "enforce" })).toBe(false);
+    expect(parse({ doc_finding_unrepaired: "advisory" })).toBe(true);
+    expect(parse({ doc_finding_unrepaired: "enforce" })).toBe(true);
     expect(parse({ case_not_prescribed: "enforce" })).toBe(false);
     // Promoted (#2245) after R70 and R71: enforced with stopModes unset, shadow still on request.
     expect(STOP_REASONS["initiative-plan-charge"].defaultMode).toBe("enforce");

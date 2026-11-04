@@ -17,9 +17,10 @@ import {
 import { canHold, deliverableKind, normalizePath } from "../../verification/deliverable-paths.js";
 import { isCodePath } from "../check-policy.js";
 import { WorkflowFault } from "../errors.js";
+import { type FeatureRowFile, formatRowList, scopeRowRanges } from "../feature-rows.js";
 import { hostRowFiles } from "../host-apply.js";
 import { HOST_CONTENT_MAX_CHARS, type RunPolicy, SafeId } from "../schemas.js";
-import { suppliedRows } from "../sizing.js";
+import { rowBlockFiles, suppliedRows } from "../sizing.js";
 import type { StopMode } from "../stop-reasons.js";
 import { conditionalContractProblems } from "./upstream-symbols.js";
 
@@ -75,6 +76,20 @@ export const InitiativeFeatureSchema = z
      * Omitted when the request states no test volume for it.
      */
     testCases: z.number().int().min(1).max(10_000).optional(),
+    /**
+     * The rows of a prescribed row file this feature delivers when several features share the
+     * file (#2898): row numbers from 1, in the request block's order. The host writes only these
+     * rows (and those of its upstream sharers) in the feature's run. Omitted, the scope's words
+     * ("CliRows rows 1-10") decide, and with neither the feature takes the rows no sharer names.
+     */
+    rows: z
+      .array(
+        z
+          .object({ path: PathPattern, rows: z.array(z.number().int().min(1)).min(1).max(10_000) })
+          .strict(),
+      )
+      .max(50)
+      .optional(),
     /**
      * Files of the boundary whose whole content the request fixes (module stubs that hold only a
      * comment, a registration file of `pub mod` lines, an empty `__init__.py`). The feature's
@@ -206,7 +221,7 @@ export function testOwnershipProblems(plan: InitiativePlan, rows?: RowOwnerInput
 
 /** Whether feature `id` is `target` or depends on it, directly or through other features. */
 function reachesFeature(
-  plan: InitiativePlan,
+  plan: Pick<InitiativePlan, "features">,
   id: string,
   target: string,
   seen = new Set<string>(),
@@ -246,6 +261,11 @@ export interface RowOwnerProblem {
   rows: number;
   /** The sentence the decomposer (enforced) or the would-stop record (shadow) carries. */
   problem: string;
+  /**
+   * `later-row`: a row of the owner's needs a later feature (#2487). `row-split`: the sharers'
+   * row ranges give a row to two features or to none (#2898); `needs` is then the other sharer.
+   */
+  shape?: "later-row" | "row-split";
 }
 
 /**
@@ -268,6 +288,7 @@ export function rowOwnerProblems(plan: InitiativePlan, request: string): RowOwne
   ];
   const prescribed = suppliedRows(request, paths);
   if (!prescribed.size) return [];
+  const split = featureRowSplit(plan, request);
   const cited = new Map(
     plan.features.map((feature) => [
       feature.id,
@@ -277,9 +298,14 @@ export function rowOwnerProblems(plan: InitiativePlan, request: string): RowOwne
     ]),
   );
   const found: RowOwnerProblem[] = [];
-  for (const [path, block] of prescribed)
+  for (const [path, block] of prescribed) {
+    const ranges = split.get(path);
+    if (ranges) found.push(...ranges.problems);
     for (const owner of plan.features) {
       if (!owner.boundary.paths.some((pattern) => patternsMeet(path, pattern))) continue;
+      // With row ranges the owner holds only its own rows; a later sharer's rows are its own.
+      const mine = ranges?.own.get(owner.id);
+      const rows = mine ? block.lines.filter((_, i) => mine.includes(i + 1)) : block.lines;
       const later = plan.features.filter(
         (f) => f.id !== owner.id && reachesFeature(plan, f.id, owner.id),
       );
@@ -290,7 +316,7 @@ export function rowOwnerProblems(plan: InitiativePlan, request: string): RowOwne
       );
       for (const needs of later) {
         const own = (cited.get(needs.id) ?? []).filter((l) => !shared.has(normalizeLiteral(l)));
-        const held = block.lines.flatMap((row) => {
+        const held = rows.flatMap((row) => {
           const literal = own.find((l) => testsHold(row, l));
           return literal === undefined ? [] : [{ row, literal }];
         });
@@ -305,11 +331,125 @@ export function rowOwnerProblems(plan: InitiativePlan, request: string): RowOwne
           literal: first.literal,
           rows: held.length,
           problem: `${path} holds ${held.length === 1 ? "a row" : `${held.length} rows`} that only ${needs.id} can pass (\`${row}\` holds \`${first.literal}\`, which the contract or scope of ${needs.id} cites): give the file to ${needs.id} (it depends on ${owner.id}), or ask for the row in the brief to be split into a file of ${needs.id}.`,
+          shape: "later-row",
         });
         break;
       }
     }
+  }
   return found;
+}
+
+/** How the features that share a prescribed row file split its rows (`featureRowSplit`). */
+export interface RowFileSplit {
+  /** The rows of the file's block. */
+  total: number;
+  /** Each sharer's own rows, from 1, in block order. */
+  own: Map<string, number[]>;
+  /** Rows that two sharers claim or that no sharer claims, as `rowOwnerProblems` entries. */
+  problems: RowOwnerProblem[];
+}
+
+/**
+ * The one answer to which prescribed rows of a shared row file each feature owns (#2898). For every
+ * row file the request prescribes (`rowBlockFiles`, `suppliedRows`) that the boundaries of features
+ * meet, a feature's rows are its typed `rows` for the path, else what its scope says in words
+ * (`scopeRowRanges`: the block's name or the file's stem, then `rows 1-10` or `all 28 rows`). A
+ * sharer that states none takes the rows no other sharer states. A file no sharer states rows for
+ * is absent: each feature that writes it takes the whole block, as before.
+ */
+export function featureRowSplit(
+  plan: Pick<InitiativePlan, "features">,
+  request: string,
+): Map<string, RowFileSplit> {
+  const out = new Map<string, RowFileSplit>();
+  for (const [path, block] of suppliedRows(request, rowBlockFiles(request))) {
+    const sharers = plan.features.filter((f) =>
+      f.boundary.paths.some((pattern) => patternsMeet(path, pattern)),
+    );
+    const total = block.lines.length;
+    const names = [
+      /([A-Za-z_][\w.]*)\s+in\s+/.exec(block.header)?.[1] ?? "",
+      (path.split("/").at(-1) ?? path).replace(/\.[^.]*$/, ""),
+    ];
+    const stated = new Map(
+      sharers.flatMap((f): [string, number[]][] => {
+        const typed = f.rows?.find((r) => normalizePath(r.path) === normalizePath(path));
+        const rows = typed
+          ? [...new Set(typed.rows.filter((n) => n <= total))].sort((a, b) => a - b)
+          : scopeRowRanges(f.boundary.scope, names, total);
+        return rows ? [[f.id, rows]] : [];
+      }),
+    );
+    if (!stated.size) continue;
+    const claimed = new Map<number, string[]>();
+    for (const [id, rows] of stated)
+      for (const row of rows) claimed.set(row, [...(claimed.get(row) ?? []), id]);
+    const free = Array.from({ length: total }, (_, i) => i + 1).filter((n) => !claimed.has(n));
+    const silent = sharers.filter((f) => !stated.has(f.id));
+    const own = new Map(sharers.map((f) => [f.id, stated.get(f.id) ?? free]));
+    const problems: RowOwnerProblem[] = [];
+    const twice = [...claimed].filter(([, ids]) => ids.length > 1);
+    const [first] = twice;
+    if (first) {
+      const [a = "", b = ""] = first[1];
+      problems.push({
+        path,
+        owner: a,
+        needs: b,
+        row: block.lines[first[0] - 1] ?? "",
+        literal: "",
+        rows: twice.length,
+        shape: "row-split",
+        problem: `${path}: ${a} and ${b} both claim row${twice.length === 1 ? "" : "s"} ${formatRowList(twice.map(([n]) => n))}: give each row of the file to one feature in its rows.`,
+      });
+    }
+    if (free.length && !silent.length) {
+      const [a = ""] = stated.keys();
+      problems.push({
+        path,
+        owner: a,
+        needs: a,
+        row: block.lines[(free[0] ?? 1) - 1] ?? "",
+        literal: "",
+        rows: free.length,
+        shape: "row-split",
+        problem: `${path}: no feature claims row${free.length === 1 ? "" : "s"} ${formatRowList(free)} of ${total}: give each row of the file to the feature whose code makes it pass, in its rows.`,
+      });
+    }
+    out.set(path, { total, own, problems });
+  }
+  return out;
+}
+
+/**
+ * The shared row files of `feature` and the rows its run holds of each (#2898): its own rows
+ * (`featureRowSplit`) and those of the sharers it depends on, directly or through others, which
+ * an earlier run delivered and the host keeps. What `featurePrompt` states under
+ * `FEATURE_ROWS_HEADING` and `suppliedRows` reads back in the feature's run.
+ */
+export function featureRowFiles(
+  plan: Pick<InitiativePlan, "features">,
+  request: string,
+  feature: Pick<InitiativeFeature, "id">,
+): FeatureRowFile[] {
+  const files: FeatureRowFile[] = [];
+  for (const [path, split] of featureRowSplit(plan, request)) {
+    const own = split.own.get(feature.id);
+    if (!own) continue;
+    const upstream = [...split.own]
+      .filter(([id]) => id !== feature.id && reachesFeature(plan, feature.id, id))
+      .flatMap(([, rows]) => rows)
+      .filter((row) => !own.includes(row));
+    const rows = [...new Set([...own, ...upstream])].sort((a, b) => a - b);
+    files.push({
+      path,
+      total: split.total,
+      rows,
+      upstream: [...new Set(upstream)].sort((a, b) => a - b),
+    });
+  }
+  return files;
 }
 
 /**

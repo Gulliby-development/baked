@@ -371,7 +371,7 @@ if (import.meta.main) {
           "",
           ...touched.map((module) => `- \`${module.id}\` (${module.title})`),
           "",
-          "The error budget applies: one behavior change per hot module per bench round, and after a round with two or more stops caused by fresh fixes only reverts and regression fixes (AGENTS.md, docs/bench-loop.md#hot-modules).",
+          "The error budget applies: one behavior change per hot module per bench round, and after a round with two or more stops caused by fresh fixes only reverts and regression fixes (.agents/rules/budget/hot-modules-error-budget.md, docs/bench-loop.md#hot-modules).",
         ].join("\n")
       : "No hot module is touched.";
     console.log(summary);

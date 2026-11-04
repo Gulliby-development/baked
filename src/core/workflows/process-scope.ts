@@ -32,6 +32,12 @@ export interface ProcessResult {
   output: string;
   stdout?: string;
   stderr?: string;
+  /**
+   * The bytes of both pipes as they arrived (`output` before its note) and in stream order, the
+   * stderr block then the stdout block (#2859). The order two pipes arrive in is not fixed, so a
+   * comparison of two runs reads `inStreamOrder`, never `output`.
+   */
+  streams?: { arrival: string; ordered: string };
   timedOut: boolean;
   cancelled: boolean;
   truncated: boolean;
@@ -39,6 +45,22 @@ export interface ProcessResult {
   /** The OS sandbox that applied; absent when the caller asked for none. */
   sandbox?: SandboxApplied;
 }
+/**
+ * `text`, which holds a process's output as its pipes arrived, with that output in stream order:
+ * the stderr block, then the stdout block (#2859). A check's notes and reports around it stay as
+ * they are. The order two pipes arrive in is not fixed (a Biome stand-in's stderr came after its
+ * stdout 1 time in 200), so a signature that compares two runs of a command reads this, while the
+ * recorded `output` keeps the arrival order for people. Without `streams` (a scripted process) or
+ * when the output is not in `text`, `text` is returned.
+ */
+export function inStreamOrder(text: string, streams: ProcessResult["streams"]): string {
+  if (!streams || streams.arrival === streams.ordered) return text;
+  const arrival = streams.arrival.replace(/\n*$/, "");
+  const at = arrival ? text.indexOf(arrival) : -1;
+  if (at < 0) return text;
+  return text.slice(0, at) + streams.ordered.replace(/\n*$/, "") + text.slice(at + arrival.length);
+}
+
 /** A Windows batch script: Bun and Node refuse to spawn it directly (EINVAL) and it needs cmd.exe. */
 export const isWindowsBatch = (executable: string): boolean => /\.(cmd|bat)$/i.test(executable);
 
@@ -213,6 +235,10 @@ export class ProcessScope {
           output: output.toString("utf8") + note,
           stdout: Buffer.concat(stdout).toString("utf8"),
           stderr: Buffer.concat(stderr).toString("utf8"),
+          streams: {
+            arrival: output.toString("utf8"),
+            ordered: Buffer.concat([...stderr, ...stdout]).toString("utf8"),
+          },
           timedOut,
           cancelled,
           truncated,

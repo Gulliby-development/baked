@@ -86,7 +86,35 @@ export function changedPaths(diff: string): string[] {
 /** The review inputs a pull request edits, which its review still reads from the base commit. */
 export function configurationChanges(diff: string): string[] {
   const inputs = new Set<string>(Object.values(REVIEW_INPUTS));
-  return changedPaths(diff).filter((path) => inputs.has(path));
+  return changedPaths(diff).filter((path) => inputs.has(path) || path.startsWith(RULES_DIR));
+}
+
+/** The area rules AGENTS.md indexes, one rule per file; the review reads them with AGENTS.md. */
+export const RULES_DIR = ".agents/rules/";
+
+/** AGENTS.md followed by every area rule file, each under its path, in path order. */
+export function withAreaRules(agents: string, rules: ReadonlyArray<{ path: string; text: string }>): string {
+  const sorted = [...rules].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return [agents.trim(), ...sorted.map((rule) => `## ${rule.path}\n\n${rule.text.trim()}`)].join("\n\n");
+}
+
+/**
+ * The area rule files as of `sha`, read with git from this clone; a clone that lacks the commit
+ * falls back to the checkout's files.
+ */
+function areaRulesAt(sha: string): { path: string; text: string }[] {
+  const git = (...args: string[]) =>
+    spawnSync("git", args, { cwd: join(import.meta.dir, ".."), encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
+  const listed = git("ls-tree", "-r", "--name-only", sha, RULES_DIR);
+  if (listed.status === 0)
+    return listed.stdout
+      .split("\n")
+      .filter((path) => path.endsWith(".md"))
+      .map((path) => ({ path, text: git("show", `${sha}:${path}`).stdout ?? "" }));
+  const root = join(import.meta.dir, "..");
+  return [...new Bun.Glob(`${RULES_DIR}**/*.md`).scanSync({ cwd: root })]
+    .map((path) => path.replaceAll("\\", "/"))
+    .map((path) => ({ path, text: readFileSync(join(root, path), "utf8") }));
 }
 
 /** The part of a unified diff that changes `path`, or "" when it does not. */
@@ -110,7 +138,7 @@ export function reviewPrompt(input: ReviewInput, rules: ReviewRules): string {
     rules.instructions.trim(),
     "# Sweep checklist (from .agents/skills/file-issue/SKILL.md)",
     sweepChecklist(rules.skill),
-    "# Repository rules (AGENTS.md)",
+    "# Repository rules (AGENTS.md and .agents/rules/)",
     rules.agents.trim(),
     ...(changed.length
       ? [
@@ -612,7 +640,8 @@ async function baseRules(repository: string, sha: string, token: string): Promis
       return [key, text] as const;
     }),
   );
-  return Object.fromEntries(entries) as ReviewRules;
+  const rules = Object.fromEntries(entries) as ReviewRules;
+  return { ...rules, agents: withAreaRules(rules.agents, areaRulesAt(sha)) };
 }
 
 /** The Bug issues a pull request closes, with their text; empty when it closes none. */

@@ -55,6 +55,11 @@ export class MCPManager {
   private pendingSync: MCPServerConfig[] | null = null;
   private syncing = false;
   private connecting = new Map<string, Promise<void>>();
+  /**
+   * Stdio transports whose handshake has not finished. Disposing closes these too: a server still
+   * starting was nobody's to stop and outlived the manager (#2268 for language servers).
+   */
+  private startingTransports = new Set<{ close(): Promise<void> }>();
   private synced = false;
 
   /** Whether servers were connected from the config yet (connectAll, or one server on demand). */
@@ -140,9 +145,14 @@ export class MCPManager {
     let transport: ReturnType<MCPManager["createTransport"]> | null = null;
     // stdio = custom MCPTransport with start/send/close. HTTP/SSE = plain config object.
     let isCustomTransport = false;
+    let starting: StdioClientTransport | null = null;
     try {
       transport = this.createTransport(config);
       isCustomTransport = typeof transport === "object" && "start" in transport;
+      if (transport instanceof StdioClientTransport) {
+        starting = transport;
+        this.startingTransports.add(transport);
+      }
       if (isCustomTransport && "onclose" in transport) {
         const originalOnclose = transport.onclose;
         transport.onclose = () => {
@@ -192,6 +202,8 @@ export class MCPManager {
         inputSchema: {} as Record<string, unknown>,
       }));
 
+      // Disposed during the handshake: the manager no longer owns anything, so close it here.
+      if (this.disposed) throw new Error(`MCP server "${name}": manager disposed while connecting`);
       this.connections.set(name, { client, config, toolSet: toolSet as Record<string, Tool> });
       client = null; // Ownership transferred — don't close in finally
 
@@ -227,14 +239,21 @@ export class MCPManager {
           (late) => late.close().catch(() => {}),
           () => {},
         );
+        // Awaited: a second close of a closing stdio transport returns before its child exits, so
+        // only this close waits for the server to stop (#2751, #2805).
         if (transport && typeof transport === "object" && "close" in transport)
-          transport.close().catch(() => {});
+          await transport.close().catch(() => {});
+      } else {
+        // A handshake that failed before any client existed: its transport's child still runs.
+        await starting?.close().catch(() => {});
       }
       const msg = err instanceof Error ? err.message : String(err);
       useMCPStore.getState().setServerStatus(name, "error", msg);
       // Only auto-restart stdio transports (local subprocesses that may have crashed).
       // HTTP/SSE are remote — if they fail, the user should retry manually.
       if (isCustomTransport) this.scheduleRestart(config);
+    } finally {
+      if (starting) this.startingTransports.delete(starting);
     }
   }
 
@@ -435,7 +454,10 @@ export class MCPManager {
   async dispose(): Promise<void> {
     this.disposed = true;
     const names = [...this.connections.keys()];
-    await Promise.allSettled(names.map((n) => this.disconnect(n)));
+    await Promise.allSettled([
+      ...names.map((n) => this.disconnect(n)),
+      ...[...this.startingTransports].map((transport) => transport.close()),
+    ]);
   }
 }
 

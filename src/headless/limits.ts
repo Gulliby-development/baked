@@ -10,8 +10,9 @@ const help = `Usage: baked limits [--json]
 
 Shows how much of each subscription's usage limit is left: Codex (read from its app-server),
 Claude Code (the last report BAKED's own turns on it recorded) and GitHub Copilot (read from
-GitHub). Pay-per-token API keys have no limit and are not listed. --json prints the answer of
-the local API's GET /v1/providers/limits.
+GitHub). Each labelled account of Codex or Claude Code (baked accounts) is listed after its
+provider's own sign-in, with its own subscription's limits. Pay-per-token API keys have no limit
+and are not listed. --json prints the answer of the local API's GET /v1/providers/limits.
 `;
 
 const BAR = 24;

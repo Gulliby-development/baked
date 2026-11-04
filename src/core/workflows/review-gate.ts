@@ -1,6 +1,12 @@
 import { type NotesCriterion, notesPass, testOrDocFile } from "../verification/convergence-stop.js";
 import { confidenceOnlyNote, type FindingLabels, findingBlocks } from "../verification/findings.js";
-import { convergenceReproGated, type ReproOutcome, reproAllows } from "../verification/repro.js";
+import {
+  convergenceReproGated,
+  docFindingRepairs,
+  documentationFinding,
+  type ReproOutcome,
+  reproAllows,
+} from "../verification/repro.js";
 import type { Review } from "./schemas.js";
 
 type Finding = Review["findings"][number];
@@ -32,6 +38,11 @@ export interface GateFinding {
    * repro was not inconclusive, and in records before #2152.
    */
   crash?: "finding" | "pass";
+  /**
+   * The finding's file is documentation (`documentationFinding`), which the shadow rule
+   * `doc_finding_unrepaired` reads (#2835). Absent otherwise, and in records before #2835.
+   */
+  doc?: true;
 }
 
 export interface ReviewGate {
@@ -56,6 +67,11 @@ export interface ReviewGateRecord extends ReviewGate {
   schemaVersion: 1;
   /** The finding IDs that started a correction. */
   repaired: string[];
+  /**
+   * The documentation findings the gate kept that ride that correction (`reviewGateDocCarries`,
+   * #2868). Absent when none, and in records before #2868.
+   */
+  carried?: string[];
 }
 
 const labels = (f: GateFinding): FindingLabels => ({
@@ -80,6 +96,7 @@ export function gateFinding(
     sibling,
     outcome: outcome ?? null,
     noRepro: !!finding.noRepro?.trim(),
+    ...(documentationFinding(finding.file) ? { doc: true as const } : {}),
   };
 }
 
@@ -118,24 +135,45 @@ export function reviewGateCandidates(gate: ReviewGate): GateFinding[] {
 }
 
 /**
- * Whether the repro gate lets a finding start a correction (`reproAllows`), or with `crash` also
- * when its inconclusive repro crashed inside the finding's own file (#2152). The `crash` form is
- * the shadow rule of `edge_crash_finding`: decided and recorded, not yet applied.
+ * The shadow rules a gate decision may apply on top of the live one: decided and recorded as
+ * would-stops, not yet applied. `crash` is `edge_crash_finding` (#2152), `doc` is
+ * `doc_finding_unrepaired` (#2835).
  */
-const gateAllows = (f: GateFinding, available: boolean, crash: boolean): boolean =>
+export interface GateShadowRules {
+  crash?: boolean;
+  doc?: boolean;
+}
+
+/**
+ * Whether the repro gate lets a finding start a correction (`reproAllows`), or with `crash` also
+ * when its inconclusive repro crashed inside the finding's own file (#2152), or with `doc` also
+ * when it is a documentation finding its reviewer marked `noRepro` (`docFindingRepairs`, #2835).
+ */
+const gateAllows = (
+  f: GateFinding,
+  available: boolean,
+  minConfidence: number,
+  rules: GateShadowRules,
+): boolean =>
   reproAllows(labels(f), f.outcome ?? undefined, available) ||
-  (crash && f.outcome === "inconclusive" && f.crash === "finding");
+  (!!rules.crash && f.outcome === "inconclusive" && f.crash === "finding") ||
+  (!!rules.doc &&
+    docFindingRepairs(
+      { ...labels(f), noRepro: f.noRepro, doc: f.doc },
+      f.outcome ?? undefined,
+      minConfidence,
+    ));
 
 /**
  * The findings (by ID) that start a correction. A candidate at a repaired severity passes the repro
  * gate (#155); one below it, or kept a note only for its confidence, repairs only when reproduced.
- * `crash` decides with the shadow crash rule (`gateAllows`).
+ * `rules` decides with the shadow rules (`gateAllows`).
  */
-export function reviewGateDecision(gate: ReviewGate, crash = false): string[] {
+export function reviewGateDecision(gate: ReviewGate, rules: GateShadowRules = {}): string[] {
   return reviewGateCandidates(gate)
     .filter((f) =>
       gate.severities.includes(f.severity) && !confidenceOnlyNote(labels(f), gate.minConfidence)
-        ? gateAllows(f, gate.reproAvailable, crash)
+        ? gateAllows(f, gate.reproAvailable, gate.minConfidence, rules)
         : f.outcome === "reproduced",
     )
     .map((f) => f.id);
@@ -148,7 +186,42 @@ export function reviewGateDecision(gate: ReviewGate, crash = false): string[] {
  */
 export function reviewGateCrashKeeps(gate: ReviewGate): string[] {
   const decided = new Set(reviewGateDecision(gate));
-  return reviewGateDecision(gate, true).filter((id) => !decided.has(id));
+  return reviewGateDecision(gate, { crash: true }).filter((id) => !decided.has(id));
+}
+
+/**
+ * The documentation findings the repro gate keeps notes that the shadow documentation rule would
+ * repair (#2835): a `correctness` claim on a README marked `noRepro`, which a `partial` one would
+ * not be. Each records a `doc_finding_unrepaired` would-stop; nothing changes until it is promoted.
+ */
+export function reviewGateDocKeeps(gate: ReviewGate): string[] {
+  const decided = new Set(reviewGateDecision(gate));
+  return reviewGateDecision(gate, { doc: true }).filter((id) => !decided.has(id));
+}
+
+/**
+ * The documentation findings the gate keeps that ride a correction it starts anyway (#2868): the
+ * shadow documentation rule's keeps (`reviewGateDocKeeps`), only when another finding of the same
+ * gate repairs. The correction's task gets their file, claim and proposed fix, so no correction,
+ * round or stop is added. R92 tailclose's corrective T003 fixed F3 (`missing`, README.md) and never
+ * saw F1 and F2 (`correctness`, `noRepro`, the same README), which shipped.
+ */
+export function reviewGateDocCarries(gate: ReviewGate): string[] {
+  return reviewGateDecision(gate).length ? reviewGateDocKeeps(gate) : [];
+}
+
+/**
+ * The documentation findings that repeat an earlier one (`repeats`: the reviewer's `repeatOf`) and
+ * that the shadow documentation rule keeps out only for the round's severity floor (#2868): after
+ * the first correction a medium finding no longer repairs, so R92 tailclose's second review raised
+ * F1 and F2 again and the run completed with no would-stop. Each records a `doc_finding_unrepaired`
+ * would-stop that it would open one more correction; nothing changes until it is promoted.
+ */
+export function reviewGateDocRepeats(gate: ReviewGate, repeats: ReadonlySet<string>): string[] {
+  const wider = { ...gate, severities: gate.blocking };
+  return reviewGateDocKeeps(wider).filter(
+    (id) => repeats.has(id) && !reviewGateDocKeeps(gate).includes(id),
+  );
 }
 
 /** What the convergence gate knows of a finding: the review gate's labels and what the notes rule reads. */
@@ -198,6 +271,8 @@ export const CONVERGENCE_GATE_DIR = "convergence-gate/";
 export interface ConvergenceGateRecord extends ConvergenceGate {
   schemaVersion: 1;
   decision: ConvergenceDecision;
+  /** The documentation findings that ride its correction (`convergenceGateDocCarries`, #2868). */
+  carried?: string[];
 }
 
 export function convergenceGateFinding(
@@ -243,7 +318,10 @@ export function convergenceReproCandidates(gate: ConvergenceGate): ConvergenceGa
  * only such findings name is accepted with them. A finding still repairs below the severity floor
  * when it is why a criterion fails: acceptance needs every automated criterion to pass.
  */
-export function convergenceGateDecision(gate: ConvergenceGate, crash = false): ConvergenceDecision {
+export function convergenceGateDecision(
+  gate: ConvergenceGate,
+  rules: GateShadowRules = {},
+): ConvergenceDecision {
   const notes = notesOf(gate);
   const blocks = (f: ConvergenceGateFinding): boolean =>
     findingBlocks(
@@ -258,7 +336,9 @@ export function convergenceGateDecision(gate: ConvergenceGate, crash = false): C
       ? gate.findings
           .filter(
             (f) =>
-              convergenceReproGated(labels(f)) && !notes.has(f.id) && !gateAllows(f, true, crash),
+              convergenceReproGated(labels(f)) &&
+              !notes.has(f.id) &&
+              !gateAllows(f, true, gate.minConfidence, rules),
           )
           .map((f) => f.id)
       : [],
@@ -305,8 +385,49 @@ export function convergenceGateDecision(gate: ConvergenceGate, crash = false): C
  * `reviewGateCrashKeeps` for the review gate.
  */
 export function convergenceGateCrashKeeps(gate: ConvergenceGate): string[] {
+  return convergenceShadowKeeps(gate, { crash: true });
+}
+
+/**
+ * The convergence findings the gate does not repair that the shadow documentation rule would
+ * (#2835), as `reviewGateDocKeeps` for the review gate.
+ */
+export function convergenceGateDocKeeps(gate: ConvergenceGate): string[] {
+  return convergenceShadowKeeps(gate, { doc: true });
+}
+
+/**
+ * The convergence findings that ride a correction the gate starts anyway (#2868), as
+ * `reviewGateDocCarries` for the review gate.
+ */
+export function convergenceGateDocCarries(gate: ConvergenceGate): string[] {
+  return convergenceGateDecision(gate).verdicts.some((v) => v.verdict === "repair")
+    ? convergenceGateDocKeeps(gate)
+    : [];
+}
+
+/** The severities a converge gate repairs in its first round when low findings are notes. */
+const FIRST_ROUND: readonly Finding["severity"][] = ["critical", "high", "medium"];
+
+/**
+ * The convergence findings that repeat an earlier documentation finding and that the shadow
+ * documentation rule keeps out only for the round's severity floor (#2868), as
+ * `reviewGateDocRepeats` for the review gate.
+ */
+export function convergenceGateDocRepeats(
+  gate: ConvergenceGate,
+  repeats: ReadonlySet<string>,
+): string[] {
+  const kept = new Set(convergenceGateDocKeeps(gate));
+  const severities = [...new Set([...gate.severities, ...FIRST_ROUND])];
+  return convergenceGateDocKeeps({ ...gate, severities }).filter(
+    (id) => repeats.has(id) && !kept.has(id),
+  );
+}
+
+function convergenceShadowKeeps(gate: ConvergenceGate, rules: GateShadowRules): string[] {
   const repaired = (decision: ConvergenceDecision) =>
     decision.verdicts.filter((v) => v.verdict === "repair").map((v) => v.id);
   const decided = new Set(repaired(convergenceGateDecision(gate)));
-  return repaired(convergenceGateDecision(gate, true)).filter((id) => !decided.has(id));
+  return repaired(convergenceGateDecision(gate, rules)).filter((id) => !decided.has(id));
 }

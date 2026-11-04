@@ -4,6 +4,7 @@ import type { AppConfig } from "../../types/index.js";
 import { SharedRootContext } from "../context/shared-root.js";
 import { ROUTING_ARTIFACT, type RoutingRecord, RoutingRecordSchema } from "../llm/model-routing.js";
 import { resolveModel } from "../llm/provider.js";
+import { checkAccountChoice, runWithAccounts } from "../llm/provider-accounts.js";
 import { probeProvider, providerBackoffMs } from "../llm/provider-health.js";
 import { displayPath } from "../projects/paths.js";
 import { activeProject } from "../projects/resolve.js";
@@ -24,6 +25,7 @@ import {
 } from "../verification/convergence-stop.js";
 import { noteSiblingFindings } from "../verification/initiative-ownership.js";
 import { hostDiff, sourceManifest } from "../verification/snapshot.js";
+import { acceptanceRefused } from "./acceptance-refusal.js";
 import { NativeAgentExecutor } from "./agent-executor.js";
 import { supersedeResearch } from "./analysis-notes.js";
 import { approvalDigest } from "./approval.js";
@@ -372,8 +374,20 @@ export class NativeWorkflowService implements WorkflowService {
     const previous = this.store.previousCommand(request.commandId, request);
     if (previous) return previous;
     await this.refreshOutcomes();
+    const accounts =
+      request.accounts && Object.keys(request.accounts).length ? request.accounts : null;
+    if (accounts) {
+      try {
+        checkAccountChoice(accounts, this.workspace);
+      } catch (error) {
+        throw new WorkflowFault(
+          "INVALID_REFERENCE",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
     const prepared = await prepareStart(this.workspace, this.config, request);
-    const smoke = await this.preflight(prepared);
+    const smoke = await runWithAccounts(accounts, () => this.preflight(prepared));
     const {
       policy,
       registry,
@@ -481,6 +495,7 @@ export class NativeWorkflowService implements WorkflowService {
       correctedSinceRepair: false,
       extraCorrectiveTasks: 0,
       decidedFindings: [],
+      strandedFindings: [],
       autoExtensions: 0,
       limitations: [],
       reviewNotes: [],
@@ -544,6 +559,7 @@ export class NativeWorkflowService implements WorkflowService {
       testsFirst: null,
       presetChoice: request.presetChoice ?? null,
       autoApprovalDeclined: request.autoApprovalDeclined ?? null,
+      accounts,
       planAhead:
         request.planAhead && request.baseCommit ? { released: false, baselined: false } : null,
     };
@@ -1177,9 +1193,10 @@ export class NativeWorkflowService implements WorkflowService {
     const scheduler = primary ? this.scheduler : this.lane();
     scheduler.maxParallelRuns = parallelRunCap(this.config);
     scheduler.worktreeRoot = worktreeRootDir(this.workspace, this.config.workflows?.worktreeRoot);
-    const promise = scheduler
-      .drive(runId, controller.signal)
-      .then(() => this.store.snapshot(runId));
+    // A run started with `--account` keeps its accounts on every resume (#2303).
+    const promise = runWithAccounts(state.accounts, () =>
+      scheduler.drive(runId, controller.signal),
+    ).then(() => this.store.snapshot(runId));
     this.active.set(runId, { controller, promise });
     try {
       return await promise;
@@ -1494,6 +1511,11 @@ export class NativeWorkflowService implements WorkflowService {
             state.extraRepeatRepairs += extra;
             break;
         }
+        // The findings the refused correction was for have no repair task: the next pass of their
+        // scope retires those it does not raise again (#2878).
+        for (const id of block.stranded?.findingIds ?? [])
+          if (block.stranded && !state.strandedFindings.some((f) => f.id === id))
+            state.strandedFindings.push({ id, pass: block.stranded.pass });
         this.store.artifact(
           runId,
           "recovery",
@@ -1567,11 +1589,14 @@ export class NativeWorkflowService implements WorkflowService {
         }
       }
       const blocked = this.store.run(runId);
-      // A remedy changes what the next attempt does, so it is no repeat of the same attempt.
+      // A remedy changes what the next attempt does, so it is no repeat of the same attempt. A
+      // refusal of acceptance is no model's output: no note goes to a model and no guard applies
+      // (#2879); acceptance decides again.
       if (
         !remedy &&
         blocked.status === "blocked" &&
         blocked.reason === "invalid_output" &&
+        !acceptanceRefused(this.store, runId) &&
         !this.noteInvalidOutput(runId)
       )
         throw new WorkflowFault("STALE_DECISION", repeatedInvalidOutputAdvice(runId), {
@@ -2329,6 +2354,8 @@ export class NativeWorkflowService implements WorkflowService {
       }
       state.hostDependencies = pinned;
       state.initiativeBounds = previous.initiativeBounds;
+      // The accounts the run was started on are the person's choice, not the candidate's.
+      state.accounts = previous.accounts;
       const policy = PolicySchema.parse(candidate.policy);
       if (
         executionModeOf(policy) !==
@@ -2399,6 +2426,7 @@ export class NativeWorkflowService implements WorkflowService {
         state.correctedSinceRepair = false;
         state.extraCorrectiveTasks = 0;
         state.decidedFindings = [];
+        state.strandedFindings = [];
         state.autoExtensions = 0;
         state.limitations = [];
         state.reviewNotes = [];
@@ -2557,7 +2585,13 @@ export class NativeWorkflowService implements WorkflowService {
           maxCostUsd: costCap,
           ...(autoApproval === undefined ? {} : { autoApproval }),
         });
-        if (limits.maxActiveMs > MAX_EXTENDED_MS || limits.maxTotalTokens > MAX_EXTENDED_TOKENS)
+        // The ceilings bound what one extension raises a limit to. A limit it keeps is not checked:
+        // a `checkpoints` run keeps its uncapped 1e9 tokens when its calls or cost cap grow (#2667).
+        if (
+          (limits.maxActiveMs > current.maxActiveMs && limits.maxActiveMs > MAX_EXTENDED_MS) ||
+          (limits.maxTotalTokens > current.maxTotalTokens &&
+            limits.maxTotalTokens > MAX_EXTENDED_TOKENS)
+        )
           throw new WorkflowFault(
             "INVALID_DEFINITION",
             "Requested limits are above the allowed ceiling",
@@ -2975,6 +3009,7 @@ export class NativeWorkflowService implements WorkflowService {
       state.correctedSinceRepair = false;
       state.extraCorrectiveTasks = 0;
       state.decidedFindings = [];
+      state.strandedFindings = [];
       state.autoExtensions = 0;
       state.limitations = [];
       state.reviewNotes = [];

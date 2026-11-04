@@ -3,6 +3,7 @@
  * Instructions and Routing mockups. State is kept per project key for the life of the page.
  */
 import type { ApiResponse } from "../../shared/api.js";
+import { mockAccountLimits } from "./mock-accounts.js";
 import { type MockRequest, type MockRoute, response } from "./mock-response.js";
 import type {
   CatalogSkill,
@@ -443,6 +444,7 @@ function providerLimits(): ProviderLimits[] {
       credits: null,
       message: "Read from Codex just now.",
     },
+    ...mockAccountLimits("codex"),
     {
       provider: "claude-code",
       name: "Claude Code",
@@ -471,6 +473,7 @@ function providerLimits(): ProviderLimits[] {
       credits: null,
       message: "Reported by Claude Code during BAKED's last turn on it.",
     },
+    ...mockAccountLimits("claude-code"),
     {
       provider: "copilot",
       name: "GitHub Copilot",
