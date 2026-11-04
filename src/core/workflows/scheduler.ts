@@ -548,6 +548,7 @@ import {
   HOST_APPLY_KIND,
   HOST_PLAN_CONTENT_DIR,
   type HostApplyRecord,
+  type HostApplyRerun,
   hostAppliableTasks,
   hostApplyContents,
   hostApplyDecision,
@@ -555,6 +556,7 @@ import {
   hostApplyRecord,
   hostApplyRecords,
   hostApplyText,
+  hostRerunDecision,
   hostRowFileTasks,
   rowFileTasks,
 } from "./host-apply.js";
@@ -9246,13 +9248,15 @@ ${note}`;
           )
         : [];
     // The host writes the task's files from the request: its verbatim content (#2333) or its
-    // prescribed rows in the file's shape (#2528).
+    // prescribed rows in the file's shape (#2528). A rerun of a task it applied is the host's
+    // again (#2877), never a session's.
     const applied =
       !checking &&
       task.writes.length > 0 &&
       !hostWritten(task) &&
-      firstRun &&
-      (await this.hostApply(runId, child, state, policy, task));
+      (firstRun
+        ? await this.hostApply(runId, child, state, policy, task)
+        : await this.hostReapply(runId, child, state, policy, task));
     if (
       !checking &&
       (task.writes.length === 0 ||
@@ -9934,11 +9938,15 @@ ${note}`;
           .filter((t) => t.status === "pending")
           .map((t) => t.id),
       );
+      // A rerun of a task the host applied comes here too (#2877): the host decides it again.
       const single =
         checking ??
         ready.find(
           (t) =>
-            t.writes.length === 0 || hostWritten(t) || (appliable.has(t.id) && pending.has(t.id)),
+            t.writes.length === 0 ||
+            hostWritten(t) ||
+            (appliable.has(t.id) &&
+              (pending.has(t.id) || this.appliedRecord(runId, t.id) !== null)),
         );
       signal.throwIfAborted();
       if (single) {
@@ -21960,10 +21968,95 @@ ${note}`;
           content: c.content,
         })),
       });
-      record = { ...record, applied: true };
+      record = {
+        ...record,
+        applied: true,
+        written: Object.fromEntries(contents.map((c) => [c.path, hashBytes(c.content)])),
+      };
     } else if (record.applied === undefined) record = { ...record, applied: false };
     this.store.artifact(runId, HOST_APPLY_KIND, path, canonical(record));
     return applied;
+  }
+  /**
+   * A rerun of a planned task the host applied before (#2877): a corrective's edit invalidated it,
+   * or a drive resumes it. The host decides it, never a session it did not need on the first run:
+   * `hostRerunDecision` keeps the files that hold the host's content and writes a changed row file
+   * again through `writeHostFiles`; true when no session is needed. Each decision is added to the
+   * task's `host-apply/tasks/<task>.json` (`rerun`) for a replay. False (the implementer runs, as
+   * before) when the host did not apply the task, its setting is off now, or a file a correction
+   * changed is not the host's to rewrite. Every path that reruns a task asks this before a session:
+   * the single-writer path calls it, and the batch path sends such a task there (`implement`).
+   */
+  private async hostReapply(
+    runId: string,
+    child: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): Promise<boolean> {
+    const record = this.appliedRecord(runId, task.id);
+    if (
+      !record ||
+      task.origin !== "planned" ||
+      !record.writes.every((w) => (w.rows ? policy.rowFileWrite : policy.hostApply) === "on")
+    )
+      return false;
+    const root = runRoot(this.store.workspace, state);
+    let computed: { path: string; content: string }[] | null = null;
+    try {
+      computed = await hostApplyContents(
+        root,
+        state.requestText || state.prompt,
+        task,
+        state.graph,
+      );
+    } catch {}
+    const current = new Map(
+      record.writes.map((w) => [w.path, fileHash(workspacePath(root, w.path))] as const),
+    );
+    const decided = hostRerunDecision(record, current, computed, hashBytes);
+    if (decided.writes.length)
+      this.writeHostFiles(runId, child, state, policy, {
+        writes: decided.writes.map((w) => ({ ...w, action: "modify" as const })),
+      });
+    const generation = this.store.tasks(runId).find((t) => t.id === task.id)?.generation ?? 0;
+    const rerun: HostApplyRerun = {
+      generation,
+      decision: decided.decision,
+      reason: decided.reason,
+      ...(decided.writes.length ? { writes: decided.writes.map((w) => w.path) } : {}),
+    };
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        HOST_APPLY_KIND,
+        `${HOST_APPLY_DIR}${task.id}.json`,
+        canonical({
+          ...record,
+          ...(decided.writes.length
+            ? {
+                written: {
+                  ...record.written,
+                  ...Object.fromEntries(decided.writes.map((w) => [w.path, hashBytes(w.content)])),
+                },
+              }
+            : {}),
+          rerun: [...(record.rerun ?? []), rerun],
+        }),
+      ),
+    );
+    return decided.decision !== "session";
+  }
+  /** The task's latest host apply record when the host applied it (`applied: true`, #2877). */
+  private appliedRecord(runId: string, taskId: string): HostApplyRecord | null {
+    const artifact = this.store.latestArtifact(runId, `${HOST_APPLY_DIR}${taskId}.json`);
+    if (!artifact) return null;
+    try {
+      const record = JSON.parse(this.store.readArtifact(runId, artifact.id)) as HostApplyRecord;
+      return record.applied === true ? record : null;
+    } catch {
+      return null;
+    }
   }
 
   /**
