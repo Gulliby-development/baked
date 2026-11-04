@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -3997,15 +3998,85 @@ export type HistoryTrace = (store: string) => string | null;
 
 /**
  * A bench app the runner kept at `.../RNN/app` is `RNN/app.sqlite.gz` in the corpus at `root`.
- * Apps from before the corpus (R44 and older) have no trace.
+ * From round 81 the bench keeps a new app under a short folder (`R85/csp` for cellspan, #2894)
+ * while the corpus names its trace after the app, so a store no file name matches resolves through
+ * `roundTrace`. Apps from before the corpus (R44 and older) have no trace.
  */
 export function corpusHistoryTrace(root: string): HistoryTrace {
   return (store) => {
     const dir = store.replace(/[\\/]+$/, "").replace(/[\\/]\.baked[\\/]workflows\.sqlite$/, "");
     const match = /(?:^|[\\/])(R\d+)[\\/]([^\\/]+)$/.exec(dir);
-    const trace = match ? join(root, match[1] ?? "", `${match[2]}.sqlite.gz`) : null;
-    return trace && existsSync(trace) ? trace : null;
+    if (!match) return null;
+    const [, round = "", folder = ""] = match;
+    const trace = join(root, round, `${folder}.sqlite.gz`);
+    if (existsSync(trace)) return trace;
+    return roundTrace(join(root, round), round, folder);
   };
+}
+
+/** The traces of a corpus round by the project folder they recorded, and those that recorded none. */
+type RoundFolders = { recorded: Map<string, string>; unrecorded: string[] };
+
+const ROUND_FOLDERS = new Map<string, { key: string; folders: RoundFolders }>();
+
+/**
+ * The trace of a corpus round whose app the runner kept under `folder` (#2894). A trace names its
+ * folder where it recorded an absolute path: an instruction file of a run's input manifest
+ * (`R85\csp\package.json`, cellspan) or a check's executable in a run's policy
+ * (`R86/bnl/.venv/...`, binlayer). A trace that recorded none (R83 bytemerge kept `bym`) is found by
+ * its app name: a folder of no hyphen that starts with the app's first letter, keeps its other
+ * letters in the app's order and is no word of the app name itself (`R89/namesound` is not
+ * `namesound-update`) names the one such app of the round it fits. A folder that fits several apps
+ * names none.
+ */
+function roundTrace(dir: string, round: string, folder: string): string | null {
+  const { recorded, unrecorded } = roundFolders(dir, round);
+  const named = folder.toLowerCase();
+  const own = recorded.get(named);
+  if (own) return own;
+  const fits = unrecorded.filter((file) => {
+    const app = basename(file)
+      .replace(/\.sqlite\.gz$/, "")
+      .toLowerCase();
+    if (named.includes("-") || named[0] !== app[0] || app.split("-").includes(named)) return false;
+    let at = 0;
+    for (const letter of app) if (letter === named[at]) at++;
+    return at === named.length;
+  });
+  return fits.length === 1 ? (fits[0] ?? null) : null;
+}
+
+/** The project folder each trace of a corpus round recorded (lower case), read once per round. */
+function roundFolders(dir: string, round: string): RoundFolders {
+  if (!existsSync(dir)) return { recorded: new Map(), unrecorded: [] };
+  const files = readdirSync(dir)
+    .filter((f) => f.endsWith(".sqlite.gz"))
+    .sort();
+  const key = files.map((f) => `${f}:${statSync(join(dir, f)).mtimeMs}`).join("|");
+  const known = ROUND_FOLDERS.get(dir);
+  if (known?.key === key) return known.folders;
+  const folders: RoundFolders = { recorded: new Map(), unrecorded: [] };
+  const path = new RegExp(`(?:^|[\\\\/"])${round}[\\\\/]+([^\\\\/"]+)[\\\\/]`, "g");
+  for (const file of files) {
+    const db = Database.deserialize(Bun.gunzipSync(readFileSync(join(dir, file))));
+    const named = new Set<string>();
+    try {
+      const runs = db.query("SELECT input_manifest_json, policy_json FROM runs").all() as {
+        input_manifest_json: string | null;
+        policy_json: string | null;
+      }[];
+      for (const run of runs)
+        for (const text of [run.input_manifest_json, run.policy_json])
+          for (const m of (text ?? "").matchAll(path)) named.add((m[1] ?? "").toLowerCase());
+    } finally {
+      db.close();
+    }
+    // A trace that names two folders of its round is no evidence for either.
+    if (named.size === 1) folders.recorded.set([...named][0] ?? "", join(dir, file));
+    else if (named.size === 0) folders.unrecorded.push(join(dir, file));
+  }
+  ROUND_FOLDERS.set(dir, { key, folders });
+  return folders;
 }
 
 const NO_AGENTS = {
