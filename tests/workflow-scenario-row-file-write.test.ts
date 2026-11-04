@@ -538,7 +538,7 @@ const rowsCheck = (shape: WriteShape) => ({
 const requestOf = (shape: WriteShape) =>
   ["Create ready value.", "", "The prescribed rows, one test each:", "", "```text", ...shape.block, "```", ""].join("\n");
 
-async function deliver(shape: WriteShape, extra: Partial<RunPolicy>) {
+async function deliver(shape: WriteShape, extra: Partial<RunPolicy>, prompt = requestOf(shape)) {
   const policy: RunPolicy = { ...fixturePolicy, checks: [...fixturePolicy.checks, rowsCheck(shape)], ...extra };
   let executor: RowFileExecutor | undefined;
   const fixture = workflowFixture({
@@ -549,7 +549,7 @@ async function deliver(shape: WriteShape, extra: Partial<RunPolicy>) {
     },
   });
   cleanups.push(fixture.dispose);
-  const run = await fixture.service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: requestOf(shape), ownerLabel: "test", policy });
+  const run = await fixture.service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt, ownerLabel: "test", policy });
   let current = await fixture.service.drive(run.runId, new AbortController().signal);
   for (let i = 0; i < 8 && current.status === "waiting"; i++) {
     if (fixture.service.store.requests(run.runId).find((r) => r.status === "pending")?.kind !== "approval") break;
@@ -620,6 +620,23 @@ describe("scenario: R82, a row-file task the host writes without a session (#252
     const before = replayTrace(out, { hostApplyRule: (writes) => hostApplyDecision(writes.map(({ rows: _, ...w }) => w)) }).runs.find((r) => r.runId === runId);
     expect(before?.newApplyDecisions).toBe(1);
   }, 120000);
+});
+
+// #2909, bench round 96 cellref (Go): the prose line before another file's rows block named the
+// task's row file, and the block was taken for that file's excerpt. The host declined, and a
+// session wrote the rows (436k tokens). The row file is host-written with no session.
+describe("scenario: R96 cellref, a rows block after prose that names the task's row file (#2909)", () => {
+  for (const [language, shape] of Object.entries({ c: TINYFLATE, java: BYTEMERGE }))
+    test(`${language}: the host writes ${shape.path} and no session opens for it`, async () => {
+      const other = ["```text", `cli in tests/cli_rows_other${shape.path.slice(shape.path.lastIndexOf("."))} (1 rows)`, rowsOf(shape)[0], "```"].join("\n");
+      const prompt = requestOf(shape).replace("The prescribed rows, one test each:", `The wrapper in \`${shape.path}\` runs each row once; the cli rows:\n\n${other}\n\nThe prescribed rows, one test each:`);
+      const { final, sessions, record, file } = await deliver(shape, { rowFileWrite: "on" }, prompt);
+      expect(final.status).toBe("completed");
+      expect(sessions).toEqual(["T001"]);
+      expect(record).toMatchObject({ mode: "on", wouldApply: true, applied: true });
+      expect(record?.writes[0]).toMatchObject({ files: 0 });
+      expect(file).toBe(shape.written);
+    }, 120000);
 });
 
 // #2553 (part B): a row file in C#, Kotlin, Scala, PHP, R, OCaml, Zig, Objective-C or Solidity had

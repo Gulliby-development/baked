@@ -758,6 +758,10 @@ export function suppliedBlocks(
     const { path } = attributed;
     const region = markdownRegion(path, block.lines, block.prose);
     const whole = WHOLE_FILE.test(pathClauses(block.prose, path));
+    // A rows block (`cli in cli_test.go (15 rows)`) is the notation `suppliedRows` reads, not an
+    // excerpt of a file the prose before it names; only prose that says it is the file's whole
+    // content keeps it a supplied file (#2909).
+    if (!whole && rowsBlock(block.lines)) continue;
     const file: SuppliedBlock = {
       kind: "file",
       lines: block.lines.length,
@@ -782,6 +786,23 @@ export function suppliedBlocks(
 }
 
 const lastLine = (prose: string): string => prose.trim().split("\n").at(-1) ?? "";
+
+/**
+ * Whether a fenced block is a rows block (#2909): its first line names a test file and, outside
+ * the names, says it holds rows (`cli in cli_test.go (15 rows)`, `// Rows in t/a.test.ts (3 rows)`).
+ * A file comment whose path only spells `rows` (`// tests/rows.test.ts`) stays a file's text. A
+ * block the prose calls the whole file ("Replace `x.test.ts` with the complete contents:") stays
+ * a supplied file, priced as one (#2455).
+ * R96 cellref: the prose before `cli`'s rows block named `reads_test.go`, the task's only path, so
+ * the block became that file's excerpt and the host did not write its 28 rows (436k tokens).
+ */
+function rowsBlock(lines: readonly string[]): boolean {
+  const header = (lines.find((line) => line.trim()) ?? "").trim();
+  const names = [...header.matchAll(/[\w./-]+\.\w+/g)].map((m) => m[0]);
+  if (!names.some((name) => fileKind(requestPath(name.replace(/[.,;:]+$/, ""))) === "test"))
+    return false;
+  return ROWS_HEADER.test(names.reduce((text, name) => text.replace(name, " "), header));
+}
 
 /**
  * Prose that introduces a fenced block as a line of the change, not as the file (#2366): "Old
