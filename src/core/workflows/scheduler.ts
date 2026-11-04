@@ -931,6 +931,7 @@ import {
 type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
 import { linkDependencies, worktreePathRisks } from "./dependency-dirs.js";
+import { docTextSources } from "./doc-text-sources.js";
 import { browserLayoutProbe, type LayoutProbe, layoutVerdict } from "./layout-check.js";
 import { personRequest } from "./person-request.js";
 import { planCostOf, planCostWarning } from "./plan-cost.js";
@@ -19843,16 +19844,17 @@ ${note}`;
   }
   /**
    * The prose and table defects of the documents the run changed (#2549): code spans that copy
-   * an escaped string literal of the spec instead of its value, and table code spans with a bare
-   * `|`. Evidence for the correctness reviewer, as the documented examples are; recorded per
+   * an escaped string literal of the spec, the request or an upstream spec (`docTextSources`,
+   * #2921) instead of its value, and table code spans with a bare `|`. Evidence for the correctness reviewer, as the documented examples are; recorded per
    * snapshot when there is any.
    */
   private documentedText(runId: string, state: RuntimeState, spec: Spec): DocTextProblem[] {
     if (!state.snapshotId) return [];
-    const sources = [
-      ...spec.requirements.map((r) => r.text),
-      ...spec.criteria.flatMap((c) => [c.given, c.when, c.then]),
-    ].join("\n");
+    const sources = docTextSources(
+      spec,
+      statedRequest(state, this.store.requests(runId)),
+      state.baseFiles,
+    );
     const problems = this.changedDocs(runId, state).flatMap((doc) =>
       docTextProblems(doc.path, doc.text, sources),
     );
