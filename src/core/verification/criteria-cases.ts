@@ -280,13 +280,17 @@ export function citedKind(
   return undefined;
 }
 
-/** The names and counts `citedKind` reads, from the plan's tasks and the prescribed rows. */
+/**
+ * The names and counts `citedKind` reads, from the plan's tasks, the prescribed rows and every row
+ * file the request names.
+ */
 function citedNames(task: CaseTask, context: CaseContext): CitedNames {
   const paths = [
     ...[task, ...(context.tasks ?? [])].flatMap((t) =>
       t.writes ? writtenTestPaths({ writes: t.writes }) : [],
     ),
     ...(context.prescribedRows?.keys() ?? []),
+    ...(context.rowFiles ?? []),
   ];
   const counts = [...(context.prescribedRows?.values() ?? [])].map((lines) => lines.length);
   // The code the request fixes: its verbatim files and the planned writes' content (#2646).
@@ -476,6 +480,11 @@ export interface CaseContext {
    * of them declares, named in a criterion's code span, is `cited` as `helper` (#2646).
    */
   suppliedFiles?: readonly string[];
+  /**
+   * Every test file a row block of the request names (`rowBlockFiles`), also another feature's:
+   * a criterion that names one cites a file, not a row's text (#2889).
+   */
+  rowFiles?: readonly string[];
   /**
    * `skip` (`citedCases`, #2531): a case nothing holds whose literal describes rows instead of
    * quoting one (`CriterionCase.cited`) is not demanded, for any task, and the walk record says

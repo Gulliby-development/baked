@@ -874,6 +874,26 @@ const ROWS_HEADER = /\brows?\b/i;
  * found 2 cases in the criterion that cited "the 63 prescribed rows", and T007 was priced 341k to
  * 863k and kept whole. It cost 6.89M tokens over 7 attempts and never finished.
  */
+/**
+ * Every test file a row block of the request names in its header, whether this plan writes it or
+ * not: an initiative's later feature cites an earlier feature's row files by name (R95 windowgate
+ * AC-008: `InputRowsTest`, `LimitsRowsTest`, `ReadsRowsTest`), and such a name is no row's text
+ * (#2889). Which rows a task owns is still `suppliedRows`' answer, for the plan's own paths.
+ */
+export function rowBlockFiles(request: string): string[] {
+  const out = new Set<string>();
+  for (const block of fences(request)) {
+    if (block.diff) continue;
+    const header = (block.lines.find((line) => line.trim()) ?? "").trim();
+    if (!ROWS_HEADER.test(header)) continue;
+    for (const m of header.matchAll(/[\w./-]+\.\w+/g)) {
+      const path = requestPath(m[0].replace(/[.,;:]+$/, ""));
+      if (fileKind(path) === "test") out.add(path);
+    }
+  }
+  return [...out];
+}
+
 export function suppliedRows(request: string, paths: readonly string[]): Map<string, SuppliedRows> {
   const wanted = new Set(paths.map(requestPath).filter((path) => fileKind(path) === "test"));
   const out = new Map<string, SuppliedRows>();

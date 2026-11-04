@@ -2676,6 +2676,22 @@ describe("gate matrix: shared criterion rows (#1597)", () => {
   });
 });
 
+describe("gate matrix: a criterion naming another feature's row file cites a file (#2889)", () => {
+  // R95 windowgate AC-008 named the validation feature's `InputRowsTest`: no row's text.
+  for (const [stack, own, other, name] of [
+    ["bun", "tests/options_rows.test.ts", "tests/input_rows.test.ts", "input_rows"],
+    ["python", "tests/test_options_rows.py", "tests/test_input_rows.py", "test_input_rows"],
+    ["rust", "tests/options_rows.rs", "tests/input_rows.rs", "input_rows"],
+  ] as const) cell(stack, `${stack}: the other feature's row file is a name`, () => {
+    const spec = { criteria: [{ id: "AC-008", requirementIds: ["FR-001"], given: "the earlier rows", when: "tests run",
+      then: `the rows in \`${name}\` still pass`, method: "automated" as const }] };
+    const task = { criterionIds: ["AC-008"], writes: [{ path: own, action: "create" as const }] };
+    const cited = (rowFiles: string[]) => criterionCases(spec, task, { checks: [], rowFiles }).find((c) => c.literal === name)?.cited;
+    expect(cited([])).toBeUndefined();
+    expect(cited([own, other])).toBe("name");
+  });
+});
+
 describe("gate matrix: multi-input criteria cells and escapes (#1614)", () => {
   for (const sample of cellSamples) cell(sample.stack, `${sample.stack}: table inputs compare by value`, async () => {
     const root = project({ [sample.path]: sample.text });
