@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { docTextProblems, escapedLiterals, extractExamples, extractFixtures, missingInput, runDocExamples } from "../src/core/verification/doc-examples.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
+import { docTextSources } from "../src/core/workflows/doc-text-sources.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import { reproEnv } from "../src/core/verification/repro.js";
 
@@ -332,5 +333,27 @@ describe("scenario: slotprompt 0bf6dceb, a README that keeps the spec's string-l
     const raw = ["python r'\\\\d'", "rust r#\"\\\\d\"#", "csharp @\"\\\\d\"", "dart r'\\\\d'", "swift #\"\\\\d\"#", "kotlin \"\"\"\\\\d\"\"\"", "go `\\\\d`"];
     expect(escapedLiterals(raw.join("\n"))).toEqual([]);
     expect(docTextProblems("README.md", "Match two backslashes and a digit with `\\\\d`.", raw.join("\n"))).toEqual([]);
+  });
+});
+
+// Bench round 97 holefill (#2921): the docs feature's README kept `NAME xN default \"DEFAULT\"`, an
+// escape only the upstream reports spec held. Its own spec and the request (plain quotes) did not.
+describe("scenario: R97 holefill, a docs README that keeps an upstream spec's escape (#2921)", () => {
+  const readme = "Defaults show between quote marks, without escaping: `NAME xN default \\\"DEFAULT\\\"`.";
+  const own = { requirements: [{ text: "The README documents every command." }], criteria: [{ given: "the README", when: "read", then: "it lists the commands" }] } as Parameters<typeof docTextSources>[0];
+  const request = 'Print each hole as NAME xN default "DEFAULT".';
+  const reports = { path: "specs/reports/spec.md", content: '- Then it prints "NAME xN default \\"DEFAULT\\"" for a hole with a default.' };
+
+  test("the upstream spec is a source, so the span is found and decoded", () => {
+    const problems = docTextProblems("README.md", readme, docTextSources(own, request, [reports]));
+    expect(problems.map((p) => [p.line, p.kind, p.span, p.suggested])).toEqual([[1, "escaped_literal", 'NAME xN default \\"DEFAULT\\"', 'NAME xN default "DEFAULT"']]);
+  });
+
+  test("the run's own spec and the request alone hold no such literal", () => {
+    expect(docTextProblems("README.md", readme, docTextSources(own, request, []))).toEqual([]);
+  });
+
+  test("a base file outside specs/ is no source", () => {
+    expect(docTextProblems("README.md", readme, docTextSources(own, request, [{ ...reports, path: "notes/spec.md" }]))).toEqual([]);
   });
 });
