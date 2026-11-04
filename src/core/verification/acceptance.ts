@@ -246,8 +246,15 @@ function acceptance(
       throw new WorkflowFault("OUTPUT_INVALID", `Required ${key} review did not pass`);
   if (store.requests(runId).some(blocksRun))
     throw new WorkflowFault("STALE_DECISION", "Pending decisions remain");
-  if (store.findings(runId).some((f) => !["refuted", "resolved"].includes(f.status)))
-    throw new WorkflowFault("OUTPUT_INVALID", "Unresolved findings remain");
+  const unresolved = store
+    .findings(runId)
+    .filter((f) => !["refuted", "resolved"].includes(f.status));
+  // Named, so a stop shows which findings it waits on (#2878).
+  if (unresolved.length)
+    throw new WorkflowFault(
+      "OUTPUT_INVALID",
+      `Unresolved findings remain: ${unresolved.map((f) => `${f.id} ${f.status}`).join(", ")}`,
+    );
   const convergence = state.convergence;
   const limited = limitedCriteria(state);
   for (const criterion of state.spec.criteria) {

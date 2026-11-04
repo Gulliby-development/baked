@@ -161,6 +161,13 @@ export const RuntimeStateSchema = z
     extraCorrectiveTasks: z.number().int().nonnegative().default(0),
     /** Rounds the `assume` rule granted by itself after a contradiction stop (at most one). */
     autoExtensions: z.number().int().nonnegative().default(0),
+    /**
+     * Findings a refused correction left without a repair task, handed over by a person's repair
+     * grant (#2878). The next review or convergence pass retires those it does not raise again.
+     */
+    strandedFindings: z
+      .array(z.object({ id: z.string(), pass: z.enum(["review", "convergence"]) }))
+      .default([]),
     /** Findings a person already decided to repair; the convergence stop does not ask again. */
     decidedFindings: z.array(z.string()).default([]),
     /** Findings the run is accepted with (known limitations). */
