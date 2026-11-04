@@ -10,7 +10,7 @@ import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.j
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
 import { CAPACITY_PROBE, exceedsTestCapacity, multiFileSplit, rowVolumePrice, type SizingReport } from "../src/core/workflows/sizing.js";
-import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayActiveTimes, replayPoolBounds, replayRequestConflicts, replayRowSplits, replayTestSplits, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
+import { type CallRate, chainCosts, corpusHistoryTrace, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayActiveTimes, replayPoolBounds, replayRequestConflicts, replayRowSplits, replayTestSplits, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
 import { REQUEST_CONFLICT_KIND, REQUEST_CONFLICTS_DIR, type RequestConflictRecord, requestConflictDecision, sliceForeignDecision } from "../src/core/workflows/request-conflict.js";
 import { type EdgeRecord, edgeCrashDecision } from "../src/core/verification/edge-inputs.js";
 import { ROOT, traces, traces as corpusTraces } from "./helpers/replay-corpus.js";
@@ -509,6 +509,31 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
       starts.find((b) => b.featureId === "selector-core")?.forecastUsd,
     );
   }, 120000);
+
+  // From round 81 the bench keeps a new app under a short folder (`R85/csp` for cellspan), and the
+  // corpus names its trace after the app: no such store mapped, so R95 gapmeet's estimate read
+  // none of R83 to R92's apps (#2894). A trace that recorded its folder (cellspan's instruction
+  // files, binlayer's check executables) maps by it, one that recorded none (bytemerge's `bym`) by
+  // its app name; R87, R90 and R91 are not in the corpus, R83 cxa and R84 psx are no app it holds.
+  test("a store the bench kept under a short folder replays from its corpus trace (#2894)", () => {
+    const trace = corpusHistoryTrace(ROOT);
+    const mapped = (store: string) => {
+      const path = trace(store);
+      return path ? relative(ROOT, path).replaceAll("\\", "/") : null;
+    };
+    expect(mapped("C:/Project/baked-bench/R85/csp")).toBe("R85/cellspan.sqlite.gz");
+    expect(mapped("C:\\Project\\baked-bench\\R86\\bnl\\.baked\\workflows.sqlite")).toBe("R86/binlayer.sqlite.gz");
+    expect(mapped("C:/Project/baked-bench/R83/bym")).toBe("R83/bytemerge.sqlite.gz");
+    expect(mapped("C:/Project/baked-bench/R92/uwv")).toBe("R92/undoweave.sqlite.gz");
+    expect(mapped("C:/Project/baked-bench/R83/cxa")).toBeNull();
+    // A full app name is its own project, not the update round of it.
+    expect(mapped("C:/Project/baked-bench/R89/namesound")).toBeNull();
+    const [replay] = replayInitiativeStarts(join(ROOT, "R95", "gapmeet.sqlite.gz"), { firstStartOnly: true });
+    const held = ["R83/bym", "R84/ssk", "R85/csp", "R85/tbl", "R86/bnl", "R86/evg", "R88/pkr", "R88/pws", "R92/uwv"];
+    expect(replay!.missingHistory.filter((p) => held.some((s) => p.endsWith(s)))).toEqual([]);
+    // 22 of its 32 stores were missing, 13 are: R81, R82, R83 cxa, R84 psx, R87 and R89 to R91.
+    expect(replay!.missingHistory).toHaveLength(13);
+  });
 });
 
 describe("plan approvals price their tasks at what earlier runs' tasks paid (#1792)", () => {
