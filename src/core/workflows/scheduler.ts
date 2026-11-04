@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, relative } from "node:path";
 import { codeWithoutComments } from "../intelligence/comments.js";
-import { isTestFileAt } from "../intelligence/language-traits.js";
+import { isTestFileAt } from "../intelligence/test-file-at.js";
 import { detectLanguageFromPath } from "../intelligence/types.js";
 import { largerContextModel } from "../llm/context-sizes.js";
 import {
