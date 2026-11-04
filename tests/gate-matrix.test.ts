@@ -6096,14 +6096,24 @@ describe("review and converge gates: a documentation finding marked noRepro (#28
   });
 
   // #2866, R92 tailclose: `enforce` is a mode of the reason, and under it the gates repair the
-  // README finding with the documentation rule; shadow stays the default.
-  test("enforce: the gates repair the README finding; shadow is the default", () => {
+  // README finding with the documentation rule.
+  test("enforce: the gates repair the README finding", () => {
     expect(STOP_REASONS.doc_finding_unrepaired.modes).toContain("enforce");
-    expect(STOP_REASONS.doc_finding_unrepaired.defaultMode).toBe("shadow");
     const enforced = stopMode({ stopModes: { doc_finding_unrepaired: "enforce" } }, "doc_finding_unrepaired") === "enforce";
     expect(reviewGateDecision(gate([doc(), doc({ id: "F2", doc: undefined })]), { doc: enforced })).toEqual(["F1"]);
     expect(convergenceGateDecision(convergence([doc()]), { doc: enforced }).verdicts).toEqual([{ id: "F1", verdict: "repair" }]);
-    expect(stopMode({}, "doc_finding_unrepaired")).toBe("shadow");
+  });
+
+  // Promotion after R92-R93 (3 true would-stops, no false one): a policy that names no mode
+  // repairs the README finding in both gates; an explicit `shadow` keeps the old note.
+  test("default enforce: a policy without stopModes repairs; explicit shadow keeps the note", () => {
+    expect(STOP_REASONS.doc_finding_unrepaired.defaultMode).toBe("enforce");
+    const byDefault = stopMode({}, "doc_finding_unrepaired") === "enforce";
+    expect(byDefault).toBe(true);
+    expect(reviewGateDecision(gate([doc()]), { doc: byDefault })).toEqual(["F1"]);
+    expect(convergenceGateDecision(convergence([doc()]), { doc: byDefault }).verdicts).toEqual([{ id: "F1", verdict: "repair" }]);
+    const shadowed = stopMode({ stopModes: { doc_finding_unrepaired: "shadow" } }, "doc_finding_unrepaired") === "enforce";
+    expect(reviewGateDecision(gate([doc()]), { doc: shadowed })).toEqual([]);
   });
 
   test("docFindingRepairs and gateFinding read documentation files", () => {

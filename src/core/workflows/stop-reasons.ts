@@ -318,13 +318,13 @@ export const STOP_REASONS = {
   doc_finding_unrepaired: {
     label:
       "A reviewer's documentation finding marked noRepro stays a note because its kind is correctness, where a partial one repairs",
-    // Shadow by default until two bench rounds show no false would-stop (#2835, R91 stopcut's
+    // Shadow until R92 and R93 showed 3 true would-stops and no false one (#2835, R91 stopcut's
     // README escape reference with doubled backslashes, R90 holefit docs F1 and F3). Under
-    // `enforce` the review and converge gates repair it as a `partial` finding
-    // (`docFindingRepairs`, #2866, R92 tailclose's README shipped a literal `\n` and doubled
-    // backslashes); its promotion changes only `defaultMode`.
+    // `enforce`, the default since R93, the review and converge gates repair it as a `partial`
+    // finding (`docFindingRepairs`, #2866, R92 tailclose's README shipped a literal `\n` and
+    // doubled backslashes); `shadow` keeps the old note and records the would-stop.
     modes: STOP_MODES,
-    defaultMode: "shadow",
+    defaultMode: "enforce",
   },
   row_block_drift: {
     label:
