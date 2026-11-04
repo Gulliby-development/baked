@@ -1,0 +1,1 @@
+A pull request's own tests run on Windows and macOS before the merge queue, picked by `scripts/pr-targeted-tests.ts` from the files it changes. A test of platform-sensitive code names the module it tests by its import path (or starts its fixture by file name), so the picker finds it; `tests/pr-targeted-tests.test.ts` covers the matching.

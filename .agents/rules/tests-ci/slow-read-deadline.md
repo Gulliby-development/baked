@@ -1,0 +1,1 @@
+A loop of slow reads inside a test (a PowerShell probe, a cold formatter start) ends at a deadline inside the test's limit, never after a count of tries, so a failure reports what it read instead of a timeout (#2265, #2267).

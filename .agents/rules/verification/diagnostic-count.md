@@ -1,0 +1,1 @@
+A diagnostics summary parser in `diagnosticCount` (`src/core/verification/output-counts.ts`) counts errors and warnings only, never infos or hints, sets `errors` where the summary splits them, and adds a cell for the tool to "diagnostics ratchet severity" in `tests/gate-matrix.test.ts`; a parser that counts infos turns a passing check into a correction (#1791).
