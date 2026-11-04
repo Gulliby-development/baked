@@ -512,6 +512,38 @@ function tokenAt(
   return null;
 }
 
+/**
+ * Whether one prescribed row holds a criterion literal that restates a row by its values (#2544,
+ * shadow; the case walk's `RowHold`): the literal's tokens (`rowTokens`) in order within that row,
+ * compared as `tokenAt` compares them, so another quoting, spacing or wrapper of the same row
+ * holds it and values spread over two rows do not. After its first value the row may skip a bare
+ * value the literal leaves out, never a quoted one. R98 spendgate restated each prescribed row as
+ * a tuple, which the walk's matcher read against the rows' joined text as no row (10 false
+ * notes). Null for a literal that is not only such values (two or more, one of them quoted, on one
+ * line, with nothing but punctuation between them): a bare word or flag is no token here, and
+ * `0.(3)` or `1/3` is one number, so the walk's own matcher reads them.
+ */
+export function rowTupleHeld(literal: string, row: string): boolean | null {
+  if (/[\r\n]/.test(literal)) return null;
+  const want = rowTokens(literal);
+  const values = want.length > 1 && want.some((t) => t.quoted);
+  if (!values || /[\p{L}\p{N}_$]/u.test(literal.replace(TOKEN, " "))) return null;
+  const have = rowTokens(row);
+  let from = 0;
+  for (const [i, token] of want.entries()) {
+    let found: number | null = null;
+    for (let k = from; k < have.length && found === null; k++) {
+      found = tokenAt(token, have, k);
+      // Past the first value the row may skip a bare one (a status the literal leaves out), never
+      // a quoted one: `["check"], "b"` is not the row `["check", "--strict"], "b"`.
+      if (found === null && i > 0 && have[k]?.quoted) break;
+    }
+    if (found === null) return false;
+    from = found + 1;
+  }
+  return true;
+}
+
 /** The file tokens from `at` to `end` as one literal, as `tokenAt` joins them. */
 const joinedAt = (tokens: readonly RowToken[], at: number, end: number) =>
   tokens
