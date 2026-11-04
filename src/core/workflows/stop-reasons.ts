@@ -315,6 +315,15 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  doc_finding_unrepaired: {
+    label:
+      "A reviewer's documentation finding marked noRepro stays a note because its kind is correctness, where a partial one repairs",
+    // Shadow only until two bench rounds show no false would-stop (#2835, R91 stopcut's README
+    // escape reference with doubled backslashes, R90 holefit docs F1 and F3); its promotion makes
+    // the review and converge gates repair it as a `partial` finding (`docFindingRepairs`).
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   row_block_drift: {
     label:
       "A test file the run delivered lacks a quoted literal of a row the request prescribes for it, or holds a row beyond them",
@@ -323,6 +332,16 @@ export const STOP_REASONS = {
     // ratdec exact-cli T011 added a 14th row to 13 prescribed); its promotion makes the row a
     // finding of severity high on the file at the checks stage, which a repair task restores from
     // the request's row (or a host removal of the added line).
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  unfinished_row_split: {
+    label:
+      "A test task ended unfinished twice with prescribed rows its file still lacks: the host would split it into slices of the missing rows instead of resuming it whole",
+    // Shadow only (#2458, R78 deltaglue cli T007: 63 prescribed rows, four unfinished ends and
+    // 6.89M tokens, each resume starting over with the whole task). It records
+    // `row-splits/tasks/<task>.json` and the would-stop; starting the slices of the missing rows is
+    // a pull request of its own after a bench round with no false decision.
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },

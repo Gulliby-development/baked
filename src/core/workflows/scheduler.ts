@@ -536,7 +536,7 @@ import {
   type ForkSeed,
   seedBytes,
 } from "./fork-stage.js";
-import { formatWrittenChecks } from "./format-written.js";
+import { formatWrittenChecks, runsFormatter } from "./format-written.js";
 import { formatCommandLine, outputTail } from "./gates.js";
 import {
   HOST_APPLY_DIR,
@@ -825,6 +825,7 @@ import {
   UNFINISHED_BLOCK_PREFIX,
   uncommittedEdits,
 } from "./rollback.js";
+import { ROW_SPLIT_DIR, ROW_SPLIT_KIND, rowSplitRecord, rowSplitSummary } from "./row-split.js";
 import { runSubject } from "./run-title.js";
 import {
   type AgentProfile,
@@ -931,6 +932,7 @@ import {
   type ConvergenceVerdict,
   convergenceGateCrashKeeps,
   convergenceGateDecision,
+  convergenceGateDocKeeps,
   convergenceGateFinding,
   convergenceReproCandidates,
   type GateFinding,
@@ -942,6 +944,7 @@ import {
   reviewGateCandidates,
   reviewGateCrashKeeps,
   reviewGateDecision,
+  reviewGateDocKeeps,
 } from "./review-gate.js";
 import {
   applyRevision,
@@ -3573,6 +3576,13 @@ export class WorkflowScheduler {
                 gatePath,
                 convergenceGateCrashKeeps(gate),
                 crashes,
+              );
+              this.docFindingWouldStops(
+                runId,
+                policy,
+                gatePath,
+                convergenceGateDocKeeps(gate),
+                review.findings,
               );
               const verdictOf = new Map(decision.verdicts.map((v) => [v.id, v.verdict]));
               const ofVerdict = (verdict: ConvergenceVerdict) =>
@@ -10652,7 +10662,65 @@ ${note}`;
         ...(failedChecks.length ? { failedChecks } : {}),
       }),
     );
-    return this.recordUnfinishedRepeat(runId, policy, stepId, taskId, result.unresolved);
+    const repeat = this.recordUnfinishedRepeat(runId, policy, stepId, taskId, result.unresolved);
+    this.recordRowSplit(runId, policy, taskId);
+    return repeat;
+  }
+  /**
+   * Records whether the host would split a test task that ended unfinished again into slices of
+   * the prescribed rows its file still lacks (`rowSplitRecord`, #2458), at each unfinished end
+   * after `recordUnfinishedRepeat` counted it, and the `unfinished_row_split` would-stop when it
+   * would. Shadow only: the resume takes the whole task as before, and a failure to read never
+   * touches the run.
+   */
+  private recordRowSplit(runId: string, policy: RunPolicy, taskId: string): void {
+    try {
+      const state = this.store.state(runId);
+      const task = state.graph?.tasks.find((t) => t.id === taskId);
+      if (!task) return;
+      const ends = this.store
+        .artifacts(runId)
+        .filter((a) => a.logical_path === `${REPEAT_TASKS_DIR}${taskId}.json`)
+        .filter((a) => this.repeatRecordOf(runId, a.id)?.end === "unfinished").length;
+      if (!ends) return;
+      const root = runRoot(this.store.workspace, state);
+      const record = rowSplitRecord(
+        task,
+        state.requestText || state.prompt,
+        ends,
+        (path) => {
+          try {
+            return readFileSync(workspacePath(root, path), "utf8");
+          } catch {
+            return null;
+          }
+        },
+        policy,
+      );
+      if (!record) return;
+      this.store.artifact(
+        runId,
+        ROW_SPLIT_KIND,
+        `${ROW_SPLIT_DIR}${taskId}.json`,
+        canonical(record),
+      );
+      const mode = stopMode(policy, "unfinished_row_split");
+      if (record.decision !== "split" || mode === "enforce") return;
+      recordWouldStop(this.store, runId, {
+        reason: "unfinished_row_split",
+        mode,
+        key: `task-${taskId}`,
+        summary: rowSplitSummary(record),
+        inputs: {
+          taskId,
+          path: record.path,
+          ends: record.ends,
+          rows: record.rows,
+          missing: record.missing.length,
+          slices: record.slices.map((slice) => slice.length),
+        },
+      });
+    } catch {}
   }
   /**
    * Records the failing checks of a task's unfinished end (`repeats/tasks/<task>.json`, #2437)
@@ -16378,6 +16446,32 @@ ${note}`;
     }
   }
   /**
+   * The `doc_finding_unrepaired` would-stops (#2835): documentation findings marked `noRepro` that
+   * the review or converge gate kept notes for their kind, where a `partial` one repairs (R91
+   * stopcut's README escapes with doubled backslashes). Shadow: the gate's decision is unchanged.
+   */
+  private docFindingWouldStops(
+    runId: string,
+    policy: RunPolicy,
+    gatePath: string,
+    keeps: readonly string[],
+    findings: readonly Review["findings"][number][],
+  ): void {
+    const mode = stopMode(policy, "doc_finding_unrepaired");
+    if (mode === "enforce") return;
+    for (const findingId of keeps) {
+      const finding = findings.find((f) => f.id === findingId);
+      if (!finding) continue;
+      recordWouldStop(this.store, runId, {
+        reason: "doc_finding_unrepaired",
+        mode,
+        key: `${gatePath}#${findingId}`,
+        summary: `Documentation finding ${findingId} (${finding.kind}, noRepro) on ${finding.file ?? "its file"} stays a note for its kind: as a partial finding it would start a correction`,
+        inputs: { findingId, kind: finding.kind, file: finding.file ?? null },
+      });
+    }
+  }
+  /**
    * The edge-input probe of a planned source task (#1808), once after it settled without
    * failures: the `edge-cases` profile is shown the task's criteria, files and the edge taxonomy
    * of its languages (edge-inputs.ts) and proposes extreme legal inputs; the host runs each
@@ -17038,7 +17132,8 @@ ${note}`;
    * `decision.would_rerun` and returns null, so the failure opens its correction as before. Under
    * `enforce` it runs the check again, records `checks/<id>/rerun-<evidence>.json` and returns the
    * second result: a pass makes the first an inconclusive flake that opens nothing, a second
-   * failure opens the correction as before. Null when the rule does not apply.
+   * failure opens the correction as before. Null when the rule does not apply, and for a check
+   * with a `fix` command or one that runs a formatter (#2829).
    */
   private async silentRerun<R>(
     runId: string,
@@ -17048,10 +17143,14 @@ ${note}`;
     first: { status: string; evidenceId: string; output?: string; reason?: string },
     again: () => Promise<R & { status: string; evidenceId: string; reason?: string }>,
   ): Promise<R | null> {
+    // A check with a fixer, or one that runs a formatter, fails by printing a diff or a file list
+    // that names no failure word; its fixer is the host's answer to it, not a second run (#2829).
     if (
       !check.required ||
       first.status !== "failed" ||
       first.reason !== "exit" ||
+      check.fix !== undefined ||
+      runsFormatter(check) ||
       !silentFailure(first.output ?? "")
     )
       return null;
@@ -19773,6 +19872,13 @@ ${note}`;
           ),
         );
         this.reproCrashWouldStops(runId, policy, gatePath, reviewGateCrashKeeps(gate), crashes);
+        this.docFindingWouldStops(
+          runId,
+          policy,
+          gatePath,
+          reviewGateDocKeeps(gate),
+          result.findings,
+        );
         const blocking = result.findings.filter((f) => decided.has(f.id));
         const repaired = new Set(blocking.map((f) => f.id));
         addReviewNotes(

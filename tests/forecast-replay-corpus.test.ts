@@ -10,7 +10,7 @@ import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.j
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
 import { CAPACITY_PROBE, exceedsTestCapacity, multiFileSplit, rowVolumePrice, type SizingReport } from "../src/core/workflows/sizing.js";
-import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayActiveTimes, replayPoolBounds, replayRequestConflicts, replayTestSplits, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
+import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayActiveTimes, replayPoolBounds, replayRequestConflicts, replayRowSplits, replayTestSplits, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
 import { REQUEST_CONFLICT_KIND, REQUEST_CONFLICTS_DIR, type RequestConflictRecord, requestConflictDecision, sliceForeignDecision } from "../src/core/workflows/request-conflict.js";
 import { type EdgeRecord, edgeCrashDecision } from "../src/core/verification/edge-inputs.js";
 import { ROOT, traces, traces as corpusTraces } from "./helpers/replay-corpus.js";
@@ -71,6 +71,7 @@ interface Accepted {
   newWouldFinishes?: number;
   newRowBlockDrifts?: number;
   newRowBlockMoves?: number;
+  newRowSplits?: number;
   newApprovalDeclines?: number;
   newAutoApprovals?: number;
   reason: string;
@@ -132,6 +133,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newWouldFinishes: run.newWouldFinishes,
           newRowBlockDrifts: run.newRowBlockDrifts,
           newRowBlockMoves: run.newRowBlockMoves,
+          newRowSplits: run.newRowSplits,
         }).toEqual({
           run: run.runId,
           newStops: allowed?.newStops ?? 0,
@@ -167,6 +169,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newWouldFinishes: allowed?.newWouldFinishes ?? 0,
           newRowBlockDrifts: allowed?.newRowBlockDrifts ?? 0,
           newRowBlockMoves: allowed?.newRowBlockMoves ?? 0,
+          newRowSplits: allowed?.newRowSplits ?? 0,
         });
       }
       // Run states before R52 counted the host's own test splits in `hostSplitTasks`, which the
@@ -664,6 +667,23 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
     }
   }, 120000);
 
+  test("#2458: R78 deltaglue cli T007 ended unfinished four times; the trace predates the split record, R79 chunks T003 once", () => {
+    // `repeats/tasks/T007.json` holds four unfinished ends (#2437) and no `row-splits/` record:
+    // the task is a boundary without a decision, which a re-exported round with the record decides.
+    const deltaglue = openTrace(join(ROOT, "R78/deltaglue.sqlite.gz"));
+    try {
+      expect(replayRowSplits(deltaglue.store, "4ee1c56f-52c4-4996-b90b-225ed96b111e")).toEqual([{ taskId: "T007", ends: 4, recorded: null, replayed: null, slices: null }]);
+    } finally {
+      deltaglue.dispose();
+    }
+    // One unfinished end is no candidate.
+    const chunks = openTrace(join(ROOT, "R79/deltaglue.sqlite.gz"));
+    try {
+      expect(replayRowSplits(chunks.store, "a0c95ebb-9a5e-4007-9280-4826c1121e64")).toEqual([]);
+    } finally {
+      chunks.dispose();
+    }
+  }, 120000);
   test("a multi-file task splits as before unless all its files are docs or text: the README and LICENSE tasks no longer split (#2649)", () => {
     // Every recorded non-test, non-supplied task of two or more files, decided again by
     // `multiFileSplit` on its recorded estimate and the paths of the plan sizing priced.
