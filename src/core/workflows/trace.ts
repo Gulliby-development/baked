@@ -27,6 +27,7 @@ import {
   firstByteDeadline,
   providerFirstByteMs,
 } from "../llm/provider-health.js";
+import { streamOutputDecision } from "../llm/providers/output-limit.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { replayUnselectedTests } from "../verification/check-runner.js";
@@ -219,6 +220,7 @@ import {
   type RequestConflictRecord,
   type RequestConflictRule,
   requestConflictDecision,
+  sliceForeignDecision,
 } from "./request-conflict.js";
 import {
   CONVERGENCE_GATE_DIR,
@@ -251,6 +253,14 @@ import {
   type RowRestoreRule,
   rowRestoreDecision,
 } from "./row-restore.js";
+import {
+  MIN_UNFINISHED_ENDS,
+  ROW_SPLIT_KIND,
+  type RowSplitRule,
+  type RowSplitVerdict,
+  rowSplitDecision,
+  rowSplitRecords,
+} from "./row-split.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { NativeWorkflowService } from "./service.js";
 import {
@@ -343,6 +353,8 @@ const KEPT_ARTIFACTS = new Set([
   TEST_CAP_KIND,
   // Each checks-stage row block comparison: per prescribed row its literal counts, no text (#2486).
   ROW_BLOCK_KIND,
+  // Each unfinished end's split decision of a rows test task: row numbers and counts, no text (#2458).
+  ROW_SPLIT_KIND,
   // Each failing check's route with a miscounted byte run: files, bytes off, no text (#2515).
   ROW_RUN_KIND,
   // Each review's gate: the findings' labels and repro outcomes, no claims (#1715).
@@ -937,6 +949,10 @@ export interface RunReplay {
   firstByte: FirstByteBoundary[];
   /** Calls the current deadline would end as an outage that got their answer in the recording. */
   newFirstByteStops: number;
+  /** Each step a stream guard watched against the current rule (`stream_output_limit`, #2660). */
+  streamOutputs: StreamOutputBoundary[];
+  /** Steps the current rule stops (or records a would-stop for) that the recording passed. */
+  newStreamOutputStops: number;
   /** Each planned test task of the run's sizing reports against the current split rule (#1789). */
   testSplits: TestSplitBoundary[];
   /** Test tasks the current rule splits that the recorded sizing kept whole. */
@@ -1053,6 +1069,66 @@ export interface RunReplay {
   newRowBlockDrifts: number;
   /** File rows the current move rule says are added or duplicated that the recording did not (#2503). */
   newRowBlockMoves: number;
+  /** Each rows test task that ended unfinished, with its split decision (#2458). */
+  rowSplits: RowSplitBoundary[];
+  /** Recorded split decisions the current rule turns from resume into split (#2458). */
+  newRowSplits: number;
+}
+
+export interface RowSplitBoundary {
+  taskId: string;
+  /** The task's unfinished ends in `repeats/tasks/<task>.json` (#2437). */
+  ends: number;
+  /** The recorded decision; null for a task with no record (a trace before #2458). */
+  recorded: RowSplitVerdict["decision"] | null;
+  /** The current rule's decision on the recorded inputs; null without a record. */
+  replayed: RowSplitVerdict["decision"] | null;
+  /** Slices recorded and replayed; null without a record. */
+  slices: { recorded: number; replayed: number } | null;
+}
+
+/**
+ * Every split decision a run recorded at a task's unfinished end (`row-splits/tasks/<task>.json`,
+ * #2458), decided again from its inputs (ends, owned and missing rows, their characters, the
+ * cap), and every task with `MIN_UNFINISHED_ENDS` unfinished ends and no record (a trace before
+ * it, or a task without prescribed rows) as a boundary without a decision. Which rows a file holds
+ * reads text a trace does not keep, so a change to that is covered by
+ * `tests/workflow-scenario-unfinished-row-split.test.ts`, not replayed.
+ */
+export function replayRowSplits(
+  store: WorkflowStore,
+  runId: string,
+  decide: RowSplitRule = rowSplitDecision,
+): RowSplitBoundary[] {
+  const ends = new Map<string, number>();
+  for (const artifact of store.artifacts(runId)) {
+    if (artifact.kind !== REPEAT_KIND || !artifact.logical_path.startsWith(REPEAT_TASKS_DIR))
+      continue;
+    try {
+      const record = JSON.parse(store.readArtifact(runId, artifact.id)) as RepeatRecord;
+      if (record.end === "unfinished") ends.set(record.taskId, (ends.get(record.taskId) ?? 0) + 1);
+    } catch {}
+  }
+  const records = new Map(rowSplitRecords(store, runId).map((r) => [r.taskId, r]));
+  const tasks = [...new Set([...records.keys(), ...ends.keys()])].sort();
+  return tasks.flatMap((taskId): RowSplitBoundary[] => {
+    const record = records.get(taskId);
+    const count = record?.ends ?? ends.get(taskId) ?? 0;
+    if (!record)
+      return count >= MIN_UNFINISHED_ENDS
+        ? [{ taskId, ends: count, recorded: null, replayed: null, slices: null }]
+        : [];
+    const verdict = decide(record);
+    return [
+      {
+        taskId,
+        ends: count,
+        recorded: record.decision,
+        replayed: verdict.decision,
+        slices: { recorded: record.slices.length, replayed: verdict.slices.length },
+      },
+    ];
+  });
 }
 
 export interface RowBlockBoundary {
@@ -2093,6 +2169,11 @@ export interface RequestConflictBoundary {
   report: number;
   recorded: RequestConflictDecision;
   replayed: RequestConflictDecision;
+  /**
+   * Whether the slice-foreign rule settles the report (#2476), recorded and replayed; false for a
+   * record from before #2476, which holds no slice inputs.
+   */
+  sliceForeign: { recorded: boolean; replayed: boolean };
 }
 
 /**
@@ -2125,12 +2206,22 @@ export function replayRequestConflicts(
         criterionIds: record.criterionIds ?? [],
         reaudit: record.reaudit ?? null,
         reauditedBefore: record.reauditedBefore ?? false,
+        ...(record.slice ? { slice: record.slice } : {}),
       };
       // The re-audit is a step of the decision: with its verdicts recorded, ask the rule with them.
       const first = decide({ ...input, reaudit: null });
       const replayed = first === "reaudit" && input.reaudit !== null ? decide(input) : first;
       return [
-        { taskId: record.taskId, report: record.report, recorded: record.decision, replayed },
+        {
+          taskId: record.taskId,
+          report: record.report,
+          recorded: record.decision,
+          replayed,
+          sliceForeign: {
+            recorded: record.sliceForeign === true,
+            replayed: sliceForeignDecision(input, replayed),
+          },
+        },
       ];
     });
 }
@@ -2873,7 +2964,8 @@ export function replayFirstBytes(
   const boundaries = new Map<string, FirstByteBoundary[]>(runIds.map((runId) => [runId, []]));
   for (const { runId, attemptId, model, call, index, estimated } of calls) {
     // A refused call (a 429, say) answered before any deadline; it is the retry ladder's, not this.
-    if (call.status !== undefined) continue;
+    // So is one that ended in a provider error, such as a model at capacity (#2820).
+    if (call.status !== undefined || call.failure === "error") continue;
     const limitMs =
       adaptive && call.limitMs !== undefined
         ? adaptive(history, providerFirstByteMs(call.provider, call), model, call)
@@ -2894,6 +2986,67 @@ export function replayFirstBytes(
       recorded: call.firstByteMs === null ? "stop" : "pass",
       replayed: replayed ? "stop" : "pass",
     });
+  }
+  return boundaries;
+}
+
+/** The stream guard's rule (#2660); `streamOutputDecision` unless a test passes another. */
+export type StreamOutputRule = typeof streamOutputDecision;
+
+/** A step a stream guard watched (`outputGuard` in its usage record), against the current rule. */
+export interface StreamOutputBoundary {
+  attemptId: string;
+  /** The step's index in its attempt. */
+  step: number;
+  mode: string;
+  maxOutputTokens: number;
+  streamedChars: number;
+  /** `stop` for a recorded `would_stop` or `stopped`. */
+  recorded: "pass" | "stop";
+  replayed: "pass" | "stop";
+}
+
+/**
+ * Every step of a run whose provider guarded its stream (`steps[].outputGuard` in
+ * `attempts/*\/usage.json`, Codex app-server, #2660), decided again from its limit and streamed
+ * characters. The current factor is the rule's, not the recorded one, so a change of the factor
+ * shows here. Traces before #2660 record none.
+ */
+export function replayStreamOutputs(
+  store: WorkflowStore,
+  runId: string,
+  rule: StreamOutputRule = streamOutputDecision,
+): StreamOutputBoundary[] {
+  const attempts = store.connection
+    .query("SELECT id FROM attempts WHERE run_id=? ORDER BY started_at, rowid")
+    .all(runId) as { id: string }[];
+  const boundaries: StreamOutputBoundary[] = [];
+  for (const attempt of attempts) {
+    const artifact = store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`);
+    if (!artifact) continue;
+    let usage: Pick<AttemptUsageRecord, "steps">;
+    try {
+      usage = JSON.parse(store.readArtifact(runId, artifact.id)) as typeof usage;
+    } catch {
+      continue;
+    }
+    for (const [step, entry] of (usage.steps ?? []).entries()) {
+      const guard = entry.outputGuard;
+      if (!guard || typeof guard.maxOutputTokens !== "number") continue;
+      const { over } = rule({
+        maxOutputTokens: guard.maxOutputTokens,
+        streamedChars: guard.streamedChars,
+      });
+      boundaries.push({
+        attemptId: attempt.id,
+        step,
+        mode: guard.mode,
+        maxOutputTokens: guard.maxOutputTokens,
+        streamedChars: guard.streamedChars,
+        recorded: guard.decision === "pass" ? "pass" : "stop",
+        replayed: over ? "stop" : "pass",
+      });
+    }
   }
   return boundaries;
 }
@@ -2978,7 +3131,10 @@ export function replayStallLadder(
     }
     const last = usage.calls?.at(-1);
     // A stall, or a turn that finished with no usable answer (#1957), which climbs the same way.
-    const stalled = !!last && last.firstByteMs === null && last.status === undefined;
+    // A call that ended in a provider error (the model at capacity) is the retry's, not a stall
+    // (#2820); a call recorded before its failure kind was is read by its timing alone.
+    const stalled =
+      !!last && last.firstByteMs === null && last.status === undefined && last.failure !== "error";
     if (attempt.status !== "failed" || (!stalled && usage.lostAnswer === undefined)) continue;
     const entry =
       (stage ? routing.stages?.[stage] : undefined) ??
@@ -3886,6 +4042,11 @@ export function replayInitiativeStarts(
     /** Sets the initiative's `sizing.recencyHalfLife`, to backtest the weighting (#2150). */
     recencyHalfLife?: number;
     /**
+     * Sets the initiative's `sizing.fewPathPrice` (#2640): `false` replays the size pools without
+     * the few-path share, which is on by default (#2893), to backtest it.
+     */
+    fewPathPrice?: boolean;
+    /**
      * Sets entries of the initiative's base policy `stopModes`, to replay a round at the mode it
      * ran in: a round before #2245 held open runs at their limits (`initiative-plan-charge` in
      * shadow), and a replay without this entry takes the current default.
@@ -3933,6 +4094,7 @@ export function replayInitiativeStarts(
       budgetAtStart: options.budgetAtStart !== false,
       moments: options.moments ?? [],
       ...(options.recencyHalfLife ? { recencyHalfLife: options.recencyHalfLife } : {}),
+      ...(options.fewPathPrice !== undefined ? { fewPathPrice: options.fewPathPrice } : {}),
       ...(options.stopModes ? { stopModes: options.stopModes } : {}),
       ...(options.planChargeExpected ? { planChargeExpected: options.planChargeExpected } : {}),
       firstStartOnly: options.firstStartOnly === true,
@@ -4046,6 +4208,7 @@ function replayStarts(
     budgetAtStart,
     moments,
     recencyHalfLife,
+    fewPathPrice,
     stopModes,
     planChargeExpected,
     firstStartOnly,
@@ -4053,6 +4216,7 @@ function replayStarts(
     budgetAtStart: boolean;
     moments: number[];
     recencyHalfLife?: number;
+    fewPathPrice?: boolean;
     stopModes?: RunPolicy["stopModes"];
     planChargeExpected?: PlanChargeExpected;
     firstStartOnly: boolean;
@@ -4077,7 +4241,7 @@ function replayStarts(
       .get(initiativeId) as { settings_json: string; decompose_run_id: string | null };
     const settings = JSON.parse(row.settings_json) as {
       basePolicy?: {
-        sizing?: { historyStores?: string[]; recencyHalfLife?: number };
+        sizing?: { historyStores?: string[]; recencyHalfLife?: number; fewPathPrice?: boolean };
         stopModes?: RunPolicy["stopModes"];
         rowFileWrite?: RunPolicy["rowFileWrite"];
       };
@@ -4086,10 +4250,18 @@ function replayStarts(
     // trace keeps no request text: the blocks are restored from the trace's own records first.
     if (settings.basePolicy?.rowFileWrite === "on") restoreRowBlocks(db, initiativeId);
     const missingHistory: string[] = [];
-    if (recencyHalfLife || stopModes) {
+    if (recencyHalfLife || fewPathPrice !== undefined || stopModes) {
       settings.basePolicy = {
         ...settings.basePolicy,
-        ...(recencyHalfLife ? { sizing: { ...settings.basePolicy?.sizing, recencyHalfLife } } : {}),
+        ...(recencyHalfLife || fewPathPrice !== undefined
+          ? {
+              sizing: {
+                ...settings.basePolicy?.sizing,
+                ...(recencyHalfLife ? { recencyHalfLife } : {}),
+                ...(fewPathPrice !== undefined ? { fewPathPrice } : {}),
+              },
+            }
+          : {}),
         ...(stopModes ? { stopModes: { ...settings.basePolicy?.stopModes, ...stopModes } } : {}),
       };
       db.run("UPDATE initiatives SET settings_json=? WHERE id=?", [
@@ -4928,6 +5100,8 @@ function replayRun(
   RunReplay,
   | "firstByte"
   | "newFirstByteStops"
+  | "streamOutputs"
+  | "newStreamOutputStops"
   | "testSplits"
   | "newTestSplits"
   | "stallLadder"
@@ -4983,6 +5157,8 @@ function replayRun(
   | "rowBlocks"
   | "newRowBlockDrifts"
   | "newRowBlockMoves"
+  | "rowSplits"
+  | "newRowSplits"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -5189,6 +5365,8 @@ export function replayTrace(
   path: string,
   options: {
     firstByteLimit?: FirstByteLimit;
+    /** Decides each guarded step's streamed output again (#2660); the current rule by default. */
+    streamOutputRule?: StreamOutputRule;
     /** The adaptive deadline's rule (#2041); null replays every call on `firstByteLimit`. */
     adaptiveFirstByte?: AdaptiveFirstByteRule | null;
     shareGate?: ShareGate;
@@ -5235,6 +5413,8 @@ export function replayTrace(
     rowBlockRule?: RowBlockRule;
     /** Places each recorded file row against its block again (#2503); the current rule by default. */
     rowMoveRule?: RowMoveRule;
+    /** Decides each recorded unfinished-end split again (#2458); the current rule by default. */
+    rowSplitRule?: RowSplitRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -5258,6 +5438,10 @@ export function replayTrace(
       runIds,
       options.firstByteLimit,
       options.adaptiveFirstByte === undefined ? adaptiveDeadline : options.adaptiveFirstByte,
+    );
+    // Usage records too: the forecast replay removes later attempts' artifacts.
+    const guarded = new Map(
+      runIds.map((runId) => [runId, replayStreamOutputs(store, runId, options.streamOutputRule)]),
     );
     const splits = new Map(
       runIds.map((runId) => [runId, replayTestSplits(store, runId, options.testSplit)]),
@@ -5375,9 +5559,13 @@ export function replayTrace(
         replayRowBlocks(store, runId, options.rowBlockRule, options.rowMoveRule),
       ]),
     );
+    const rowSplitReplays = new Map(
+      runIds.map((runId) => [runId, replayRowSplits(store, runId, options.rowSplitRule)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
+      const streamOutputs = guarded.get(runId) ?? [];
       const replay = replayRun(store, runId, options.callRate) ?? {
         runId,
         featureId: store.run(runId).feature_id,
@@ -5416,9 +5604,11 @@ export function replayTrace(
       const unselectedTests = unselected.get(runId) ?? [];
       const attemptCheckpoints = checkpoints.get(runId) ?? [];
       const rowBlocks = rowBlockReplays.get(runId) ?? [];
+      const rowSplits = rowSplitReplays.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
+        !streamOutputs.length &&
         !testSplits.length &&
         !stallLadder.length &&
         !policyRefusals.length &&
@@ -5444,7 +5634,8 @@ export function replayTrace(
         !activeTimes.length &&
         !unselectedTests.length &&
         !attemptCheckpoints.length &&
-        !rowBlocks.length
+        !rowBlocks.length &&
+        !rowSplits.length
       )
         continue;
       runs.push({
@@ -5452,6 +5643,10 @@ export function replayTrace(
         firstByte,
         newFirstByteStops: firstByte.filter((b) => b.replayed === "stop" && b.recorded === "pass")
           .length,
+        streamOutputs,
+        newStreamOutputStops: streamOutputs.filter(
+          (b) => b.replayed === "stop" && b.recorded === "pass",
+        ).length,
         testSplits,
         newTestSplits: testSplits.filter((b) => b.replayed === "split" && b.recorded === "whole")
           .length,
@@ -5546,6 +5741,9 @@ export function replayTrace(
           const replayed = [...b.moves.replayed.added, ...b.moves.replayed.duplicated];
           return n + replayed.filter((line) => !recorded.includes(line)).length;
         }, 0),
+        rowSplits,
+        newRowSplits: rowSplits.filter((b) => b.replayed === "split" && b.recorded === "resume")
+          .length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);

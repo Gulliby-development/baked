@@ -725,6 +725,19 @@ function correctionRoot(state: RuntimeState, taskId: string): string {
 }
 
 /**
+ * The remedies of a finding whose deliverable no approved task may write (#2886): re-plan so the
+ * plan approves a path for it, revise the package, or fork the run.
+ */
+const unwritableAdvice = (runId: string, message: string, findingId: string, kind: string) =>
+  recoveryAdvice(
+    message,
+    `Finding ${findingId} needs a ${kind} file no approved task may write.`,
+    { action: "replan", runId },
+    { action: "revise", runId },
+    { action: "fork", runId },
+  );
+
+/**
  * Adds corrective tasks for findings. `scope: "task"` is a correction a task's own failed checks
  * start during the implement stage: it is bounded by `maxTaskRepairs` per chain of corrections
  * and does not spend a repair round, which counts checks-stage passes (cfgtrace 276e4858: two
@@ -758,11 +771,12 @@ export function appendCorrections(
     const paths = state.rootGraph.tasks.flatMap((task) =>
       task.writes.filter((write) => write.action !== "delete").map((write) => write.path),
     );
-    if (kind && !canHold(paths, kind))
-      throw new WorkflowFault(
-        "INPUT_CHANGED",
-        `Finding ${finding.id} needs a writable ${kind} path, but the approved tasks have none. Re-plan to approve its target or assign an initiative owner.`,
-      );
+    if (kind && !canHold(paths, kind)) {
+      const message = `Finding ${finding.id} needs a writable ${kind} path, but the approved tasks have none. Re-plan to approve its target or assign an initiative owner.`;
+      throw new WorkflowFault("INPUT_CHANGED", message, {
+        recovery: unwritableAdvice(runId, message, finding.id, kind),
+      });
+    }
   }
   const run = store.run(runId);
   const taskLevel = kind === "repair" && scope === "task";
@@ -869,6 +883,15 @@ export function appendCorrections(
           scope: kind === "convergence" ? "convergence" : scope,
           required,
           taskIds: [...new Set(exhaustedChains.map((c) => c.id))],
+          // Recorded and left without a task: a grant hands them to the next pass (#2878).
+          ...(kind === "convergence" || reviewPass
+            ? {
+                stranded: {
+                  pass: kind === "convergence" ? ("convergence" as const) : ("review" as const),
+                  findingIds: findings.map((f) => f.id),
+                },
+              }
+            : {}),
         },
       },
     );
@@ -1167,11 +1190,13 @@ export function appendCorrections(
         )
         .filter((path) => canHold([path], kind));
       for (const path of targets) join(group, path);
-      if (!canHold(writable(group), kind))
-        throw new WorkflowFault(
-          "INPUT_CHANGED",
-          `Finding ${finding.id} has no writable ${kind} target in its corrective task. Re-plan to approve the required deliverable.`,
-        );
+      if (!canHold(writable(group), kind)) {
+        const message = `Finding ${finding.id} has no writable ${kind} target in its corrective task. Re-plan to approve the required deliverable.`;
+        // The stop names its way out (#2886): R95 youngkit-update showed none in `workflow status`.
+        throw new WorkflowFault("INPUT_CHANGED", message, {
+          recovery: unwritableAdvice(runId, message, finding.id, kind),
+        });
+      }
     }
   }
   // A review or convergence finding that is the CHAIN_REWRITE_AT-th of a chain on one symbol or

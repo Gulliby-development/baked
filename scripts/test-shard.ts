@@ -54,6 +54,11 @@ export function planShards(
 if (import.meta.main) await main();
 
 async function main() {
+  // TEST_FILES lists the test files to run, separated by spaces, instead of all of them: a pull
+  // request runs the ones scripts/pr-targeted-tests.ts picks, spread over the same shards by
+  // measured time. In one shard, a pull request that changed the three replay-corpus files (about
+  // 25 minutes on Windows) plus the tests naming its sources passed the job's 30 minutes (#2907).
+  const list = process.env.TEST_FILES?.trim();
   const [index, count] = process.argv.slice(2).map(Number);
   const valid = Number.isInteger(index) && Number.isInteger(count) && index >= 1 && index <= count;
   if (!valid) {
@@ -61,7 +66,7 @@ async function main() {
     process.exit(2);
   }
 
-  const files = testFiles();
+  const files = list ? list.split(/\s+/) : testFiles();
   const table = JSON.parse(readFileSync(join(import.meta.dir, "test-shard-weights.json"), "utf8"));
   const weights = weightsFor(process.platform, table);
   const shard = planShards(files, count, weights)[index - 1].map((file) => `./${file}`);

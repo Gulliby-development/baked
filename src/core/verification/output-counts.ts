@@ -2,6 +2,7 @@ import { type LanguageRecord, none } from "../intelligence/language-records.js";
 import { isTestFile } from "../intelligence/language-traits.js";
 import type { Check } from "../workflows/types.js";
 import { plainOutput } from "./plain-output.js";
+import { inRunWorktrees, type RunRoots, runWorktreePattern } from "./run-roots.js";
 import { normalizeVolatile } from "./volatile.js";
 
 /**
@@ -287,18 +288,25 @@ const TEST_COUNTERS: readonly {
     tool: "jest",
     // jest: "Tests:       1 failed, 2 skipped, 12 passed, 15 total"
     count: (o) => num(o.match(/^Tests:\s+.*?\b(\d+) total\b/m)),
+    // `--passWithNoTests` on a run that found no test prints no summary, only "No tests found,
+    // exiting with code 0", and exits 0 (#2699).
     ran: (o) => {
       const line = o.match(/^Tests:\s+(.*?\b\d+ total)\b/m)?.[1];
-      return line === undefined ? null : (sum(line, /(\d+) (?:passed|failed)\b/g) ?? 0);
+      if (line === undefined) return /^No tests found, exiting with code 0\s*$/m.test(o) ? 0 : null;
+      return sum(line, /(\d+) (?:passed|failed)\b/g) ?? 0;
     },
   },
   {
     tool: "vitest",
     // vitest: "      Tests  12 passed (12)" / "Tests  1 failed | 11 passed | 2 skipped (14)"
     count: (o) => num(o.match(/^\s*Tests\s+.*\((\d+)\)\s*$/m)),
+    // `--passWithNoTests` (or `passWithNoTests: true` in its config) on a run that found no test
+    // file: "No test files found, exiting with code 0", no summary, exit 0 (#2699).
     ran: (o) => {
       const line = o.match(/^\s*Tests\s+(.*)\(\d+\)\s*$/m)?.[1];
-      return line === undefined ? null : (sum(line, /(\d+) (?:passed|failed)\b/g) ?? 0);
+      if (line === undefined)
+        return /^No test files found, exiting with code 0\s*$/m.test(o) ? 0 : null;
+      return sum(line, /(\d+) (?:passed|failed)\b/g) ?? 0;
     },
   },
   {
@@ -422,9 +430,10 @@ const TEST_COUNTERS: readonly {
       const line = o.match(PEST_SUMMARY)?.[1];
       return line === undefined ? null : (sum(line, /(\d+) \w+/g) ?? 0);
     },
+    // A run that found no test prints "  INFO  No tests found." and no summary (#2699).
     ran: (o) => {
       const line = o.match(PEST_SUMMARY)?.[1];
-      if (line === undefined) return null;
+      if (line === undefined) return /^\s*INFO\s+No tests found\.\s*$/m.test(o) ? 0 : null;
       return (
         (sum(line, /(\d+) \w+/g) ?? 0) - (sum(line, /(\d+) (?:skipped|todos?|incomplete)\b/g) ?? 0)
       );
@@ -1311,8 +1320,8 @@ const GROWING_COUNTS: [RegExp, string][] = [
 export const growingCounts = (text: string): string =>
   GROWING_COUNTS.reduce((out, [pattern, to]) => out.replace(pattern, to), text);
 
-export function failureSignature(output: string, root: string): string {
-  const text = withoutWorkspace(output, root)
+export function failureSignature(output: string, root: string, run?: RunRoots): string {
+  const text = withoutWorkspace(output, root, run)
     .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, "<time>")
     .replace(/\d+(\.\d+)?\s*(ms|s|sec|seconds|m)\b/g, "<duration>")
     .replace(/\[\d+(\.\d+)?(ms|s)\]/g, "<duration>")
@@ -1335,19 +1344,26 @@ export function failureSignature(output: string, root: string): string {
  * signature in the check baseline (`shapes`); the `baseline_signature` reason records, in shadow,
  * where it would match and the live one does not.
  */
-export function shapedFailureSignature(output: string, root: string): string {
-  const text = withoutWorkspace(output, root)
+export function shapedFailureSignature(output: string, root: string, run?: RunRoots): string {
+  const text = withoutWorkspace(output, root, run)
     .replaceAll("\r\n", "\n")
     .replaceAll("\r", "\n")
     .replaceAll("\\", "/");
   return withoutCounts(normalizeVolatile(text));
 }
 
-/** The output without colours and with every worktree path of the project as `<root>`. */
-function withoutWorkspace(output: string, root: string): string {
-  const project = root.replace(/[\\/]\.baked[\\/]worktrees[\\/].*$/, "");
-  return plainOutput(output)
-    .replace(WORKTREE_PATH, "<root>")
+/**
+ * The output without colours and with every worktree path of the project as `<root>`. `run` names
+ * the run's worktree directory, which under `workflows.worktreeRoot` has no `.baked/worktrees`
+ * spelling (#2697).
+ */
+function withoutWorkspace(output: string, root: string, run?: RunRoots): string {
+  const project = inRunWorktrees(root, run)
+    ? (run?.workspace ?? root)
+    : root.replace(/[\\/]\.baked[\\/]worktrees[\\/].*$/, "");
+  const others = runWorktreePattern(run, "()<>:");
+  const text = plainOutput(output).replace(WORKTREE_PATH, "<root>");
+  return (others ? text.replace(others, "<root>") : text)
     .split(root)
     .join("<root>")
     .split(project)

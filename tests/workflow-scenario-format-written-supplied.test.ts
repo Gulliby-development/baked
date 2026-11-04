@@ -6,6 +6,7 @@ import { SUPPORTED_LANGUAGES, isNoRow } from "../src/core/intelligence/language-
 import { detectLanguageFromPath } from "../src/core/intelligence/types.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { FILE_FORMATTERS, formatWrittenChecks, rangesWithout } from "../src/core/workflows/format-written.js";
+import { capturePreImage } from "../src/core/workflows/rollback.js";
 import { newId } from "../src/core/workflows/store.js";
 import { suppliesWhole } from "../src/core/workflows/supplied-drift.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
@@ -27,7 +28,8 @@ afterAll(async () => {
   await removeTempDir(bin);
 });
 // A stand-in for `ruff format`: "x=1" is unformatted, "x = 1" formatted. `--range=S-E` formats lines
-// S to E-1 and `--range=S` from line S to the end, as ruff does.
+// S to E-1 and `--range=S` from line S to the end, as ruff does; a range that starts on a lone `)`
+// grows to the statement it closes and joins it onto one line, as ruff does when it fits.
 if (!IS_WIN) {
   writeFileSync(
     join(bin, "ruff"),
@@ -57,9 +59,18 @@ for f in $files; do
     start=\${range%%-*}
     case "$range" in *-*) end=$((\${range#*-} - 1));; esac
   fi
+  # A range that starts on a closing bracket grows to its statement, which is joined (#2910).
+  grown=$(awk -v s="$start" 'NR < s && /\\($/ { open = NR } NR == s { print (/^ *\\)$/ && open) ? open : s; exit }' "$f")
+  [ -n "$grown" ] || grown=$start
   if [ $check = 1 ]; then
+    if [ "$grown" -lt "$start" ]; then echo "Would reformat: $f"; bad=1; fi
     if sed -n "\${start},\${end}p" "$f" | grep -q 'x=1'; then echo "Would reformat: $f"; bad=1; fi
   else
+    if [ "$grown" -lt "$start" ]; then
+      awk -v a="$grown" -v b="$start" 'NR == a { j = $0; next } NR > a && NR <= b { sub(/^ +/, ""); j = j $0; if (NR == b) print j; next } { print }' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+      end=$((end - start + grown))
+      start=$grown
+    fi
     sed "\${start},\${end}{s/x=1;y=2/x = 1\\n    y = 2/;s/x=1/x = 1/;}" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   fi
 done
@@ -129,6 +140,16 @@ describe("the changed lines a request supplies leave the format-written range (#
     expect(rangesWithout([[1, 3]], new Set(), text)).toEqual([[1, 3]]);
   });
 
+  // #2910, R96 ccu: the request supplied a three-line raise; its closing `)` stayed in the range,
+  // and `ruff format --range=147-149` joined the statement onto one line.
+  test("rangesWithout takes the bracket line of a supplied statement of several lines out too", () => {
+    const text = 'x = 1\nraise ValueError(\n    "bad value"\n)\ny = 2\n}\n';
+    expect(rangesWithout([[2, 5]], new Set([2, 3, 4]), text)).toEqual([[5, 5]]);
+    expect(rangesWithout([[2, 4]], new Set([2, 3, 4]), text)).toEqual([]);
+    // A lone bracket line the request also holds still says nothing about who wrote it.
+    expect(rangesWithout([[4, 6]], new Set([4, 6]), text)).toEqual([[4, 6]]);
+  });
+
   // R84 keeplint-update: the request's modify diff added a line over ruff's limit to
   // tests/test_readme.py, `ruff format --range=66-67` rewrapped it, and supplied_drift then
   // reported the file. Every language with a range formatter: an edited file whose changed lines
@@ -163,8 +184,45 @@ describe("the changed lines a request supplies leave the format-written range (#
         rmSync(root, { recursive: true, force: true });
       }
     });
+
+    // #2910: a supplied statement of three lines whose last line is only a closing bracket. With
+    // that line in the range, a formatter that grows a range to the statement rewrites all three.
+    test(`${language}: a supplied statement of several lines leaves the range with its bracket line`, () => {
+      const { files } = JSON.parse(readFileSync(join(fixtures, `${language}.json`), "utf8")) as { files: Record<string, string> };
+      const root = mkdtempSync(join(tmpdir(), "baked-format-supplied-statement-"));
+      try {
+        for (const [path, text] of Object.entries(files)) {
+          mkdirSync(dirname(join(root, path)), { recursive: true });
+          writeFileSync(join(root, path), text);
+        }
+        const path = Object.keys(files).find((p) => detectLanguageFromPath(p) === language && /\w/.test(files[p] ?? ""));
+        if (!path) throw new Error(`no ${language} file`);
+        const before = (files[path] ?? "").replace(/\n*$/, "\n");
+        const statement = STATEMENTS[language] ?? STATEMENTS.default ?? [];
+        const text = `${before}${statement.join("\n")}\n`;
+        writeFileSync(join(root, path), text);
+        const first = before.split("\n").length;
+        const lines = new Set(statement.map((_, i) => first + i));
+        const writes = [{ path, action: "modify" }];
+        const which = (command: string) => `/usr/bin/${command}`;
+        const accepts = () => true;
+        const own = formatWrittenChecks(root, [], writes, which, () => before, accepts);
+        const supplied = formatWrittenChecks(root, [], writes, which, () => before, accepts, { suppliedLines: () => lines });
+        expect(own.some((c) => /-lines/.test(c.id))).toBe(true);
+        expect(supplied.filter((c) => /-lines/.test(c.id))).toEqual([]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   }
 });
+
+// A call statement of three lines that ends in a line with no word, per language.
+const STATEMENTS: Record<string, string[]> = {
+  python: ["raise ValueError(", '    "bad value"', ")"],
+  lua: ["error(", '  "bad value"', ")"],
+  default: ["report(", '  "bad value",', ");"],
+};
 
 describe.skipIf(IS_WIN)("scenario: R81 seqmill-update, ruff format on a create diff the host applied (#2504)", () => {
   async function scenario(prompt: string, content: string, path = "tests/test_new.py", action = "create") {
@@ -185,6 +243,16 @@ describe.skipIf(IS_WIN)("scenario: R81 seqmill-update, ruff format on a create d
         }
         if (request.profile.output === "implementation") {
           mkdirSync(dirname(join(f.root, path)), { recursive: true });
+          // An edit journals the file's content before it, as the edit tools do: the format-written
+          // check holds an edited file to its changed lines against that content.
+          if (action !== "create") {
+            const store = f.service.store;
+            store.transaction(() => {
+              const before = capturePreImage(store, request.runId, join(f.root, path));
+              const id = store.prepareEffect(request.runId, request.attemptId, "file_patch", { path, tool: "edit_file" }, before, null);
+              store.effectStatus(request.runId, id, "applied");
+            });
+          }
           writeFileSync(join(f.root, path), content);
         }
         return out;
@@ -208,6 +276,20 @@ describe.skipIf(IS_WIN)("scenario: R81 seqmill-update, ruff format on a create d
     expect(checks.some((p) => p.includes("ruff-format-supplied"))).toBe(true);
     expect(checks.some((p) => p.includes("ruff-format-written"))).toBe(false);
     expect(drift).toEqual([]);
+  }, 60000);
+
+  // #2910, R96 ccu: the request's diff supplied a three-line raise to an edited file, the model
+  // wrote it and one line of its own, and the range check of the model's line began on the raise's
+  // closing `)`: ruff grew the range to the statement and joined it, and supplied_drift reported
+  // the file on every corrective.
+  test("a supplied statement of several lines in an edited file keeps the request's bytes", async () => {
+    const diff = ["Apply this diff exactly:", "```diff", "--- a/seqmill/old.py", "+++ b/seqmill/old.py", "@@ -1 +1,4 @@", " x = 1", "+raise ValueError(", '+    "bad value"', "+)", "```"].join("\n");
+    const raise = 'x = 1\nraise ValueError(\n    "bad value"\n)\n';
+    const { view, delivered, checks, drift } = await scenario(`Raise on a bad value.\n\n${diff}`, `${raise}x=1\n`, "seqmill/old.py", "modify");
+    expect(view.status).toBe("completed");
+    expect(checks.some((p) => p.includes("ruff-format-lines"))).toBe(true);
+    expect(drift.map((e) => e.payload.reason)).toEqual([]);
+    expect(delivered).toBe(`${raise}x = 1\n`);
   }, 60000);
 
   test("the same file the model writes on its own is still formatted (#1837)", async () => {

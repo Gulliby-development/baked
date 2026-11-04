@@ -1,3 +1,4 @@
+import { activeAccountEnv } from "../account-env.js";
 import type { ProviderDefinition, ProviderModelInfo } from "../types.js";
 import {
   assertCodexReady,
@@ -50,10 +51,10 @@ export const codex: ProviderDefinition = {
     await requestCodexAuth();
   },
   createModel(modelId: string) {
-    assertCodexReady();
+    assertCodexReady(activeAccountEnv("codex"));
     const exec = createCodexLanguageModel(modelId, new CodexCliRunner());
     if (process.env.BAKED_CODEX_TRANSPORT === "exec") return exec;
-    return createCodexNativeLanguageModel(modelId, getDefaultCodexSessions(), exec);
+    return createCodexNativeLanguageModel(modelId, getDefaultCodexSessions, exec);
   },
   async fetchModels() {
     const status = getCodexLoginStatus();
@@ -64,7 +65,7 @@ export const codex: ProviderDefinition = {
   contextWindows: CODEX_CONTEXT_WINDOWS,
   contextWindowOverrides: CODEX_CONTEXT_WINDOW_OVERRIDES,
   checkAvailability: async () => {
-    const status = getCodexLoginStatus();
+    const status = getCodexLoginStatus(activeAccountEnv("codex"));
     return status.installed && status.loggedIn;
   },
 };

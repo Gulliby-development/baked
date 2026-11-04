@@ -1,0 +1,1 @@
+A test that presses Escape in an OpenTUI view waits past the input parser's 20 ms hold for a lone Escape (a `Bun.sleep` inside the same `act`) before it renders or presses another key; `tests/mock-escape-settle.test.ts` fails on one that does not (#2266).

@@ -44,6 +44,16 @@ route with a mock scenario (`?mock=default|empty|start-failure|older|uninitializ
 Find elements by role and accessible name (`getByRole`), as `scripts/smoke.ts` does, not by CSS
 selectors.
 
+`e2e/baked-style.e2e.ts` sweeps every route of `src/renderer/router.ts` (all project sections
+and Settings pages, in the dark and the light theme), every chat settings page and the main
+dialogs: it fails on a control that opens a system popup, a native alert, a renderer error or an
+element that sets `scrollbar-width` or `scrollbar-color` (Chromium then draws the system
+scrollbar and ignores the app's `::-webkit-scrollbar` styles). A new section is swept on its own;
+a new dialog joins its `DIALOGS` list. Each user-facing screen also has a spec of its own flows,
+such as `settings-global.e2e.ts` (telemetry, subscription limits, providers), `projects.e2e.ts`,
+`runs-compare.e2e.ts`, `coordinator-rules.e2e.ts`, `chat-controls.e2e.ts`,
+`diagnostics.e2e.ts`, `memory.e2e.ts`, `attention.e2e.ts` and `initiative-controls.e2e.ts`.
+
 No browser is downloaded: the tests use the installed Google Chrome (`channel: "chrome"`). Set
 `BAKED_E2E_CHROMIUM` to a Chromium executable to use that instead, for example
 `BAKED_E2E_CHROMIUM=/opt/pw-browsers/chromium-1194/chrome-linux/chrome` in a container. A failed

@@ -7,6 +7,7 @@
  * (`mutation-tools.ts`) runs instead and its report maps to the same result. A gate that runs out
  * of its time budget is inconclusive for the mutants it did not run, never a failure.
  */
+import { buildToolRunsTests } from "../check-policy.js";
 import { staticToolOf } from "../static-tools.js";
 import { toolchainCommand } from "../toolchain.js";
 import { isNonCodeLine, maskNonCode } from "./code-mask.js";
@@ -256,28 +257,6 @@ export function isTestCheck(check: { id: string; executable: string; args: strin
   // sbt 2's `testFull` runs every test (#2440).
   return /\b(?:test|tests|testfull|pytest|unittest|vitest|jest|mocha|ava|tap|phpunit|pest|rspec|busted|bats|ctest|nextest)\b/.test(
     text,
-  );
-}
-
-/**
- * For a Maven or Gradle invocation, whether it runs a lifecycle phase or task that includes the
- * tests: `mvn test` or `verify` (also package and install), `gradle test` or `check` (also build),
- * unless the arguments skip them; null for any other program (#844: the mutation gate found no
- * test check in a Maven project checked by `mvn verify`).
- */
-function buildToolRunsTests(tool: string, args: string[]): boolean | null {
-  const phases =
-    tool === "mvn" || tool === "mvnw"
-      ? ["test", "verify", "package", "install"]
-      : tool === "gradle" || tool === "gradlew"
-        ? ["test", "check", "build"]
-        : null;
-  if (!phases) return null;
-  if (!args.some((arg) => phases.includes(arg.toLowerCase().replace(/^:/, "")))) return false;
-  return !args.some(
-    (arg, i) =>
-      /^-D(?:skipTests|maven\.test\.skip)(?:=true)?$/i.test(arg) ||
-      ((arg === "-x" || arg === "--exclude-task") && /^:?test$/i.test(args[i + 1] ?? "")),
   );
 }
 

@@ -34,4 +34,4 @@ Answer with one fenced `json` block and nothing after it:
 - `earlier` reports each finding listed under "Earlier findings on this pull request", by its ID: **fixed**, **still present** or **dismissed**. It is empty when there is no such section. A finding people turned down or answered is not raised again in `findings`.
 - `severity`: **P0** when the missed place breaks a common run (a default toolchain, a supported language's main path, data loss, a blocked run); **P1** when it is a real path the issue's defect reaches; **P2** for an edge path, an incomplete `Languages:` line or a missing test of a listed place.
 - `file` is a repository path and `lines` the lines on the pull request's head (a range, or the diff hunk's lines); when the place is outside the diff, give the symbol's file and the closest lines you can name.
-- `rule` is the checklist item (its bold name) or the AGENTS.md rule the finding falls under, quoted briefly.
+- `rule` is the checklist item (its bold name) or the repository rule (AGENTS.md or a file under `.agents/rules/`) the finding falls under, quoted briefly.

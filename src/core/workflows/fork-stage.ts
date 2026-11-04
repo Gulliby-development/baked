@@ -37,6 +37,24 @@ export function forkStages(definitionJson: string): string[] {
     .map((stage) => stage.id);
 }
 
+/**
+ * The first stage a fork can start at whose kind is the first of `kinds` the definition has
+ * (`checks`, `review`, `converge`), or null when it has none: the stage a refusal's advice names
+ * for a fork that runs that stage again (#2879).
+ */
+export function forkStageOfKind(definitionJson: string, kinds: readonly string[]): string | null {
+  const parsed = parseRunDefinition(definitionJson);
+  const stages: { id: string; kind: string | null }[] =
+    parsed.schemaVersion === 1
+      ? parsed.definition.stages.map((stage) => ({ id: stage.id, kind: stage.kind }))
+      : parsed.definition.stages.map((stage) => ({ id: stage.id, kind: stageKind(stage) }));
+  for (const kind of kinds) {
+    const stage = stages.find((s) => s.kind === kind && FORK_STAGE_KINDS.has(kind));
+    if (stage) return stage.id;
+  }
+  return null;
+}
+
 /** Where a fork that starts at `stageId` begins; refuses a stage before the implementation. */
 export function forkStagePosition(
   definitionJson: string,

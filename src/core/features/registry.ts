@@ -487,6 +487,35 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/providers"],
   },
   {
+    id: "provider-accounts",
+    group: "Models and providers",
+    title: "Several accounts of one provider, chosen per project (Codex, Claude Code)",
+    tui: [
+      "/accounts",
+      "/accounts add",
+      "/accounts login",
+      "/accounts use",
+      "/accounts logout",
+      "/accounts remove",
+      "/limits",
+      "/workflow: new run, Codex and Claude account fields",
+    ],
+    cli: [
+      "baked accounts",
+      "baked login --account",
+      "baked logout --account",
+      "baked workflow run --account",
+      "baked limits",
+    ],
+    api: [
+      "/v1/providers/:id/accounts",
+      "/v1/providers/:id/account",
+      "/v1/workflow/runs: accounts",
+      "/v1/providers/limits: account",
+    ],
+    desktop: ["settings/providers", "project/overview: New run"],
+  },
+  {
     id: "model-picker",
     group: "Models and providers",
     title: "Pick a model from the list",
@@ -1399,6 +1428,17 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/code-quality"],
     cli: notNeeded(
       "quality.rowRunRoute in config.json; the route shows as the test task's corrective",
+    ),
+    api: ["/v1/settings: code-quality page"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
+    id: "conflict-row-reply",
+    group: "Workflow runs",
+    title: "Answer a spec conflict about a prescribed-row test file with the row diff",
+    tui: ["/code-quality"],
+    cli: notNeeded(
+      "quality.conflictRowReply in config.json; the reply shows as the task's settled conflict",
     ),
     api: ["/v1/settings: code-quality page"],
     desktop: ["settings/chat: Code quality page"],

@@ -75,6 +75,8 @@ export interface StartRunInput {
   modelStrict?: boolean;
   /** The run's dollar cap, as `--max-cost-usd`; omitted, the policy's `maxCostUsd` applies. */
   maxCostUsd?: number;
+  /** Labelled provider accounts the run uses instead of the project's, as `--account` (#2303). */
+  accounts?: import("../llm/provider-accounts.js").AccountChoice;
 }
 
 /**

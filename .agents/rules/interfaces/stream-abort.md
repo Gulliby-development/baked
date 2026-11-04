@@ -1,0 +1,1 @@
+A front end that loops over an agent stream treats the AI SDK's `abort` part, or `signal.aborted` after the loop, as an interrupted turn, never only a thrown error: an aborted stream closes normally. In the headless CLI that is `streamTurn` in `src/headless/run.ts`, so Ctrl+C exits 130 and `--timeout` exits 2; `tests/headless-abort-exit.test.ts` drives a real agent (#2810).
