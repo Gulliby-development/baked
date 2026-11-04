@@ -2449,6 +2449,11 @@ export interface StartRequest {
    * without it only the `active` class follows an explicit run model.
    */
   modelStrict?: boolean;
+  /**
+   * The provider accounts this run uses (CLI `--account PROVIDER=ID`, #2303) instead of the
+   * project's; each must exist and be allowed for the project, or the run does not start.
+   */
+  accounts?: import("../llm/provider-accounts.js").AccountChoice;
   /** What blocking questions do in this run (CLI `--clarification MODE`); it overrides the policy. */
   clarification?: ClarificationMode;
   /** What the test-integrity guard does in this run (CLI `--test-integrity MODE`); it overrides the policy. */

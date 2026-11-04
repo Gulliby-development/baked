@@ -209,7 +209,7 @@ export function LimitsPanel({ projectKey }: { projectKey: string }) {
       {limits.state === "ready" ? (
         <div className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(250px,1fr))] gap-3">
           {limits.data.limits.map((p, i) => (
-            <ProviderCard key={p.provider} p={p} now={now} step={i} />
+            <ProviderCard key={`${p.provider}@${p.account?.id ?? ""}`} p={p} now={now} step={i} />
           ))}
         </div>
       ) : (

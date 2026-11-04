@@ -15,7 +15,8 @@ export interface ClaudeCodeLoginStatus {
 export const REQUIRED_CLAUDE_CODE_FLAGS = ["--input-format", "--json-schema", "--tools"] as const;
 
 const STATUS_TTL_MS = 30_000;
-let cachedStatus: { at: number; status: ClaudeCodeLoginStatus } | null = null;
+/** Login states by config dir (`""` for the CLI's own), since each account has its own (#2303). */
+const cachedStatus = new Map<string, { at: number; status: ClaudeCodeLoginStatus }>();
 let cachedFlags: Set<string> | null = null;
 
 /**
@@ -79,14 +80,17 @@ export function parseClaudeCodeAuthStatus(
 
 /** Login state of the local Claude Code CLI, cached briefly because each check spawns it. */
 export function getClaudeCodeLoginStatus(
-  options: { refresh?: boolean } = {},
+  options: { refresh?: boolean; env?: NodeJS.ProcessEnv } = {},
 ): ClaudeCodeLoginStatus {
-  if (!options.refresh && cachedStatus && Date.now() - cachedStatus.at < STATUS_TTL_MS) {
-    return cachedStatus.status;
+  const key = options.env?.CLAUDE_CONFIG_DIR ?? "";
+  const cached = cachedStatus.get(key);
+  if (!options.refresh && cached && Date.now() - cached.at < STATUS_TTL_MS) {
+    return cached.status;
   }
   let status: ClaudeCodeLoginStatus;
   try {
     const result = spawnSync(claudeCodeCommand(), ["auth", "status"], {
+      ...(options.env ? { env: options.env } : {}),
       timeout: 15_000,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -113,12 +117,12 @@ export function getClaudeCodeLoginStatus(
       message: error instanceof Error ? error.message : String(error),
     };
   }
-  cachedStatus = { at: Date.now(), status };
+  cachedStatus.set(key, { at: Date.now(), status });
   return status;
 }
 
 export function invalidateClaudeCodeStatus(): void {
-  cachedStatus = null;
+  cachedStatus.clear();
 }
 
 /** Long flags named in a `--help` text. */
@@ -144,8 +148,9 @@ export function getClaudeCodeFlags(): Set<string> {
   }
 }
 
-export function assertClaudeCodeReady(): void {
-  const status = getClaudeCodeLoginStatus();
+/** `env` is the run's environment, pointing at the account the project uses (#2303). */
+export function assertClaudeCodeReady(env?: NodeJS.ProcessEnv): void {
+  const status = getClaudeCodeLoginStatus(env ? { env } : {});
   if (!status.installed) {
     throw new Error(status.message);
   }
@@ -166,9 +171,10 @@ export interface ClaudeCodeLogoutResult {
   message: string;
 }
 
-export function logoutClaudeCode(): ClaudeCodeLogoutResult {
+export function logoutClaudeCode(env?: NodeJS.ProcessEnv): ClaudeCodeLogoutResult {
   try {
     const result = spawnSync(claudeCodeCommand(), ["auth", "logout"], {
+      ...(env ? { env } : {}),
       timeout: 15_000,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -189,7 +195,10 @@ export function logoutClaudeCode(): ClaudeCodeLogoutResult {
  * Runs `claude auth login`, which opens the browser for the Claude account sign-in, and
  * reports each output line (the sign-in URL among them) through `onLine`.
  */
-export function runClaudeCodeLogin(onLine?: (line: string) => void): {
+export function runClaudeCodeLogin(
+  onLine?: (line: string) => void,
+  env?: NodeJS.ProcessEnv,
+): {
   promise: Promise<void>;
   abort: () => void;
   /**
@@ -199,6 +208,7 @@ export function runClaudeCodeLogin(onLine?: (line: string) => void): {
   submitCode: (code: string) => void;
 } {
   const child = spawn(claudeCodeCommand(), ["auth", "login"], {
+    ...(env ? { env } : {}),
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });

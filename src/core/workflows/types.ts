@@ -593,6 +593,15 @@ export const RuntimeStateSchema = z
      */
     autoApprovalDeclined: z.string().nullable().default(null),
     /**
+     * The provider accounts the run asked for (`--account codex=work`, #2303); every model turn
+     * of the run uses them instead of the project's. Null: the project's accounts.
+     */
+    accounts: z
+      .object({ codex: z.string().optional(), "claude-code": z.string().optional() })
+      .strict()
+      .nullable()
+      .default(null),
+    /**
      * An initiative feature run started under `workflows.planAhead` before every feature it
      * depends on was finished (#1834): its worktree starts from a provisional base and its tasks
      * wait until the initiative moves it to their results (`released`); the run then takes its

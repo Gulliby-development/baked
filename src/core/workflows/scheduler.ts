@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, relative } from "node:path";
 import { codeWithoutComments } from "../intelligence/comments.js";
-import { isTestFileAt } from "../intelligence/language-traits.js";
+import { isTestFileAt } from "../intelligence/test-file-at.js";
 import { detectLanguageFromPath } from "../intelligence/types.js";
 import { largerContextModel } from "../llm/context-sizes.js";
 import {
@@ -1141,6 +1141,7 @@ import {
   removeTaskWorktree,
   runContentCommit,
   runRoot,
+  runRoots,
   userChangesInScope,
   WORKTREES_DIR,
   worktreePath,
@@ -3283,6 +3284,7 @@ export class WorkflowScheduler {
               const touched = this.runChangedPaths(runId, state);
               const repro = (r: Repro, file?: string | null) =>
                 runRepro(this.processes, r, {
+                  run: runRoots(this.store.workspace, state),
                   root: runRoot(this.store.workspace, state),
                   executables,
                   generated: generatedPaths(policy),
@@ -4713,6 +4715,7 @@ export class WorkflowScheduler {
       (repro) => {
         const file = battery.find((c) => c.repro === repro)?.finding.file;
         return runRepro(this.processes, repro, {
+          run: runRoots(this.store.workspace, state),
           root,
           executables,
           generated: generatedPaths(policy),
@@ -4891,6 +4894,7 @@ export class WorkflowScheduler {
     const touched = this.runChangedPaths(runId, state);
     const outcomes = await runReproBattery(cases, (repro) =>
       runRepro(this.processes, repro, {
+        run: runRoots(this.store.workspace, state),
         root,
         executables,
         generated: generatedPaths(policy),
@@ -5245,8 +5249,16 @@ export class WorkflowScheduler {
         );
         if (result.timeout) timeouts[commandKey(check)] = result.timeout.note;
         if (result.status === "failed" && check.required && !result.truncated) {
-          failures[commandKey(check)] = failureSignature(result.output, root);
-          shapes[commandKey(check)] = shapedFailureSignature(result.output, root);
+          failures[commandKey(check)] = failureSignature(
+            result.output,
+            root,
+            runRoots(this.store.workspace, state),
+          );
+          shapes[commandKey(check)] = shapedFailureSignature(
+            result.output,
+            root,
+            runRoots(this.store.workspace, state),
+          );
           failing.push({ check, output: result.output });
         }
         if (
@@ -6117,6 +6129,7 @@ export class WorkflowScheduler {
         const repro = ReproSchema.safeParse(earlier.body.repro);
         if (!repro.success) continue;
         const outcome = await runRepro(this.processes, repro.data, {
+          run: runRoots(this.store.workspace, state),
           root,
           executables,
           generated: generatedPaths(policy),
@@ -6207,7 +6220,7 @@ export class WorkflowScheduler {
     // A failure without output tells nothing about its cause, so it is never matched.
     if (!before) return false;
     const root = runRoot(this.store.workspace, state);
-    const after = failureSignature(output, root);
+    const after = failureSignature(output, root, runRoots(this.store.workspace, state));
     // With `subset`, a failure that only lost diagnostics the baseline had is still that debt (#1913).
     const matched = before === after || (subset && withinBaseline(before, after));
     const shaped = baseline.shapes?.[commandKey(check)];
@@ -6216,7 +6229,9 @@ export class WorkflowScheduler {
         legacy: { before: signatureLines(before), after: signatureLines(after) },
         shaped: {
           before: signatureLines(shaped),
-          after: signatureLines(shapedFailureSignature(output, root)),
+          after: signatureLines(
+            shapedFailureSignature(output, root, runRoots(this.store.workspace, state)),
+          ),
         },
         subset,
       });
@@ -6692,6 +6707,7 @@ export class WorkflowScheduler {
     const writes = task.writes.map((w) => w.path);
     if (!repros.length) return undefined;
     return async (root, signal) => {
+      const run = runRoots(this.store.workspace, this.store.state(runId));
       const outcomes: {
         findingId: string;
         repro: Repro;
@@ -6718,6 +6734,7 @@ export class WorkflowScheduler {
           findingId,
           repro,
           outcome: await runRepro(this.processes, repro, {
+            run,
             root,
             executables,
             generated: generatedPaths(policy),
@@ -6743,7 +6760,7 @@ export class WorkflowScheduler {
               before.fileHash !== undefined &&
               fileHash !== before.fileHash,
             sameOutput: before.output === outcome.output,
-            outside: reproOutsidePaths(repro, root).length,
+            outside: reproOutsidePaths(repro, root, run).length,
           })
         );
       });
@@ -6771,8 +6788,8 @@ export class WorkflowScheduler {
             reason: "repro_blind",
             mode,
             key: `${path}#${findingId}`,
-            summary: `Finding ${findingId}'s repro printed the same output after task ${task.id} changed the finding's file, and it reads ${reproOutsidePaths(repro, root).join(", ")} outside the root it runs in: it cannot see the correction, and would be inconclusive instead of reproduced.`,
-            inputs: { taskId: task.id, findingId, outside: reproOutsidePaths(repro, root) },
+            summary: `Finding ${findingId}'s repro printed the same output after task ${task.id} changed the finding's file, and it reads ${reproOutsidePaths(repro, root, run).join(", ")} outside the root it runs in: it cannot see the correction, and would be inconclusive instead of reproduced.`,
+            inputs: { taskId: task.id, findingId, outside: reproOutsidePaths(repro, root, run) },
           });
       return outcomes
         .filter(({ outcome }) => outcome.status === "reproduced")
@@ -16562,6 +16579,7 @@ ${note}`;
       cases.map(({ criterionId: _, ...c }) => ({ ...c, actual: c.expected })),
       (repro) =>
         runRepro(this.processes, repro, {
+          run: runRoots(this.store.workspace, state),
           root,
           executables,
           generated: generatedPaths(policy),
@@ -19595,6 +19613,7 @@ ${note}`;
     const touched = this.runChangedPaths(runId, state);
     const repro = (r: Repro, file?: string | null) =>
       runRepro(this.processes, r, {
+        run: runRoots(this.store.workspace, state),
         root: runRoot(this.store.workspace, state),
         executables,
         generated: generatedPaths(policy),

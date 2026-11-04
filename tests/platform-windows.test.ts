@@ -684,3 +684,57 @@ describe.skipIf(!IS_WIN)("platform shim: Windows process table in process (#2839
     expect(windowsProcessTree(process.pid)?.listed).toBe(true);
   });
 });
+
+describe("platform shim: Windows process tree exit race (#2840)", () => {
+  // Runs on every OS with fake reads: the race needs a process to exit between the snapshot and
+  // OpenProcess, which a real Windows runner hits only now and then.
+  const PARENT = 100;
+  const CHILD = 200;
+
+  test("a child that exits before it is opened does not count as live", async () => {
+    const { readProcessTree } = await import("../src/core/platform/process-table-win32.ts");
+    const snapshots = [
+      new Map([
+        [4, 0],
+        [CHILD, PARENT],
+      ]),
+      new Map([[4, 0]]),
+    ];
+    // OpenProcess fails on the child: its process object was freed after the first snapshot.
+    const tree = readProcessTree(PARENT, () => snapshots.shift() ?? null, () => null);
+    expect(tree).toEqual({ listed: false, children: [] });
+  });
+
+  test("a child this user may not open still counts as live", async () => {
+    const { readProcessTree } = await import("../src/core/platform/process-table-win32.ts");
+    const table = new Map([
+      [4, 0],
+      [CHILD, PARENT],
+    ]);
+    const tree = readProcessTree(PARENT, () => table, () => null);
+    expect(tree).toEqual({ listed: false, children: [{ id: CHILD, startedMs: null }] });
+  });
+
+  test("a pid reused under another parent before it is opened is not the child", async () => {
+    const { readProcessTree } = await import("../src/core/platform/process-table-win32.ts");
+    const snapshots = [
+      new Map([
+        [4, 0],
+        [CHILD, PARENT],
+      ]),
+      new Map([
+        [4, 0],
+        [CHILD, 4],
+      ]),
+    ];
+    const tree = readProcessTree(PARENT, () => snapshots.shift() ?? null, () => null);
+    expect(tree?.children).toEqual([]);
+  });
+
+  test("the asked process that exits before it is opened is not listed", async () => {
+    const { readProcessTree } = await import("../src/core/platform/process-table-win32.ts");
+    const snapshots = [new Map([[4, 0], [PARENT, 4]]), new Map([[4, 0]])];
+    const tree = readProcessTree(PARENT, () => snapshots.shift() ?? null, () => null);
+    expect(tree).toEqual({ listed: false, children: [] });
+  });
+});
