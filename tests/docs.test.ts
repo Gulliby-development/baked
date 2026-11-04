@@ -46,6 +46,7 @@ function links(markdown: string): string[] {
 
 const markdownFiles = [
   ...walk(join(root, "docs"), (path) => path.endsWith(".md")),
+  ...walk(join(root, ".agents/rules"), (path) => path.endsWith(".md")),
   ...["README.md", "CONTRIBUTING.md", "AGENTS.md", "apps/desktop/README.md"].map((file) => join(root, file)),
 ];
 

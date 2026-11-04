@@ -131,7 +131,7 @@ export function issueBody(
     "",
     "## Fix",
     "",
-    "Find the cause (a fixed delay, shared state between tests, a timeout near the test's limit on a slow runner, an order dependence) with the [file-issue skill](https://github.com/${repo}/blob/main/.agents/skills/file-issue/SKILL.md), record it here, and fix the test or the code. Never skip, disable, quarantine or retry the test into green (AGENTS.md).",
+    "Find the cause (a fixed delay, shared state between tests, a timeout near the test's limit on a slow runner, an order dependence) with the [file-issue skill](https://github.com/${repo}/blob/main/.agents/skills/file-issue/SKILL.md), record it here, and fix the test or the code. Never skip, disable, quarantine or retry the test into green (.agents/rules/tests-ci/flaky-tests.md).",
     "",
     "Filed by the flaky test ledger (`scripts/flaky-issues.ts`, #1724). New failures are added to this issue as comments.",
     "",
