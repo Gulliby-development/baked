@@ -1009,6 +1009,7 @@ import {
   overCeilingOf,
   plannerSizing,
   rateHistory,
+  rowBlockFiles,
   runPace,
   type SizingReport,
   samplesFrom,
@@ -7437,6 +7438,8 @@ export class WorkflowScheduler {
               prescribedRows: this.prescribedRows(runId, state),
               // The files it supplies verbatim, whose helpers a criterion may name (#2646).
               suppliedFiles: this.suppliedFiles(runId, state),
+              // Every row file it names, also another feature's (#2889).
+              rowFiles: rowBlockFiles(statedRequest(state, this.store.requests(runId))),
               ...(policy.citedCases ? { citedCases: policy.citedCases } : {}),
               generatedKinds: this.bannedGeneratedKinds(state, task),
               refuseGenerated: stopMode(policy, "generated_case") === "enforce",
@@ -14360,6 +14363,7 @@ ${note}`;
         tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
         hostRows: (files ?? []).filter((file) => file.inline === true),
         prescribedRows: this.prescribedRows(runId, state),
+        rowFiles: rowBlockFiles(statedRequest(state, this.store.requests(runId))),
       },
     );
     const cases = walk ? (await walk(fix.root)).length : 0;
