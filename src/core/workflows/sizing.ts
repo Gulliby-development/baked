@@ -15,6 +15,7 @@ import { type Fence, fences } from "../verification/doc-examples.js";
 import { hostRowPaths, literalRows, rowsAsDataOn } from "./acceptance-rows.js";
 import { MAX_EXTENDED_MS } from "./budget.js";
 import { DEFAULT_STAGE_RANGES, historyStorePaths, rangeOf, type TokenRange } from "./estimate.js";
+import { framedFeatureRows } from "./feature-rows.js";
 import { historySnapshot } from "./history-snapshot.js";
 import { type HostEdit, plannerGraph, recordGraphEdits } from "./host-edits.js";
 import { MIN_DURATION_SAMPLES } from "./initiatives/duration.js";
@@ -874,6 +875,26 @@ const ROWS_HEADER = /\brows?\b/i;
  * found 2 cases in the criterion that cited "the 63 prescribed rows", and T007 was priced 341k to
  * 863k and kept whole. It cost 6.89M tokens over 7 attempts and never finished.
  */
+/**
+ * Every test file a row block of the request names in its header, whether this plan writes it or
+ * not: an initiative's later feature cites an earlier feature's row files by name (R95 windowgate
+ * AC-008: `InputRowsTest`, `LimitsRowsTest`, `ReadsRowsTest`), and such a name is no row's text
+ * (#2889). Which rows a task owns is still `suppliedRows`' answer, for the plan's own paths.
+ */
+export function rowBlockFiles(request: string): string[] {
+  const out = new Set<string>();
+  for (const block of fences(request)) {
+    if (block.diff) continue;
+    const header = (block.lines.find((line) => line.trim()) ?? "").trim();
+    if (!ROWS_HEADER.test(header)) continue;
+    for (const m of header.matchAll(/[\w./-]+\.\w+/g)) {
+      const path = requestPath(m[0].replace(/[.,;:]+$/, ""));
+      if (fileKind(path) === "test") out.add(path);
+    }
+  }
+  return [...out];
+}
+
 export function suppliedRows(request: string, paths: readonly string[]): Map<string, SuppliedRows> {
   const wanted = new Set(paths.map(requestPath).filter((path) => fileKind(path) === "test"));
   const out = new Map<string, SuppliedRows>();
@@ -902,7 +923,36 @@ export function suppliedRows(request: string, paths: readonly string[]): Map<str
       ...(indent ? { indent } : {}),
     });
   }
-  return out;
+  return featureOwnedRows(request, out);
+}
+
+/**
+ * A feature run's own rows of each shared row file (#2898): the rows its prompt states under
+ * `FEATURE_ROWS_HEADING`, in the block's order; a file it delivers no rows of is left out. Every
+ * other request, and a file the framing does not name, keeps the whole block.
+ */
+function featureOwnedRows(
+  request: string,
+  blocks: Map<string, SuppliedRows>,
+): Map<string, SuppliedRows> {
+  const owned = framedFeatureRows(request);
+  if (!owned) return blocks;
+  for (const [path, block] of blocks) {
+    const rows = owned.get(path);
+    if (!rows) continue;
+    const lines = block.lines.filter((_, i) => rows.has(i + 1));
+    if (!lines.length) {
+      blocks.delete(path);
+      continue;
+    }
+    blocks.set(path, {
+      ...block,
+      rows: lines.length,
+      chars: lines.reduce((sum, line) => sum + [...line].length, 0),
+      lines,
+    });
+  }
+  return blocks;
 }
 
 /**

@@ -315,6 +315,17 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  doc_finding_unrepaired: {
+    label:
+      "A reviewer's documentation finding marked noRepro stays a note because its kind is correctness, where a partial one repairs",
+    // Shadow until R92 and R93 showed 3 true would-stops and no false one (#2835, R91 stopcut's
+    // README escape reference with doubled backslashes, R90 holefit docs F1 and F3). Under
+    // `enforce`, the default since R93, the review and converge gates repair it as a `partial`
+    // finding (`docFindingRepairs`, #2866, R92 tailclose's README shipped a literal `\n` and
+    // doubled backslashes); `shadow` keeps the old note and records the would-stop.
+    modes: STOP_MODES,
+    defaultMode: "enforce",
+  },
   row_block_drift: {
     label:
       "A test file the run delivered lacks a quoted literal of a row the request prescribes for it, or holds a row beyond them",
@@ -326,6 +337,16 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  unfinished_row_split: {
+    label:
+      "A test task ended unfinished twice with prescribed rows its file still lacks: the host would split it into slices of the missing rows instead of resuming it whole",
+    // Shadow only (#2458, R78 deltaglue cli T007: 63 prescribed rows, four unfinished ends and
+    // 6.89M tokens, each resume starting over with the whole task). It records
+    // `row-splits/tasks/<task>.json` and the would-stop; starting the slices of the missing rows is
+    // a pull request of its own after a bench round with no false decision.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   case_not_prescribed: {
     label:
       "A criterion cites a literal that no row the request prescribes holds, for a task that writes only prescribed row files",
@@ -334,6 +355,17 @@ export const STOP_REASONS = {
     // removed it, 368k), and records the criterion and literal instead; analysis lists them as a
     // note. Its promotion, after two bench rounds with no false would-stop, makes that analysis
     // finding blocking, so the spec author removes the example row from the criterion.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  slice_foreign_conflict: {
+    label:
+      "A host row slice's spec conflict asks for literals that only another slice's rows of the same file hold: the host would settle it without asking a person",
+    // Shadow only (#2476, R79 verhop T004: rows 1-7 of `tests/check.bats` reported three
+    // conflicts about AC-003 and AC-005 literals of rows 8-15, and a person answered the third
+    // with "satisfied by the union of both slices"). It records the would-stop beside the
+    // `conflicts/request/` record and the person is still asked; its promotion, after two bench
+    // rounds with no false would-stop, settles the report as slice-foreign with no clarification.
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },

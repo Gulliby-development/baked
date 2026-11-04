@@ -1,5 +1,6 @@
 import { getCwd } from "../cwd.js";
 import { hasProjectAgents } from "../workflows/agent-import.js";
+import { register as registerAccounts } from "./accounts.js";
 import { register as registerAgentContext } from "./agent-context.js";
 import { register as registerAgents } from "./agents.js";
 import { register as registerArtifacts } from "./artifacts.js";
@@ -47,6 +48,7 @@ registerClaims(commandMap);
 registerCodex(commandMap);
 registerClaudeCode(commandMap);
 registerLimits(commandMap);
+registerAccounts(commandMap);
 registerHooks(commandMap);
 registerCheckpoint(commandMap);
 registerWorkflow(commandMap);
@@ -511,6 +513,48 @@ const COMMAND_DEFS: CommandDef[] = [
     desc: "Show how much of each subscription's usage limit is left",
     category: "Models",
     tags: ["limits", "usage", "quota", "subscription", "codex", "claude", "copilot"],
+  },
+  {
+    cmd: "/accounts",
+    ic: "key",
+    desc: "List provider accounts and the one this project uses",
+    category: "Models",
+    tags: ["accounts", "subscription", "seat", "codex", "claude", "project"],
+  },
+  {
+    cmd: "/accounts add",
+    ic: "key",
+    desc: "Add a labelled account of Codex or Claude Code",
+    category: "Models",
+    tags: ["accounts", "add", "subscription", "seat"],
+  },
+  {
+    cmd: "/accounts login",
+    ic: "key",
+    desc: "Sign an account in, in its own credential home",
+    category: "Models",
+    tags: ["accounts", "login", "auth", "browser"],
+  },
+  {
+    cmd: "/accounts use",
+    ic: "key",
+    desc: "Choose the account this project uses, or default",
+    category: "Models",
+    tags: ["accounts", "use", "project", "switch"],
+  },
+  {
+    cmd: "/accounts logout",
+    ic: "key",
+    desc: "Sign an account out",
+    category: "Models",
+    tags: ["accounts", "logout", "auth"],
+  },
+  {
+    cmd: "/accounts remove",
+    ic: "key",
+    desc: "Sign out and delete an account",
+    category: "Models",
+    tags: ["accounts", "remove", "delete"],
   },
   {
     cmd: "/codex",

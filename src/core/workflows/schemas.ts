@@ -984,8 +984,9 @@ export const PolicySchema = z
          * Prices a feature with fewer paths than its size pool's median, where the pool's tokens
          * do not follow their paths (no path fit), at the square root of that path share of the
          * pool's range, and a feature of legal files alone (a `LICENSE`) at the per-path rate
-         * (`fewPathShare`, #2640). Documentation features keep their price. Absent means off: the
-         * size pool prices them as features of its usual paths.
+         * (`fewPathDetail`, #2640), recorded on each estimate (`fewPathShare`, #2869). Documentation
+         * features keep their price. Absent means on (#2893); `false` turns it off, and the size
+         * pool then prices them as features of its usual paths.
          */
         fewPathPrice: z.boolean().optional(),
         /**
@@ -2449,6 +2450,11 @@ export interface StartRequest {
    * without it only the `active` class follows an explicit run model.
    */
   modelStrict?: boolean;
+  /**
+   * The provider accounts this run uses (CLI `--account PROVIDER=ID`, #2303) instead of the
+   * project's; each must exist and be allowed for the project, or the run does not start.
+   */
+  accounts?: import("../llm/provider-accounts.js").AccountChoice;
   /** What blocking questions do in this run (CLI `--clarification MODE`); it overrides the policy. */
   clarification?: ClarificationMode;
   /** What the test-integrity guard does in this run (CLI `--test-integrity MODE`); it overrides the policy. */

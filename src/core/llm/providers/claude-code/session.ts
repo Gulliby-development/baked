@@ -4,7 +4,9 @@ import { join } from "node:path";
 import type { JSONSchema7, LanguageModelV3Usage } from "@ai-sdk/provider";
 import { tmpDir } from "../../../platform/index.js";
 import { trackProcess } from "../../../process-tracker.js";
+import { activeProviderAccount } from "../../provider-accounts.js";
 import { recordClaudeRateLimit } from "../../usage-limits-record.js";
+import { providerAccountEnv } from "../account-env.js";
 import { onJsonLines, UnparsedLines } from "../json-lines.js";
 import { claudeCodeEnv } from "../output-limit.js";
 import { claudeCodeCommand, getClaudeCodeFlags } from "./cli.js";
@@ -140,6 +142,8 @@ export interface ClaudeCodeProcess {
 }
 
 export type ClaudeCodeProcessFactory = (options: {
+  /** The environment of the account the project uses (#2303); none for the CLI's own sign-in. */
+  env?: NodeJS.ProcessEnv;
   modelId: string;
   effort?: string;
   maxOutputTokens?: number;
@@ -149,6 +153,8 @@ export type ClaudeCodeProcessFactory = (options: {
 
 interface SessionState {
   process: ClaudeCodeProcess;
+  /** The Claude Code account the process runs on; null for the CLI's own sign-in. */
+  account: string | null;
   modelId: string;
   effort: string | undefined;
   /** The process's `CLAUDE_CODE_MAX_OUTPUT_TOKENS`; a call with another limit needs another process. */
@@ -271,6 +277,7 @@ let workDirCounter = 0;
  * The CLI has no output-limit flag; `CLAUDE_CODE_MAX_OUTPUT_TOKENS` bounds each request (#2547).
  */
 export const spawnClaudeCodeProcess: ClaudeCodeProcessFactory = ({
+  env,
   modelId,
   effort,
   maxOutputTokens,
@@ -304,6 +311,7 @@ export const spawnClaudeCodeProcess: ClaudeCodeProcessFactory = ({
   ];
 
   const child = spawn(claudeCodeCommand(), args, {
+    ...(env ? { env } : {}),
     cwd: dir,
     env: claudeCodeEnv(maxOutputTokens),
     stdio: ["pipe", "pipe", "pipe"],
@@ -397,8 +405,9 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
     call.abortSignal?.throwIfAborted();
     const keys = call.parts.messages.map(messageKey);
     const schemaKey = JSON.stringify(call.parts.schema);
-    const match = fresh ? null : this.findSession(call, keys, schemaKey);
-    const session = match?.session ?? this.startSession(call, schemaKey);
+    const account = activeProviderAccount("claude-code")?.id ?? null;
+    const match = fresh ? null : this.findSession(call, keys, schemaKey, account);
+    const session = match?.session ?? this.startSession(call, schemaKey, account);
     const fromIndex = match?.fromIndex ?? 0;
 
     session.busy = true;
@@ -436,10 +445,12 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
     call: ClaudeCodeCall,
     keys: string[],
     schemaKey: string,
+    account: string | null,
   ): { session: SessionState; fromIndex: number } | null {
     let best: { session: SessionState; fromIndex: number } | null = null;
     for (const session of this.sessions) {
       if (session.busy || session.closed || session.modelId !== call.modelId) continue;
+      if (session.account !== account) continue;
       if (session.effort !== call.effort) continue;
       if (session.maxOutputTokens !== call.maxOutputTokens) continue;
       if (session.instructions !== call.parts.instructions || session.schemaKey !== schemaKey)
@@ -460,8 +471,13 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
     return best;
   }
 
-  private startSession(call: ClaudeCodeCall, schemaKey: string): SessionState {
+  private startSession(
+    call: ClaudeCodeCall,
+    schemaKey: string,
+    account: string | null,
+  ): SessionState {
     const proc = this.spawnProcess({
+      ...(account ? { env: providerAccountEnv("claude-code", { id: account }) } : {}),
       modelId: call.modelId,
       ...(call.effort ? { effort: call.effort } : {}),
       ...(call.maxOutputTokens !== undefined ? { maxOutputTokens: call.maxOutputTokens } : {}),
@@ -470,6 +486,7 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
     });
     const session: SessionState = {
       process: proc,
+      account,
       modelId: call.modelId,
       effort: call.effort,
       maxOutputTokens: call.maxOutputTokens,
@@ -504,7 +521,7 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
     const event = session.unparsed.parse<{ type?: string; rate_limit_info?: unknown }>(trimmed);
     if (!event) return;
     if (event.type === "rate_limit_event") {
-      recordClaudeRateLimit(event.rate_limit_info);
+      recordClaudeRateLimit(event.rate_limit_info, undefined, session.account);
       return;
     }
     const live = session.pending;

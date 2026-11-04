@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,6 +10,7 @@ import {
   taskCheckList,
   withCoveringChecks,
 } from "../src/core/workflows/check-policy.js";
+import { writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { detectGates } from "../src/core/workflows/gates.js";
 import { isTestCheck } from "../src/core/workflows/quality/mutation.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
@@ -174,6 +175,38 @@ describe("a task runner's check target is not a linter (#1680)", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  // The preselected Gradle gate is `gradle --console=plain -q check`: the word `check` made it a
+  // static check, so every code task ran the whole suite after it and no written-tests check ran.
+  test.each([
+    ["gradle", ["build.gradle.kts", 'plugins { kotlin("jvm") version "2.0.21" }\n']],
+    ["gradlew", ["build.gradle", "plugins { id 'java' }\n"]],
+  ] as const)("%s check runs the tests in the checks stage, not after each code task", (tool, [file, text]) => {
+    const root = mkdtempSync(join(tmpdir(), "baked-gradle-check-"));
+    try {
+      writeFileSync(join(root, file), text);
+      if (tool === "gradlew") writeFileSync(join(root, "gradlew"), "#!/bin/sh\n");
+      const gate = { ...(detectGates(root).find((g) => g.check.id === "gradle-check")?.check as Check), scope: "feature" as const };
+      expect(gate.args).toContain("check");
+      expect([isStaticCheck(gate), isTestCheck(gate)]).toEqual([false, true]);
+      const gated: RunPolicy = { ...fixturePolicy, checks: [gate] };
+      expect(coveringChecks(gated, { writes: [{ path: "src/main/java/a/Sum.java", action: "create" }] })).toEqual([]);
+      const test = "src/test/java/a/SumTest.java";
+      mkdirSync(join(root, "src/test/java/a"), { recursive: true });
+      writeFileSync(join(root, test), "package a;\nclass SumTest {\n  @org.junit.jupiter.api.Test\n  void adds() {}\n}\n");
+      expect(writtenTestsCheck(root, [gate], [{ path: test, action: "create" }])).toMatchObject({
+        id: "gradle-check-written",
+        args: ["--console=plain", "-q", "test", "--tests", "a.SumTest"],
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a Gradle or Maven command that runs no tests keeps its static role", () => {
+    for (const [executable, args] of [["gradle", ["spotlessCheck"]], ["gradlew", ["check", "-x", "test"]], ["mvn", ["checkstyle:check"]]] as const)
+      expect([executable, isStaticCheck({ ...check("x", [...args], "feature"), id: "lint-check", executable })]).toEqual([executable, true]);
   });
 
   test("checks that analyze source keep their static role", () => {

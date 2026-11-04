@@ -34,9 +34,18 @@ export interface LimitWindow {
   detail?: string;
 }
 
+/** One labelled account of a provider (#2303); its limits are its own subscription's. */
+export interface LimitAccount {
+  id: string;
+  label: string;
+}
+
 export interface ProviderLimits {
   provider: LimitProvider;
+  /** `Codex`, or `Codex · Employer` for one of its labelled accounts. */
   name: string;
+  /** The labelled account these limits belong to; absent or null for the CLI's own sign-in. */
+  account?: LimitAccount | null;
   /** `ok`: windows are shown; `no-data`: signed in but nothing reported yet; `not-signed-in`; `error`. */
   state: "ok" | "no-data" | "not-signed-in" | "error";
   /** `live`: asked just now; `last-seen`: the last report BAKED recorded, as of `observedAt`. */
@@ -55,7 +64,12 @@ export function limitsStoreFile(): string {
   return join(dataDir(), "usage-limits.json");
 }
 
-type Store = Partial<Record<LimitProvider, ProviderLimits>>;
+/** `codex` for the CLI's own sign-in, `codex@work` for its account `work`. */
+type Store = Record<string, ProviderLimits>;
+
+function storeKey(provider: LimitProvider, account: string | null | undefined): string {
+  return account ? `${provider}@${account}` : provider;
+}
 
 function readStore(file: string): Store {
   try {
@@ -66,11 +80,18 @@ function readStore(file: string): Store {
   }
 }
 
-/** Saves a provider's latest report; a failed write only loses the cache. */
-export function saveLimits(limits: ProviderLimits, file: string = limitsStoreFile()): void {
+/**
+ * Saves a provider's latest report, under its account when it has one; a failed write only loses
+ * the cache.
+ */
+export function saveLimits(
+  limits: ProviderLimits,
+  file: string = limitsStoreFile(),
+  account: string | null = limits.account?.id ?? null,
+): void {
   try {
     const store = readStore(file);
-    store[limits.provider] = limits;
+    store[storeKey(limits.provider, account)] = limits;
     mkdirSync(dirname(file), { recursive: true });
     const tmp = `${file}.${String(process.pid)}.tmp`;
     writeFileSync(tmp, `${JSON.stringify(store, null, 2)}\n`);
@@ -78,11 +99,13 @@ export function saveLimits(limits: ProviderLimits, file: string = limitsStoreFil
   } catch {}
 }
 
+/** The last report of `provider`'s `account`, or of the CLI's own sign-in with none. */
 export function loadLimits(
   provider: LimitProvider,
   file: string = limitsStoreFile(),
+  account: string | null = null,
 ): ProviderLimits | null {
-  return readStore(file)[provider] ?? null;
+  return readStore(file)[storeKey(provider, account)] ?? null;
 }
 
 function num(value: unknown): number | null {
@@ -207,10 +230,17 @@ export function parseCodexRateLimits(
   };
 }
 
-/** Records what Codex sent in `account/rateLimits/updated` during a turn. */
-export function recordCodexRateLimits(params: unknown, file?: string): void {
+/**
+ * Records what Codex sent in `account/rateLimits/updated` during a turn, under the account the
+ * app-server runs on (null: the CLI's own sign-in).
+ */
+export function recordCodexRateLimits(
+  params: unknown,
+  file: string = limitsStoreFile(),
+  account: string | null = null,
+): void {
   const limits = parseCodexRateLimits(params);
-  if (limits?.windows.length) saveLimits({ ...limits, source: "last-seen" }, file);
+  if (limits?.windows.length) saveLimits({ ...limits, source: "last-seen" }, file, account);
 }
 
 // ── Claude Code ──────────────────────────────────────────────────────────────
@@ -286,10 +316,14 @@ export function parseClaudeRateLimit(
   };
 }
 
-/** Records a `rate_limit_event` from a Claude Code turn. */
-export function recordClaudeRateLimit(info: unknown, file: string = limitsStoreFile()): void {
-  const limits = parseClaudeRateLimit(info, loadLimits("claude-code", file));
-  if (limits) saveLimits(limits, file);
+/** Records a `rate_limit_event` from a Claude Code turn, under the account the turn ran on. */
+export function recordClaudeRateLimit(
+  info: unknown,
+  file: string = limitsStoreFile(),
+  account: string | null = null,
+): void {
+  const limits = parseClaudeRateLimit(info, loadLimits("claude-code", file, account));
+  if (limits) saveLimits(limits, file, account);
 }
 
 // ── GitHub Copilot ───────────────────────────────────────────────────────────

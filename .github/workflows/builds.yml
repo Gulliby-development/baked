@@ -78,7 +78,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    # A job that only skips runs on Linux: it would otherwise wait for a macOS or Windows runner
+    # it does not use, and on 2026-11-04 macOS arm64 runners never came and ejected #2908 (#2915).
+    runs-on: ${{ (matrix.os == 'ubuntu-latest' || needs.scope.outputs.native == 'true') && matrix.os || 'ubuntu-latest' }}
     steps:
       - name: Skip
         if: matrix.os != 'ubuntu-latest' && needs.scope.outputs.native != 'true'
@@ -127,7 +129,9 @@ jobs:
           - { platform: linux, arch: arm64, runner: ubuntu-latest, smoke: false, native: false, desktop: false }
           - { platform: darwin, arch: arm64, runner: macos-latest, smoke: true, native: true, desktop: true }
           - { platform: darwin, arch: x64, runner: macos-15-intel, smoke: true, native: true, desktop: true }
-    runs-on: ${{ matrix.runner }}
+    # A job that only skips runs on Linux: it would otherwise wait for a macOS or Windows runner
+    # it does not use, and on 2026-11-04 macOS arm64 runners never came and ejected #2908 (#2915).
+    runs-on: ${{ (!matrix.native || needs.scope.outputs.native == 'true') && matrix.runner || 'ubuntu-latest' }}
     name: bundle (${{ matrix.platform }}-${{ matrix.arch }})
     env:
       RUN: ${{ !matrix.native || needs.scope.outputs.native == 'true' }}
@@ -190,7 +194,12 @@ jobs:
 
   windows:
     needs: scope
-    runs-on: windows-latest
+    # A job that only skips runs on Linux: it would otherwise wait for a macOS or Windows runner
+    # it does not use, and on 2026-11-04 macOS arm64 runners never came and ejected #2908 (#2915).
+    runs-on: ${{ needs.scope.outputs.native == 'true' && 'windows-latest' || 'ubuntu-latest' }}
+    # A hung step otherwise holds the required check for GitHub's 6 h default and keeps the PR
+    # out of the merge queue (#2856's install step hung for 4.5 h).
+    timeout-minutes: 45
     steps:
       - name: Skip
         if: needs.scope.outputs.native != 'true'
@@ -237,6 +246,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install silently and self-check
         if: needs.scope.outputs.native == 'true'
+        timeout-minutes: 10
         shell: pwsh
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
@@ -300,7 +310,9 @@ jobs:
           - { platform: darwin, arch: arm64, runner: macos-latest, native: true }
           # Cross-packaged on Apple Silicon around the bundle built on the Intel runner.
           - { platform: darwin, arch: x64, runner: macos-latest, native: true }
-    runs-on: ${{ matrix.runner }}
+    # A job that only skips runs on Linux: it would otherwise wait for a macOS or Windows runner
+    # it does not use, and on 2026-11-04 macOS arm64 runners never came and ejected #2908 (#2915).
+    runs-on: ${{ (!matrix.native || needs.scope.outputs.native == 'true') && matrix.runner || 'ubuntu-latest' }}
     name: desktop (${{ matrix.platform }}-${{ matrix.arch }})
     env:
       RUN: ${{ !matrix.native || needs.scope.outputs.native == 'true' }}

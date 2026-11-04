@@ -40,3 +40,12 @@ describe("per-test limits (#1910)", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+describe("OS tests workflow on a pull request (#2907)", () => {
+  test("every shard runs its share of the picked tests, not only the first", () => {
+    const run = workflow.split("\n").find((line) => line.trim().startsWith("RUN:"));
+    expect(run).toBeDefined();
+    expect(run).not.toContain("matrix.shard ==");
+    expect(workflow).toContain("run: bun scripts/test-shard.ts ${{ matrix.shard }} ${{ matrix.shards }}");
+  });
+});
