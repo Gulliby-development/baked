@@ -113,6 +113,7 @@ import {
   SIZE_TASK_FACTOR,
   testVolumeText,
 } from "./estimate.js";
+import type { FewPathShareRecord } from "./few-path-record.js";
 import { initiativePriceSamples, taskCallRate } from "./forecast.js";
 import {
   chargeHold,
@@ -392,6 +393,11 @@ export interface FeatureView {
   shareUsd: number | null;
   /** Priced low and high estimates, independent of the allocated dollar share. */
   needUsd?: TokenRange | null;
+  /**
+   * What `sizing.fewPathPrice` did to its estimate (#2640): applied or not, why, and its range
+   * before and after. Absent with the knob off, once it has a run, or before approval.
+   */
+  fewPathShare?: FewPathShareRecord;
   /** The workflow feature ID of this feature's runs. */
   runFeatureId: string;
   /** The GitHub issue the feature's runs start from and their delivery closes; null without one. */
@@ -639,7 +645,20 @@ export interface ShareGateRecord {
   >;
   view: ShareGateView;
   feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd"> &
-    Partial<Pick<FeatureView, "needUsd">>;
+    Partial<Pick<FeatureView, "needUsd" | "fewPathShare">>;
+}
+
+/** The few-path share records of `features`' estimates, by feature id (#2640). */
+function fewPathShares(
+  estimated: FeatureEstimate[],
+  features: Pick<FeatureView, "id">[],
+): Record<string, FewPathShareRecord> {
+  const ids = new Set(features.map((f) => f.id));
+  return Object.fromEntries(
+    estimated.flatMap((e) =>
+      e.fewPathShare && ids.has(e.featureId) ? [[e.featureId, e.fewPathShare]] : [],
+    ),
+  );
 }
 
 /** The waiting features (no run yet) with an estimate, as the token pool reads them. */
@@ -2485,6 +2504,8 @@ export class InitiativeService {
         need: feature.need,
         shareUsd: feature.shareUsd,
         needUsd: feature.needUsd ?? null,
+        // The few-path share its need was priced with (#2640), so a bench round can count it.
+        ...(feature.fewPathShare ? { fewPathShare: feature.fewPathShare } : {}),
       },
     };
     this.store.emit(id, "feature.share_gate", record);
@@ -4365,6 +4386,8 @@ export class InitiativeService {
       feature.need = needs.get(feature.id) ?? null;
       feature.needUsd = estimate.features.find((f) => f.featureId === feature.id)?.costUsd ?? null;
     }
+    // What `sizing.fewPathPrice` did to each waiting feature (#2640); none with the knob off.
+    const fewPathShare = fewPathShares(estimate.features, waiting);
     const cost = this.costView(row, settings, plan, runIds, used, accepted, estimate, null);
     const shares = splitShares(waiting, remaining, cost.remainingUsd);
     for (const [index, feature] of waiting.entries()) Object.assign(feature, shares[index]);
@@ -4451,6 +4474,7 @@ export class InitiativeService {
           }
         : null,
       suggestedTokens,
+      ...(Object.keys(fewPathShare).length ? { fewPathShare } : {}),
       // The post-approval forecast notice's sentence, so both read alike (#2042, #2244).
       notice:
         suggestedTokens === null
@@ -4518,6 +4542,11 @@ export class InitiativeService {
     for (const feature of waitingForRun) {
       feature.need = needs?.get(feature.id) ?? null;
       feature.needUsd = estimate?.features.find((f) => f.featureId === feature.id)?.costUsd ?? null;
+    }
+    const fewPathShare = estimate ? fewPathShares(estimate.features, waitingForRun) : {};
+    for (const feature of waitingForRun) {
+      const record = fewPathShare[feature.id];
+      if (record) feature.fewPathShare = record;
     }
     const cost = this.costView(row, settings, plan, runIds, used, accepted, estimate, charge);
     const shares = splitShares(waitingForRun, remaining, cost.remainingUsd);
