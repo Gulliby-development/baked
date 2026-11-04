@@ -4,6 +4,7 @@ import type { AppConfig } from "../../types/index.js";
 import { SharedRootContext } from "../context/shared-root.js";
 import { ROUTING_ARTIFACT, type RoutingRecord, RoutingRecordSchema } from "../llm/model-routing.js";
 import { resolveModel } from "../llm/provider.js";
+import { checkAccountChoice, runWithAccounts } from "../llm/provider-accounts.js";
 import { probeProvider, providerBackoffMs } from "../llm/provider-health.js";
 import { displayPath } from "../projects/paths.js";
 import { activeProject } from "../projects/resolve.js";
@@ -372,8 +373,20 @@ export class NativeWorkflowService implements WorkflowService {
     const previous = this.store.previousCommand(request.commandId, request);
     if (previous) return previous;
     await this.refreshOutcomes();
+    const accounts =
+      request.accounts && Object.keys(request.accounts).length ? request.accounts : null;
+    if (accounts) {
+      try {
+        checkAccountChoice(accounts, this.workspace);
+      } catch (error) {
+        throw new WorkflowFault(
+          "INVALID_REFERENCE",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
     const prepared = await prepareStart(this.workspace, this.config, request);
-    const smoke = await this.preflight(prepared);
+    const smoke = await runWithAccounts(accounts, () => this.preflight(prepared));
     const {
       policy,
       registry,
@@ -544,6 +557,7 @@ export class NativeWorkflowService implements WorkflowService {
       testsFirst: null,
       presetChoice: request.presetChoice ?? null,
       autoApprovalDeclined: request.autoApprovalDeclined ?? null,
+      accounts,
       planAhead:
         request.planAhead && request.baseCommit ? { released: false, baselined: false } : null,
     };
@@ -1177,9 +1191,10 @@ export class NativeWorkflowService implements WorkflowService {
     const scheduler = primary ? this.scheduler : this.lane();
     scheduler.maxParallelRuns = parallelRunCap(this.config);
     scheduler.worktreeRoot = worktreeRootDir(this.workspace, this.config.workflows?.worktreeRoot);
-    const promise = scheduler
-      .drive(runId, controller.signal)
-      .then(() => this.store.snapshot(runId));
+    // A run started with `--account` keeps its accounts on every resume (#2303).
+    const promise = runWithAccounts(state.accounts, () =>
+      scheduler.drive(runId, controller.signal),
+    ).then(() => this.store.snapshot(runId));
     this.active.set(runId, { controller, promise });
     try {
       return await promise;
@@ -2329,6 +2344,8 @@ export class NativeWorkflowService implements WorkflowService {
       }
       state.hostDependencies = pinned;
       state.initiativeBounds = previous.initiativeBounds;
+      // The accounts the run was started on are the person's choice, not the candidate's.
+      state.accounts = previous.accounts;
       const policy = PolicySchema.parse(candidate.policy);
       if (
         executionModeOf(policy) !==
