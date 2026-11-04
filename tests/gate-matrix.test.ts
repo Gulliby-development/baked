@@ -18,6 +18,7 @@ import { evidencePaths, scopeRecord, stackFrames } from "../src/core/workflows/c
 import { cellSamples, cellSpec, omittedCellInput, withoutCellInput } from "./helpers/criteria-cell-fixtures.js";
 import { inStreamOrder, ProcessScope, windowsBatchInvocation, windowsProgram } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
+import { failureHash, repeatCheck } from "../src/core/workflows/repeated-failure.js";
 import {
   growthLimit,
   type InitiativeView,
@@ -62,7 +63,7 @@ import { nodeUnderBun, redirectFixture } from "../src/core/verification/doc-exam
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
-import { CheckRunner, executeCheckCommand, exitStatus, ranNoTests, timedOutFailure } from "../src/core/verification/check-runner.js";
+import { CheckRunner, executeCheckCommand, exitStatus, ranNoTests, storedSignatureOutput, timedOutFailure } from "../src/core/verification/check-runner.js";
 import { emptyScriptNote, emptyTestScript } from "../src/core/verification/empty-test-script.js";
 import { FORMAT_FAILURE_READERS, hostDocumentFailure } from "../src/core/verification/host-documents.js";
 import { transcriptDrifts } from "../src/core/workflows/transcript-drift.js";
@@ -6399,6 +6400,20 @@ describe("baseline gate: a check's signature does not depend on the order its pi
     expect(after.endsWith("Note: biome timed out.")).toBe(true);
     // A scripted process without streams keeps its output.
     expect(inStreamOrder(out, undefined)).toBe(out);
+  });
+});
+
+describe("repeated-failure gate: two stored runs of one failure hash alike whatever order their pipes arrived in (#2861)", () => {
+  // The sibling of #2859: the unfinished-task hash and the corrective repeat chain read stored artifacts.
+  const err = "src/duration.ts format ━━━━━━━━━━\n  × Formatter would have printed the following content:\n";
+  const out = "Checked 2 files in 3ms. No fixes applied.\nFound 1 error.\n";
+  const hash = (output: string) => failureHash([repeatCheck("biome", output, ["src/duration.ts"])]);
+  test("an orderedTail is read in place of the arrival-ordered output; without one the output is", () => {
+    const outOfOrder = { output: out + err, orderedTail: err + out };
+    const inOrder = { output: err + out };
+    expect(hash(outOfOrder.output)).not.toBe(hash(inOrder.output));
+    expect(hash(storedSignatureOutput(outOfOrder))).toBe(hash(storedSignatureOutput(inOrder)));
+    expect(storedSignatureOutput({})).toBe("");
   });
 });
 
