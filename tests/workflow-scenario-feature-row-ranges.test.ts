@@ -157,6 +157,35 @@ describe("which rows of a shared prescribed row file a feature owns (#2898)", ()
     expect(scopeRowRanges("CliRows rows 3 to 5", ["CliRows"], 13)).toEqual([3, 4, 5]);
     expect(scopeRowRanges("MoreCliRows rows 1-2", ["CliRows"], 13)).toBeNull();
     expect(scopeRowRanges("CliRows rows 12-40", ["CliRows"], 13)).toEqual([12, 13]);
+    expect(scopeRowRanges("Own TemplateRows all 24, CheckRows all 16", ["TemplateRows"], 24)).toHaveLength(24);
+    expect(scopeRowRanges("Own TemplateRows all 24, CheckRows all 16", ["CheckRows"], 16)).toHaveLength(16);
+    expect(scopeRowRanges("TagsRows all rows", ["TagsRows"], 5)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  // R96 varprompt template (run 0509c8c1): the plan's own scopes split TagsRows and LimitsRows
+  // between template and reports, and the host wrote reports' rows into template.
+  test("R96 template and reports: TagsRows and LimitsRows split as the plan's scopes say", () => {
+    const fileOf = (name: string) => `tests/Varprompt.Tests/${name}.cs`;
+    const request = (["TagsRows", "LimitsRows"] as const)
+      .map((name, i) => [`${fence}text`, `${name} in ${fileOf(name)} (${[18, 3][i]} rows)`, ...Array.from({ length: [18, 3][i]! }, (_, r) => `[InlineData("${name} ${r + 1}")]`), fence].join("\n"))
+      .join("\n\n");
+    const paths = [fileOf("TagsRows"), fileOf("LimitsRows")];
+    const plan: InitiativePlan = {
+      schemaVersion: 1,
+      title: "varprompt",
+      goals: ["g"],
+      completionCriteria: ["c"],
+      features: [
+        { id: "cli", title: "cli", boundary: { scope: "Own Cli.Run.", paths: ["src/Varprompt/Cli.cs"] }, contract: "c", dependsOn: [], mandatory: true },
+        { id: "template", title: "template", boundary: { scope: "Own Template.cs, Report.cs and CheckCommand.cs. Own TemplateRows all 24, CheckRows all 16, TagsRows rows 11-18, LimitsRows rows 1-2, SizesRows rows 1-9 and 12, and CliRows row 12. Shared files retain the union of delivered rows in supplied order; only InlineData lines change.", paths: ["src/Varprompt/Template.cs", ...paths] }, contract: "c", dependsOn: ["cli"], mandatory: true },
+        { id: "reports", title: "reports", boundary: { scope: "Own VarsCommand and StatsCommand. Own VarsRows all 13, StatsRows all 14, TagsRows rows 1-10, LimitsRows row 3 and CliRows row 13. Preserve other owners' InlineData rows.", paths: ["src/Varprompt/VarsCommand.cs", "src/Varprompt/StatsCommand.cs", ...paths] }, contract: "c", dependsOn: ["cli", "template"], mandatory: true },
+      ],
+    };
+    const prompt = featurePrompt({ id: "varprompt", prompt: request } as InitiativeRow, plan, plan.features[1]!, []);
+    const rows = suppliedRows(prompt, paths);
+    expect(rows.get(fileOf("TagsRows"))?.lines).toEqual(Array.from({ length: 8 }, (_, r) => `[InlineData("TagsRows ${r + 11}")]`));
+    expect(rows.get(fileOf("LimitsRows"))?.lines).toEqual(['[InlineData("LimitsRows 1")]', '[InlineData("LimitsRows 2")]']);
+    expect(rowOwnerProblems(plan, request)).toEqual([]);
   });
 });
 
