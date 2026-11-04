@@ -1029,6 +1029,7 @@ import { forgetProgress } from "./stall.js";
 import { statedRequest } from "./stated-request.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import {
+  type FindingRow,
   type LeaseResource,
   newId,
   type RequestRow,
@@ -3652,6 +3653,14 @@ export class WorkflowScheduler {
               // acceptance needs every automated criterion to pass.
               const repair = ofVerdict("repair");
               const findings = this.recordFindings(runId, review, repair);
+              this.store.transaction(() =>
+                this.retireStranded(
+                  runId,
+                  state,
+                  "convergence",
+                  new Set(findings.map((f) => f.id)),
+                ),
+              );
               const kept = new Set([...repair, ...noted, ...unshown].map((f) => f.id));
               addReviewNotes(
                 state.reviewNotes,
@@ -19566,6 +19575,44 @@ ${note}`;
       }));
     });
   }
+  /**
+   * Retires the findings a refused correction left without a repair task (#2878) once a pass of
+   * the kind that raised them has run after the grant and not raised them again (`live`). Only
+   * a finding still without a task and still open, confirmed or inconclusive is retired; one the
+   * pass raised again keeps its row and gets its correction. The decision is recorded.
+   */
+  private retireStranded(
+    runId: string,
+    state: RuntimeState,
+    pass: "review" | "convergence",
+    live: ReadonlySet<string>,
+  ): void {
+    const handed = state.strandedFindings.filter((f) => f.pass === pass);
+    if (!handed.length) return;
+    state.strandedFindings = state.strandedFindings.filter((f) => f.pass !== pass);
+    const rows = new Map(this.store.findings(runId).map((row) => [row.id, row]));
+    const retired = handed
+      .map((f) => rows.get(f.id))
+      .filter(
+        (row): row is FindingRow =>
+          row !== undefined &&
+          !row.repair_task_id &&
+          !live.has(row.id) &&
+          !["refuted", "resolved"].includes(row.status),
+      );
+    for (const row of retired) this.store.findingStatus(runId, row.id, "resolved");
+    this.store.artifact(
+      runId,
+      "recovery",
+      `stranded-findings/${newId()}.json`,
+      canonical({
+        pass,
+        retired: retired.map((row) => row.id),
+        raisedAgain: handed.filter((f) => live.has(f.id)).map((f) => f.id),
+        reason: `the ${pass} pass after a repair grant did not raise them again`,
+      }),
+    );
+  }
   /** The v1 review stage: correctness, security when triggered and language, each blocking. */
   private v1Reviewers(state: RuntimeState, policy: RunPolicy): Reviewer[] {
     const dimensions = v1ReviewDimensions(state, policy);
@@ -20086,6 +20133,7 @@ ${note}`;
       for (const old of this.store.findings(runId))
         if (old.repair_task_id && !live.has(old.id))
           this.store.findingStatus(runId, old.id, "resolved");
+      this.retireStranded(runId, state, "review", live);
     });
     const open = findings.filter(
       (f) => this.store.findings(runId).find((entry) => entry.id === f.id)?.status !== "refuted",
@@ -20769,6 +20817,12 @@ ${note}`;
                 : stageKind(v2.stage) === "review"
                   ? state.extraReviewRounds
                   : 0);
+          const strandedPass =
+            position.repairKind === "convergence"
+              ? ("convergence" as const)
+              : stageKind(v2.stage) === "review"
+                ? ("review" as const)
+                : null;
           if (count > bound)
             throw new WorkflowFault(
               "RECOVERY_REQUIRED",
@@ -20786,6 +20840,10 @@ ${note}`;
                   scope: "transition",
                   transitionId: transition.id,
                   required: count - bound,
+                  // The loop's findings got no task: a grant hands them to the next pass (#2878).
+                  ...(strandedPass
+                    ? { stranded: { pass: strandedPass, findingIds: findings.map((f) => f.id) } }
+                    : {}),
                 },
               },
             );

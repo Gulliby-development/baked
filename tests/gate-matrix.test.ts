@@ -18,6 +18,7 @@ import { evidencePaths, scopeRecord, stackFrames } from "../src/core/workflows/c
 import { cellSamples, cellSpec, omittedCellInput, withoutCellInput } from "./helpers/criteria-cell-fixtures.js";
 import { inStreamOrder, ProcessScope, windowsBatchInvocation, windowsProgram } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
+import { RepairBlockSchema } from "../src/core/workflows/repairable-schema.js";
 import { failureHash, repeatCheck } from "../src/core/workflows/repeated-failure.js";
 import {
   growthLimit,
@@ -5615,6 +5616,18 @@ describe("repair-limit decisions (#1577)", () => {
     expect(canRepairRun({ status: "blocked", reason: "no_progress", repairBlock })).toBe(true);
     expect(canRepairRun({ status: "blocked", reason: "no_progress" })).toBe(false);
     expect(canRepairRun({ status: "blocked", reason: "verification_failed", repairBlock })).toBe(false);
+  });
+});
+
+describe("repair-limit decisions: a grant hands the refused pass's findings over (#2878)", () => {
+  // R94 md-site: F2 and SEC-002 were recorded at maxRepairRounds and kept no task after the grant.
+  test("a stop names its stranded findings; an older record without them still offers the grant", () => {
+    const stranded = { limit: "maxRepairRounds", scope: "review", required: 1, taskIds: [], stranded: { pass: "review", findingIds: ["F2", "SEC-002"] } };
+    expect(RepairBlockSchema.parse(stranded).stranded).toEqual({ pass: "review", findingIds: ["F2", "SEC-002"] });
+    const older = RepairBlockSchema.parse({ limit: "maxRepairRounds", scope: "review", required: 1, taskIds: [] });
+    expect(older.stranded).toBeUndefined();
+    expect(canRepairRun({ status: "blocked", reason: "no_progress", repairBlock: older })).toBe(true);
+    expect(RepairBlockSchema.safeParse({ ...stranded, stranded: { pass: "checks", findingIds: ["F1"] } }).success).toBe(false);
   });
 });
 
