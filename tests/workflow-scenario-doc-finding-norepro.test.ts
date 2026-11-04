@@ -129,7 +129,7 @@ async function drive(policy: RunPolicy = basePolicy) {
 
 describe("scenario: a README correctness finding marked noRepro (#2835)", () => {
   test("the review and converge gates record a shadow would-stop for the README finding, none for the source one", async () => {
-    const { done, reviews, convergences, stops } = await drive();
+    const { done, reviews, convergences, stops } = await drive({ ...basePolicy, stopModes: { doc_finding_unrepaired: "shadow" } });
     // Shadow: both findings stay notes and the run completes as before.
     expect(done.status).toBe("completed");
     const review = reviews.find((g) => g.record.findings.some((f) => f.id === "F1"));

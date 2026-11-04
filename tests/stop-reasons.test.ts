@@ -105,9 +105,9 @@ describe("stop reasons", () => {
     expect(STOP_REASONS.unfinished_row_split.defaultMode).toBe("shadow");
     expect(STOP_REASONS.row_block_drift.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.row_block_drift.defaultMode).toBe("shadow");
-    // Shadow by default until its promotion (#2835); `enforce` repairs it in the gates (#2866).
+    // Promoted after R92-R93 (#2835): `enforce` repairs it in the gates (#2866); shadow stays a mode.
     expect(STOP_REASONS.doc_finding_unrepaired.modes).toEqual(["shadow", "advisory", "enforce"]);
-    expect(STOP_REASONS.doc_finding_unrepaired.defaultMode).toBe("shadow");
+    expect(STOP_REASONS.doc_finding_unrepaired.defaultMode).toBe("enforce");
     // Shadow until its promotion (#2501): a criterion literal no prescribed row holds.
     expect(STOP_REASONS.case_not_prescribed.modes).toEqual(["shadow", "advisory"]);
     expect(STOP_REASONS.case_not_prescribed.defaultMode).toBe("shadow");
