@@ -40,6 +40,7 @@ import {
   type TokenRange,
   tokenText,
 } from "../estimate.js";
+import { featureRowsLines } from "../feature-rows.js";
 import { forecastSamples, forecastStageCost, runForecastStages } from "../forecast-price.js";
 import { executingLeases } from "../leases.js";
 import { FEATURE_REQUEST_HEADING } from "../person-request.js";
@@ -132,6 +133,7 @@ import {
   boundaryPathCounts,
   type FeatureSize,
   featureDigest,
+  featureRowFiles,
   foldSkeletonFeatures,
   hostRowCases,
   type InitiativeFeature,
@@ -2437,7 +2439,7 @@ export class InitiativeService {
         reason: "initiative-row-owner",
         mode,
         featureId: found.owner,
-        key: `row-owner-r${revision}-${found.path}`,
+        key: `row-owner-r${revision}-${found.path}${found.shape === "row-split" ? `-split-${found.owner}-${found.needs}` : ""}`,
         summary: found.problem,
         inputs: {
           path: found.path,
@@ -2446,6 +2448,7 @@ export class InitiativeService {
           row: found.row,
           literal: found.literal,
           rows: found.rows,
+          ...(found.shape === "row-split" ? { shape: found.shape } : {}),
         },
       });
   }
@@ -6355,6 +6358,8 @@ export function featurePrompt(
       : "The split names no paths for this feature; stay within the boundary above.",
     `Contract this feature provides to the features that depend on it: ${feature.contract}`,
     ...(feature.skeleton?.length ? skeletonLines(plan, feature) : []),
+    // The rows of each shared row file this run delivers; `suppliedRows` reads them back (#2898).
+    ...featureRowsLines(featureRowFiles(plan, row.prompt, feature)),
     ...amendmentLines(amendments),
   ];
   for (const { feature: dependency, contract } of upstream) {
