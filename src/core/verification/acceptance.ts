@@ -1,7 +1,6 @@
 import { hashJson } from "../specs/hash.js";
 import { widenAuthorized } from "../workflows/corrective-scope.js";
 import { applyReleasedCreates, releasedFrom } from "../workflows/dependencies.js";
-import { WorkflowFault } from "../workflows/errors.js";
 import { LANGUAGE_REVIEW_PROFILE, touchesLanguageFiles } from "../workflows/language.js";
 import { CorrectionSchema, PolicySchema, type RunPolicy } from "../workflows/schemas.js";
 import type { WorkflowStore } from "../workflows/store.js";
@@ -14,6 +13,18 @@ import {
   type Stage,
   type WorkflowV2,
 } from "../workflows/v2/definition.js";
+import {
+  acceptanceRefusal,
+  authorityAdvice,
+  checkAdvice,
+  criterionAdvice,
+  decisionAdvice,
+  findingsAdvice,
+  manualAdvice,
+  reviewAdvice,
+  taskAdvice,
+  taskChecksAdvice,
+} from "./acceptance-advice.js";
 import { correctionAuthorized } from "./convergence.js";
 import { limitedCriteria } from "./convergence-stop.js";
 import { validateEvidence } from "./evidence.js";
@@ -99,6 +110,11 @@ function acceptance(
   state: RuntimeState,
   required: { convergence: boolean; checks: string[]; taskChecks: string[]; reviews: string[] },
 ): void {
+  // Every refusal names the remedy of its predicate (#2879); a new predicate comes with its own.
+  const authority = (
+    diagnostic: string,
+    code: "STALE_DECISION" | "ARTIFACT_MISSING" = "STALE_DECISION",
+  ) => acceptanceRefusal(code, "authority", authorityAdvice(runId, diagnostic));
   if (
     !state.spec ||
     !state.graph ||
@@ -108,14 +124,14 @@ function acceptance(
     !state.approvalRoot ||
     store.run(runId).approval_digest !== state.approvalRoot
   )
-    throw new WorkflowFault("STALE_DECISION", "Missing accepted artifacts or convergence");
+    throw authority("Missing accepted artifacts or convergence");
   let graphHash = hashJson(state.rootGraph);
   const reconstructed = structuredClone(state.rootGraph);
   const links = state.correctionHashes.map((correctionHash) => {
     const artifact = store
       .artifacts(runId)
       .find((a) => a.kind === "correction" && a.content_hash === correctionHash);
-    if (!artifact) throw new WorkflowFault("ARTIFACT_MISSING", "Correction chain is incomplete");
+    if (!artifact) throw authority("Correction chain is incomplete", "ARTIFACT_MISSING");
     return CorrectionSchema.parse(JSON.parse(store.readArtifact(runId, artifact.id)));
   });
   // A corrective added as it was created: the writes later `host-widen` links added are left out
@@ -132,7 +148,7 @@ function acceptance(
   let frozen: RunPolicy | undefined;
   for (const [index, correction] of links.entries()) {
     if (correction.parentDigest !== state.approvalRoot || correction.parentGraphHash !== graphHash)
-      throw new WorkflowFault("STALE_DECISION", "Invalid correction chain");
+      throw authority("Invalid correction chain");
     if (correction.rule === "host-release") {
       // A planned-ahead run's release turns planned creates of files it brought in into modifies
       // (#2514), and planned modifies of files it removed into creates (#2517): the same tasks
@@ -160,7 +176,7 @@ function acceptance(
         ) ||
         hashJson(next) !== correction.newGraphHash
       )
-        throw new WorkflowFault("STALE_DECISION", "Correction exceeds the approved authority");
+        throw authority("Correction exceeds the approved authority");
       reconstructed.tasks = next.tasks;
       graphHash = correction.newGraphHash;
       continue;
@@ -177,11 +193,11 @@ function acceptance(
           task.writes.some((w) => w.path === write.path) ||
           !widenAuthorized(write.path, state, policy)
         )
-          throw new WorkflowFault("STALE_DECISION", "Correction exceeds the approved authority");
+          throw authority("Correction exceeds the approved authority");
         task.writes.push({ path: write.path, action: write.action });
       }
       if (!correction.widened?.length || hashJson(reconstructed) !== correction.newGraphHash)
-        throw new WorkflowFault("STALE_DECISION", "Correction changed existing tasks");
+        throw authority("Correction changed existing tasks");
       graphHash = correction.newGraphHash;
       continue;
     }
@@ -199,19 +215,23 @@ function acceptance(
         reconstructed.tasks.some((t) => t.id === task.id) ||
         task.findingIds.some((id) => !correction.findingIds.includes(id))
       )
-        throw new WorkflowFault("STALE_DECISION", "Correction exceeds the approved authority");
+        throw authority("Correction exceeds the approved authority");
       reconstructed.tasks.push(task);
     }
     if (hashJson(reconstructed) !== correction.newGraphHash)
-      throw new WorkflowFault("STALE_DECISION", "Correction changed existing tasks");
+      throw authority("Correction changed existing tasks");
     graphHash = correction.newGraphHash;
   }
   if (graphHash !== hashJson(state.graph))
-    throw new WorkflowFault("STALE_DECISION", "Graph has no valid authorization chain");
+    throw authority("Graph has no valid authorization chain");
   for (const task of state.graph.tasks) {
     const row = store.tasks(runId).find((r) => r.id === task.id);
     if (!row || !["implemented", "verified"].includes(row.status))
-      throw new WorkflowFault("OUTPUT_INVALID", `Task ${task.id} is not implemented`);
+      throw acceptanceRefusal(
+        "OUTPUT_INVALID",
+        "task",
+        taskAdvice(runId, task.id, row?.status ?? null),
+      );
   }
   const debt = hostPassedChecks(store, runId);
   for (const checkId of required.checks) {
@@ -229,31 +249,37 @@ function acceptance(
       (last?.status === "failed" && debt.has(last.evidence_id)) ||
       accepted;
     if (!last || !passed || last.validity !== "current")
-      throw new WorkflowFault(
-        "OUTPUT_INVALID",
-        `Required check ${checkId} has not passed on current sources`,
-      );
+      throw acceptanceRefusal("OUTPUT_INVALID", "check", checkAdvice(store, runId, checkId));
     validateEvidence(store, runId, state.snapshotId, [last.evidence_id]);
   }
   for (const task of state.graph.tasks)
     if (task.checkIds.some((id) => required.taskChecks.includes(id))) {
       const row = store.tasks(runId).find((r) => r.id === task.id);
       if (!row || !hasTaskGate(row, state.taskGates))
-        throw new WorkflowFault("OUTPUT_INVALID", `Task checks of ${task.id} have not passed`);
+        throw acceptanceRefusal(
+          "OUTPUT_INVALID",
+          "task-checks",
+          taskChecksAdvice(store, runId, task.id),
+        );
     }
   for (const key of required.reviews)
     if (!state.reviews[key] || state.reviews[key]?.verdict === "inconclusive")
-      throw new WorkflowFault("OUTPUT_INVALID", `Required ${key} review did not pass`);
-  if (store.requests(runId).some(blocksRun))
-    throw new WorkflowFault("STALE_DECISION", "Pending decisions remain");
-  const unresolved = store
-    .findings(runId)
-    .filter((f) => !["refuted", "resolved"].includes(f.status));
-  // Named, so a stop shows which findings it waits on (#2878).
-  if (unresolved.length)
-    throw new WorkflowFault(
+      throw acceptanceRefusal(
+        "OUTPUT_INVALID",
+        "review",
+        reviewAdvice(store, runId, key, state.reviews[key]?.verdict ?? null),
+      );
+  assertNoPendingDecisions(store, runId);
+  const open = store.findings(runId).filter((f) => !["refuted", "resolved"].includes(f.status));
+  if (open.length)
+    throw acceptanceRefusal("OUTPUT_INVALID", "findings", findingsAdvice(store, runId, open), {
+      findingIds: open.map((f) => f.id),
+    });
+  const criterionRefusal = (criterionId: string, diagnostic: string) =>
+    acceptanceRefusal(
       "OUTPUT_INVALID",
-      `Unresolved findings remain: ${unresolved.map((f) => `${f.id} ${f.status}`).join(", ")}`,
+      "criterion",
+      criterionAdvice(store, runId, criterionId, diagnostic),
     );
   const convergence = state.convergence;
   const limited = limitedCriteria(state);
@@ -264,21 +290,22 @@ function acceptance(
       if (criterion.method === "manual") {
         const manual = state.manualCriteria[criterion.id];
         if (!manual || manual.snapshotId !== state.snapshotId)
-          throw new WorkflowFault(
+          throw acceptanceRefusal(
             "OUTPUT_INVALID",
-            `Missing trusted manual evidence for ${criterion.id}`,
+            "manual",
+            manualAdvice(store, runId, criterion.id),
           );
         validateEvidence(store, runId, state.snapshotId, [manual.evidenceId]);
       } else if (criterion.method === "automated" && required.checks.length === 0)
-        throw new WorkflowFault(
-          "OUTPUT_INVALID",
+        throw criterionRefusal(
+          criterion.id,
           `Criterion ${criterion.id} is automated but no required check covers it`,
         );
       else if (
         criterion.method === "post-release" &&
         !state.deferredCriteria.includes(criterion.id)
       )
-        throw new WorkflowFault("OUTPUT_INVALID", `Criterion ${criterion.id} was not deferred`);
+        throw criterionRefusal(criterion.id, `Criterion ${criterion.id} was not deferred`);
       continue;
     }
     const result = convergence.coverage.find((c) => c.criterionId === criterion.id);
@@ -298,16 +325,29 @@ function acceptance(
       if (limited.has(criterion.id)) continue;
       const manual = state.manualCriteria[criterion.id];
       if (!manual || manual.snapshotId !== state.snapshotId)
-        throw new WorkflowFault(
+        throw acceptanceRefusal(
           "OUTPUT_INVALID",
-          `Missing trusted manual evidence for ${criterion.id}`,
+          "manual",
+          manualAdvice(store, runId, criterion.id),
         );
       validateEvidence(store, runId, state.snapshotId, [manual.evidenceId]);
     } else if (result?.verdict !== "pass" && !limited.has(criterion.id))
       // A known limitation: convergence stopped with this criterion's findings open and a
       // person (or the assume rule) accepted them; the run report lists them.
-      throw new WorkflowFault("OUTPUT_INVALID", `Criterion ${criterion.id} did not pass`);
+      throw criterionRefusal(criterion.id, `Criterion ${criterion.id} did not pass`);
     if (result?.verdict === "pass")
       validateEvidence(store, runId, state.snapshotId, result.evidenceIds);
   }
+}
+
+/**
+ * Acceptance refuses a run while a decision waits for a person, with the command that answers
+ * each one (#2879); also the check of a v2 run that wrote no files (`acceptV2`).
+ */
+export function assertNoPendingDecisions(store: WorkflowStore, runId: string): void {
+  const pending = store.requests(runId).filter(blocksRun);
+  if (pending.length)
+    throw acceptanceRefusal("STALE_DECISION", "decision", decisionAdvice(runId, pending), {
+      requestIds: pending.map((r) => r.id),
+    });
 }

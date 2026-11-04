@@ -50,8 +50,10 @@ import {
 import {
   assertAcceptance,
   assertAcceptanceV2,
+  assertNoPendingDecisions,
   v1ReviewDimensions,
 } from "../verification/acceptance.js";
+import { acceptanceRefusal, effectsAdvice } from "../verification/acceptance-advice.js";
 import { caseCommand, probeCase } from "../verification/case-source-probe.js";
 import {
   buildCheckEnv,
@@ -201,6 +203,7 @@ import {
   testCapProblem,
   testCapsOf,
 } from "../verification/test-cap.js";
+import { ACCEPTANCE_REFUSAL, ACCEPTANCE_REFUSALS_DIR } from "./acceptance-refusal.js";
 import {
   literalPropertyProblems,
   plannerRows,
@@ -1116,7 +1119,7 @@ import type {
   RuntimeState,
   Task,
 } from "./types.js";
-import { acceptanceGrants, blocksRun } from "./v2/acceptance.js";
+import { acceptanceGrants } from "./v2/acceptance.js";
 import { type BrowserDriverOptions, runAcceptanceGate } from "./v2/acceptance-gate.js";
 import {
   effectiveMode,
@@ -3910,6 +3913,15 @@ export class WorkflowScheduler {
             "recovery",
             `recovery/advice-${diagnostic.id}.json`,
             canonical(recovery),
+          );
+        // A refusal of acceptance is a host predicate, not a model's output: its own advice stands
+        // after a second stop too, and the repeat guard leaves it alone (#2879).
+        if (fault instanceof WorkflowFault && fault.details.hostPredicate === ACCEPTANCE_REFUSAL)
+          this.store.artifact(
+            runId,
+            "recovery",
+            `${ACCEPTANCE_REFUSALS_DIR}${diagnostic.id}.json`,
+            canonical({ predicate: fault.details.predicate ?? null }),
           );
         const repair = RepairBlockSchema.safeParse(
           fault instanceof WorkflowFault ? fault.details.repairBlock : undefined,
@@ -21121,15 +21133,21 @@ ${note}`;
     );
     const acceptable = (): void => {
       if (writes) assertAcceptanceV2(this.store, runId, state, policy, definition, gates);
-      else if (this.store.requests(runId).some(blocksRun))
-        throw new WorkflowFault("STALE_DECISION", "Pending decisions remain");
+      else assertNoPendingDecisions(this.store, runId);
       const unreconciled = this.store
         .effects(runId)
         .filter((e) => ["prepared", "unknown"].includes(e.status));
       if (unreconciled.length)
-        throw new WorkflowFault("RECOVERY_REQUIRED", "Unreconciled effects remain", {
-          effectIds: unreconciled.map((e) => e.id),
-        });
+        throw acceptanceRefusal(
+          "RECOVERY_REQUIRED",
+          "effects",
+          effectsAdvice(
+            this.store,
+            runId,
+            unreconciled.map((e) => e.id),
+          ),
+          { effectIds: unreconciled.map((e) => e.id) },
+        );
     };
     settleSupersededEffects(this.store, runId);
     await this.commitAccepted(runId, state, acceptable);
@@ -22472,9 +22490,16 @@ ${note}`;
         .effects(runId)
         .filter((e) => ["prepared", "unknown"].includes(e.status));
       if (unreconciled.length)
-        throw new WorkflowFault("RECOVERY_REQUIRED", "Unreconciled effects remain", {
-          effectIds: unreconciled.map((e) => e.id),
-        });
+        throw acceptanceRefusal(
+          "RECOVERY_REQUIRED",
+          "effects",
+          effectsAdvice(
+            this.store,
+            runId,
+            unreconciled.map((e) => e.id),
+          ),
+          { effectIds: unreconciled.map((e) => e.id) },
+        );
     };
     settleSupersededEffects(this.store, runId);
     await this.commitAccepted(runId, state, acceptable);

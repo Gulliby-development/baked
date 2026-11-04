@@ -25,6 +25,7 @@ import {
 } from "../verification/convergence-stop.js";
 import { noteSiblingFindings } from "../verification/initiative-ownership.js";
 import { hostDiff, sourceManifest } from "../verification/snapshot.js";
+import { acceptanceRefused } from "./acceptance-refusal.js";
 import { NativeAgentExecutor } from "./agent-executor.js";
 import { supersedeResearch } from "./analysis-notes.js";
 import { approvalDigest } from "./approval.js";
@@ -1588,11 +1589,14 @@ export class NativeWorkflowService implements WorkflowService {
         }
       }
       const blocked = this.store.run(runId);
-      // A remedy changes what the next attempt does, so it is no repeat of the same attempt.
+      // A remedy changes what the next attempt does, so it is no repeat of the same attempt. A
+      // refusal of acceptance is no model's output: no note goes to a model and no guard applies
+      // (#2879); acceptance decides again.
       if (
         !remedy &&
         blocked.status === "blocked" &&
         blocked.reason === "invalid_output" &&
+        !acceptanceRefused(this.store, runId) &&
         !this.noteInvalidOutput(runId)
       )
         throw new WorkflowFault("STALE_DECISION", repeatedInvalidOutputAdvice(runId), {
