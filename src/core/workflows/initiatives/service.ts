@@ -17,6 +17,7 @@ import { availableVendorModels } from "../../llm/vendor-models.js";
 import { matchGlob } from "../../platform/index.js";
 import { canonical, hashBytes, hashJson } from "../../specs/hash.js";
 import { specPublication } from "../../specs/render.js";
+import { acceptanceRefused } from "../acceptance-refusal.js";
 import { type BudgetLimits, budgetUsage, limitsOf } from "../budget.js";
 import { cleanInitiativePace, cleanRates } from "../clean-pace.js";
 import { autoCostTolerance } from "../cost-tolerance.js";
@@ -579,16 +580,20 @@ export interface InitiativeStep {
 /**
  * How a blocked run's line tells a person to resolve it: the command, or, when its recorded advice
  * offers no plain resume because one would repeat the stop (#2201, #2520), that advice's summary.
+ * A refusal of acceptance (`refused`) offers its own remedies, so the line gives its summary
+ * (#2879).
  */
 function resolveWith(
   run: { status: string; reason?: string | null },
   runId: string,
   recorded: RecoveryAdvice | undefined,
   verb: "repair" | "resume",
+  refused = false,
 ): string {
-  return verb === "resume" && recorded && retryRefused(run, recorded)
-    ? `a plain resume would repeat its stop: ${recorded.summary}`
-    : `resolve it with baked workflow ${verb} ${runId}`;
+  if (verb === "resume" && recorded && retryRefused(run, recorded))
+    return `a plain resume would repeat its stop: ${recorded.summary}`;
+  if (verb === "resume" && refused && recorded) return recorded.summary;
+  return `resolve it with baked workflow ${verb} ${runId}`;
 }
 
 /** True when a feature would start with less than the smallest share a run can work with. */
@@ -5026,7 +5031,7 @@ export class InitiativeService {
           return action(
             "blocked",
             recoveryAdvice(
-              `The decompose run is blocked (${run.reason}); ${resolveWith(run, run.runId, recorded, "resume")}`,
+              `The decompose run is blocked (${run.reason}); ${resolveWith(run, run.runId, recorded, "resume", acceptanceRefused(this.workflows.store, run.runId))}`,
               `The decompose run is blocked (${run.reason}).${recorded ? ` ${recorded.summary}` : ""}`,
               ...(recorded?.remedies ?? [{ action: "resume" as const, runId: run.runId }]),
             ),
@@ -5315,7 +5320,7 @@ export class InitiativeService {
         view.blockers = [
           deadline
             ? `run ${link.run_id} is blocked (${run.reason}): ${deadline.message}`
-            : `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; ${resolveWith(run, link.run_id, recorded, canRepairRun(run) ? "repair" : "resume")}`,
+            : `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; ${resolveWith(run, link.run_id, recorded, canRepairRun(run) ? "repair" : "resume", acceptanceRefused(this.workflows.store, link.run_id))}`,
         ];
         const wait = costRefusalWaitOf(this.workflows.store, link.run_id);
         if (wait)

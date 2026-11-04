@@ -1,6 +1,7 @@
 import { buildId } from "../build-info.js";
 import { ROUTING_ARTIFACT } from "../llm/model-routing.js";
 import { canonical, hashBytes } from "../specs/hash.js";
+import { acceptanceRefused } from "./acceptance-refusal.js";
 import { releaseLinkCount } from "./release-writes.js";
 import { type RecoveryAdvice, recoveryAdvice } from "./remedies.js";
 import { REPEAT_KIND, type RepeatDecision } from "./repeated-failure.js";
@@ -277,12 +278,16 @@ export function recordInvalidOutputDecision(store: WorkflowStore, runId: string)
   );
 }
 
-/** A blocked `invalid_output` run whose plain resume the repeat guard would refuse. */
+/**
+ * A blocked `invalid_output` run whose plain resume the repeat guard would refuse. A refusal of
+ * acceptance is never one: it is a host predicate no model reads, so its own advice stands (#2879).
+ */
 export function repeatsInvalidOutput(store: WorkflowStore, runId: string): boolean {
   const run = store.run(runId);
   return (
     run.status === "blocked" &&
     run.reason === "invalid_output" &&
+    !acceptanceRefused(store, runId) &&
     invalidOutputRepeat(store, runId)?.repeats === true
   );
 }
