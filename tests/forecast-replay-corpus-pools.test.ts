@@ -65,8 +65,10 @@ describe("the size pools' ranges over the last rounds (#2150)", () => {
   // of 62 (37.1%, the bound 36.0%; R87's alone 22 of 54 and R90's 22 of 57 on the mains they were
   // opened on), 11 of them medium features of one to three paths priced at the no-fit medium
   // pool's low end (1.11M-1.25M). The few-path share (#2640), the default since #2893, prices
-  // them at the root of their share of the pool's median paths: 15 of 62. It brings rounds 63 to
-  // 68 within the bound by default too, from 24 of 60 below to 18.
+  // them at the root of their share of the pool's median paths: 15 of 62. With rounds 92 to 95 in
+  // the corpus the three traces' window is R90 to R91 and R92 to R95: 17 of 44 below without the
+  // share (38.6%, the bound 38.1%), 15 with it. It brings rounds 63 to 68 within the bound by
+  // default too, from 24 of 60 below to 18.
   test("rounds 63 to 68 and the rolling window are within the bound by default and at a half-life of 2", () => {
     const off = rangeMisses();
     expect(off.r63to68.features).toBe(60);
