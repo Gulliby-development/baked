@@ -115,6 +115,7 @@ import {
 } from "../src/core/workflows/quality/mutation-tools.js";
 import { generateMutants, isTestCheck, proposalFiles } from "../src/core/workflows/quality/mutation.js";
 import {
+  checkPropertyTests,
   libraryFiles,
   propertyLibraries,
   propertyTestKind,
@@ -3552,6 +3553,18 @@ for (const stack of STACKS) {
       const written = writtenTestsCheck(root, preselected(), writes);
       expect(plannedWrittenTests(preselected(), writes)?.id ?? null).toBe(written?.id ?? null);
       if (written) expect(plannedWrittenTests(preselected(), writes)?.timeoutMs).toBe(written.timeoutMs);
+    });
+
+    // R95 youngkit-update (#2886): an exact patch whose files the request supplies gets no property
+    // finding, in every stack; a test file the run writes itself still needs its property test.
+    cell(stack, "property gate gives way to supplied files (#2886)", () => {
+      const path = fixture.property.path;
+      const criteria = [{ id: "AC-001", property: "numbers" }];
+      const tasks = [{ criterionIds: ["AC-001"], writes: [{ path, action: "create" }] }];
+      const status = (supplied: string[]) =>
+        checkPropertyTests("on", criteria, tasks, () => "no property here\n", undefined, new Set(supplied)).criteria[0]?.status;
+      expect(status([])).toBe("missing");
+      expect(status([path])).toBe("waived");
     });
 
     cell(stack, "test-task-price-and-case-capacity (#1595)", () => {

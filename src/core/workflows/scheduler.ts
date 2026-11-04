@@ -18205,6 +18205,26 @@ ${note}`;
     if (!graph) return new Map();
     return prescribedRowFiles(statedRequest(state, this.store.requests(runId)), graph);
   }
+  /**
+   * The files of the plan the request gives verbatim: a whole file, or an exact diff, that is not
+   * an API listing (`suppliedBlocks`). A host default that adds a test construct gives way to them
+   * (#2886).
+   */
+  private suppliedPlanPaths(
+    runId: string,
+    state: RuntimeState,
+    tasks: readonly Task[],
+  ): Set<string> {
+    const paths = [...new Set(tasks.flatMap((t) => t.writes.map((w) => w.path)))];
+    if (!paths.length) return new Set();
+    const blocks = suppliedBlocks(statedRequest(state, this.store.requests(runId)), paths);
+    return new Set(
+      paths.filter((path) => {
+        const given = blocks.get(path) ?? [];
+        return given.length > 0 && given.every((b) => b.kind === "diff" || !b.listing);
+      }),
+    );
+  }
   /** The content of the files the request supplies verbatim (`suppliedFileContents`, #2646). */
   private suppliedFiles(runId: string, state: RuntimeState): string[] {
     const graph = state.rootGraph ?? state.graph;
@@ -18345,6 +18365,7 @@ ${note}`;
         }
       },
       this.propertyLibraries(runId, state),
+      this.suppliedPlanPaths(runId, state, tasks),
     );
     const evidenceId = this.store.transaction(() => {
       const artifact = this.store.artifact(runId, "quality", QUALITY_PROPERTIES, canonical(result));
