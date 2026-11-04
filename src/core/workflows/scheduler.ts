@@ -932,7 +932,9 @@ import {
   type ConvergenceVerdict,
   convergenceGateCrashKeeps,
   convergenceGateDecision,
+  convergenceGateDocCarries,
   convergenceGateDocKeeps,
+  convergenceGateDocRepeats,
   convergenceGateFinding,
   convergenceReproCandidates,
   type GateFinding,
@@ -944,7 +946,9 @@ import {
   reviewGateCandidates,
   reviewGateCrashKeeps,
   reviewGateDecision,
+  reviewGateDocCarries,
   reviewGateDocKeeps,
+  reviewGateDocRepeats,
 } from "./review-gate.js";
 import {
   applyRevision,
@@ -1099,6 +1103,7 @@ import type {
   Check,
   ExecutionRequest,
   HostTool,
+  ReviewNote,
   RuntimeState,
   Task,
 } from "./types.js";
@@ -1201,6 +1206,10 @@ const repairSeverities = (
     : policy.lowFindings === "note"
       ? NOT_LOW
       : ALL_SEVERITIES;
+
+/** The findings a reviewer says repeat an earlier one (`repeatOf`), by ID (#2868). */
+const repeatsOf = (findings: readonly Review["findings"][number][]): Set<string> =>
+  new Set(findings.filter((f) => f.repeatOf).map((f) => f.id));
 
 /** The task graph as the scheduler stores it: hashes are bound to the accepted spec and plan. */
 function planGraph(
@@ -3559,6 +3568,12 @@ export class WorkflowScheduler {
                 );
               const crashes = this.reproCrashes(gate.findings, outcomes, review.findings);
               const decision = convergenceGateDecision(gate);
+              const verdictOf = new Map(decision.verdicts.map((v) => [v.id, v.verdict]));
+              // A kept documentation finding rides the correction this gate starts anyway (#2868).
+              const carried = new Set(
+                convergenceGateDocCarries(gate).filter((id) => verdictOf.get(id) !== "repair"),
+              );
+              for (const id of carried) verdictOf.set(id, "repair");
               const gatePath = `${CONVERGENCE_GATE_DIR}${newId()}.json`;
               this.store.transaction(() =>
                 this.store.artifact(
@@ -3569,6 +3584,7 @@ export class WorkflowScheduler {
                     schemaVersion: 1,
                     ...gate,
                     decision,
+                    ...(carried.size ? { carried: [...carried] } : {}),
                   } satisfies ConvergenceGateRecord),
                 ),
               );
@@ -3585,8 +3601,9 @@ export class WorkflowScheduler {
                 gatePath,
                 convergenceGateDocKeeps(gate),
                 review.findings,
+                carried,
+                convergenceGateDocRepeats(gate, repeatsOf(review.findings)),
               );
-              const verdictOf = new Map(decision.verdicts.map((v) => [v.id, v.verdict]));
               const ofVerdict = (verdict: ConvergenceVerdict) =>
                 review.findings.filter((f) => verdictOf.get(f.id) === verdict);
               const noted = ofVerdict("notes");
@@ -16473,18 +16490,36 @@ ${note}`;
     gatePath: string,
     keeps: readonly string[],
     findings: readonly Review["findings"][number][],
+    carried: ReadonlySet<string>,
+    repeats: readonly string[],
   ): void {
     const mode = stopMode(policy, "doc_finding_unrepaired");
     if (mode === "enforce") return;
-    for (const findingId of keeps) {
+    for (const findingId of [...keeps, ...repeats]) {
       const finding = findings.find((f) => f.id === findingId);
       if (!finding) continue;
+      const repeatOf = finding.repeatOf ?? null;
+      // A carried finding rides a correction already (#2868); a repeat that rides none is what
+      // the promotion would open one more correction for.
+      const outcome = carried.has(findingId)
+        ? "it rides the correction another finding of this review starts"
+        : repeatOf
+          ? `it repeats ${repeatOf}, which no correction repaired: as a partial finding it would open one more correction`
+          : "as a partial finding it would start a correction";
       recordWouldStop(this.store, runId, {
         reason: "doc_finding_unrepaired",
         mode,
         key: `${gatePath}#${findingId}`,
-        summary: `Documentation finding ${findingId} (${finding.kind}, noRepro) on ${finding.file ?? "its file"} stays a note for its kind: as a partial finding it would start a correction`,
-        inputs: { findingId, kind: finding.kind, file: finding.file ?? null },
+        summary: `Documentation finding ${findingId} (${finding.kind}, noRepro) on ${finding.file ?? "its file"} is kept a note for its kind: ${outcome}`,
+        inputs: {
+          findingId,
+          kind: finding.kind,
+          file: finding.file ?? null,
+          carried: carried.has(findingId),
+          repeatOf,
+          // Kept out only by the round's severity floor (#2868).
+          belowFloor: repeats.includes(findingId),
+        },
       });
     }
   }
@@ -19601,6 +19636,12 @@ ${note}`;
       throw new WorkflowFault("ARTIFACT_MISSING", "Review snapshot missing");
     const findings: Review["findings"] = [];
     const owners = new Map<string, Reviewer>();
+    // Each reviewer's kept documentation findings that ride a correction it starts (#2868).
+    const carries: {
+      reviewer: Reviewer;
+      result: Review;
+      notes: { finding: Review["findings"][number]; reason: ReviewNote["reason"] }[];
+    }[] = [];
     const severities = repairSeverities(
       this.store.run(runId),
       policy,
@@ -19877,6 +19918,8 @@ ${note}`;
           );
         const crashes = this.reproCrashes(gate.findings, outcomes, result.findings);
         const decided = new Set(reviewGateDecision(gate));
+        // A kept documentation finding rides the correction this gate starts anyway (#2868).
+        const carried = new Set(reviewGateDocCarries(gate).filter((id) => !decided.has(id)));
         const gatePath = `${REVIEW_GATE_DIR}${reviewer.key}-${newId()}.json`;
         this.store.transaction(() =>
           this.store.artifact(
@@ -19887,6 +19930,7 @@ ${note}`;
               schemaVersion: 1,
               ...gate,
               repaired: [...decided],
+              ...(carried.size ? { carried: [...carried] } : {}),
             } satisfies ReviewGateRecord),
           ),
         );
@@ -19897,26 +19941,33 @@ ${note}`;
           gatePath,
           reviewGateDocKeeps(gate),
           result.findings,
+          carried,
+          reviewGateDocRepeats(gate, repeatsOf(result.findings)),
         );
         const blocking = result.findings.filter((f) => decided.has(f.id));
         const repaired = new Set(blocking.map((f) => f.id));
+        const reasoned = (finding: Review["findings"][number]) => ({
+          finding,
+          reason: reviewer.required
+            ? noteReason(
+                finding,
+                severities.filter((s) => reviewer.blocking.includes(s)),
+                policy.reviewMinConfidence,
+              )
+            : "advisory",
+        });
         addReviewNotes(
           state.reviewNotes,
           reviewer.dimension,
           reviewSnapshotId,
-          result.findings
-            .filter((f) => !repaired.has(f.id))
-            .map((finding) => ({
-              finding,
-              reason: reviewer.required
-                ? noteReason(
-                    finding,
-                    severities.filter((s) => reviewer.blocking.includes(s)),
-                    policy.reviewMinConfidence,
-                  )
-                : "advisory",
-            })),
+          result.findings.filter((f) => !repaired.has(f.id) && !carried.has(f.id)).map(reasoned),
         );
+        if (carried.size)
+          carries.push({
+            reviewer,
+            result,
+            notes: result.findings.filter((f) => carried.has(f.id)).map(reasoned),
+          });
         for (const finding of this.recordFindings(runId, result, blocking)) {
           findings.push(finding);
           owners.set(finding.id, reviewer);
@@ -19989,6 +20040,20 @@ ${note}`;
     const open = findings.filter(
       (f) => this.store.findings(runId).find((entry) => entry.id === f.id)?.status !== "refuted",
     );
+    // The kept documentation findings ride a correction that still opens (#2868); when the host or
+    // a skeptic refuted every finding that opened it, they stay notes, so no correction is added.
+    for (const carry of carries)
+      if (open.length)
+        for (const finding of this.recordFindings(
+          runId,
+          carry.result,
+          carry.notes.map((n) => n.finding),
+        )) {
+          open.push(finding);
+          owners.set(finding.id, carry.reviewer);
+        }
+      else
+        addReviewNotes(state.reviewNotes, carry.reviewer.dimension, reviewSnapshotId, carry.notes);
     if (state.position)
       for (const reviewer of reviewers) {
         const result = state.reviews[reviewer.key];

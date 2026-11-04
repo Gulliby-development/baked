@@ -67,6 +67,11 @@ export interface ReviewGateRecord extends ReviewGate {
   schemaVersion: 1;
   /** The finding IDs that started a correction. */
   repaired: string[];
+  /**
+   * The documentation findings the gate kept that ride that correction (`reviewGateDocCarries`,
+   * #2868). Absent when none, and in records before #2868.
+   */
+  carried?: string[];
 }
 
 const labels = (f: GateFinding): FindingLabels => ({
@@ -194,6 +199,31 @@ export function reviewGateDocKeeps(gate: ReviewGate): string[] {
   return reviewGateDecision(gate, { doc: true }).filter((id) => !decided.has(id));
 }
 
+/**
+ * The documentation findings the gate keeps that ride a correction it starts anyway (#2868): the
+ * shadow documentation rule's keeps (`reviewGateDocKeeps`), only when another finding of the same
+ * gate repairs. The correction's task gets their file, claim and proposed fix, so no correction,
+ * round or stop is added. R92 tailclose's corrective T003 fixed F3 (`missing`, README.md) and never
+ * saw F1 and F2 (`correctness`, `noRepro`, the same README), which shipped.
+ */
+export function reviewGateDocCarries(gate: ReviewGate): string[] {
+  return reviewGateDecision(gate).length ? reviewGateDocKeeps(gate) : [];
+}
+
+/**
+ * The documentation findings that repeat an earlier one (`repeats`: the reviewer's `repeatOf`) and
+ * that the shadow documentation rule keeps out only for the round's severity floor (#2868): after
+ * the first correction a medium finding no longer repairs, so R92 tailclose's second review raised
+ * F1 and F2 again and the run completed with no would-stop. Each records a `doc_finding_unrepaired`
+ * would-stop that it would open one more correction; nothing changes until it is promoted.
+ */
+export function reviewGateDocRepeats(gate: ReviewGate, repeats: ReadonlySet<string>): string[] {
+  const wider = { ...gate, severities: gate.blocking };
+  return reviewGateDocKeeps(wider).filter(
+    (id) => repeats.has(id) && !reviewGateDocKeeps(gate).includes(id),
+  );
+}
+
 /** What the convergence gate knows of a finding: the review gate's labels and what the notes rule reads. */
 export interface ConvergenceGateFinding extends GateFinding {
   /** The finding is on a test or documentation file. */
@@ -241,6 +271,8 @@ export const CONVERGENCE_GATE_DIR = "convergence-gate/";
 export interface ConvergenceGateRecord extends ConvergenceGate {
   schemaVersion: 1;
   decision: ConvergenceDecision;
+  /** The documentation findings that ride its correction (`convergenceGateDocCarries`, #2868). */
+  carried?: string[];
 }
 
 export function convergenceGateFinding(
@@ -362,6 +394,35 @@ export function convergenceGateCrashKeeps(gate: ConvergenceGate): string[] {
  */
 export function convergenceGateDocKeeps(gate: ConvergenceGate): string[] {
   return convergenceShadowKeeps(gate, { doc: true });
+}
+
+/**
+ * The convergence findings that ride a correction the gate starts anyway (#2868), as
+ * `reviewGateDocCarries` for the review gate.
+ */
+export function convergenceGateDocCarries(gate: ConvergenceGate): string[] {
+  return convergenceGateDecision(gate).verdicts.some((v) => v.verdict === "repair")
+    ? convergenceGateDocKeeps(gate)
+    : [];
+}
+
+/** The severities a converge gate repairs in its first round when low findings are notes. */
+const FIRST_ROUND: readonly Finding["severity"][] = ["critical", "high", "medium"];
+
+/**
+ * The convergence findings that repeat an earlier documentation finding and that the shadow
+ * documentation rule keeps out only for the round's severity floor (#2868), as
+ * `reviewGateDocRepeats` for the review gate.
+ */
+export function convergenceGateDocRepeats(
+  gate: ConvergenceGate,
+  repeats: ReadonlySet<string>,
+): string[] {
+  const kept = new Set(convergenceGateDocKeeps(gate));
+  const severities = [...new Set([...gate.severities, ...FIRST_ROUND])];
+  return convergenceGateDocKeeps({ ...gate, severities }).filter(
+    (id) => repeats.has(id) && !kept.has(id),
+  );
 }
 
 function convergenceShadowKeeps(gate: ConvergenceGate, rules: GateShadowRules): string[] {
