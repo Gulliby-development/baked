@@ -33,6 +33,8 @@ jobs:
       run: ${{ steps.decide.outputs.run }}
       targeted: ${{ steps.decide.outputs.targeted }}
       files: ${{ steps.decide.outputs.files }}
+      windows_shards: ${{ steps.decide.outputs.windows_shards }}
+      macos_shards: ${{ steps.decide.outputs.macos_shards }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -55,6 +57,11 @@ jobs:
               echo "run=true" >> "$GITHUB_OUTPUT"
               echo "targeted=true" >> "$GITHUB_OUTPUT"
               echo "files=$(tr '\n' ' ' < "$RUNNER_TEMP/targeted.txt")" >> "$GITHUB_OUTPUT"
+              # Only the shards that get a picked file start a Windows or macOS runner (#2915). The
+              # counts are the matrix's: 5 Windows shards, 3 macOS.
+              files="$(tr '\n' ' ' < "$RUNNER_TEMP/targeted.txt")"
+              echo "windows_shards=$(TEST_FILES="$files" bun scripts/test-shard.ts --busy windows 5)" >> "$GITHUB_OUTPUT"
+              echo "macos_shards=$(TEST_FILES="$files" bun scripts/test-shard.ts --busy macos 3)" >> "$GITHUB_OUTPUT"
             else
               echo "Pull request: no test covers its changes; these platforms run in the merge queue."
               echo "run=false" >> "$GITHUB_OUTPUT"
@@ -95,13 +102,14 @@ jobs:
           - { os: macos-latest, shard: 3, shards: 3 }
     # A job that only skips runs on Linux: it would otherwise wait for a macOS or Windows runner
     # it does not use, and on 2026-11-04 macOS arm64 runners never came and ejected #2908 (#2915).
-    runs-on: ${{ needs.scope.outputs.run == 'true' && matrix.os || 'ubuntu-latest' }}
+    # On a pull request a shard that gets none of the picked tests skips too.
+    runs-on: ${{ (needs.scope.outputs.run == 'true' && (needs.scope.outputs.targeted != 'true' || contains(matrix.os == 'windows-latest' && needs.scope.outputs.windows_shards || needs.scope.outputs.macos_shards, format(' {0} ', matrix.shard)))) && matrix.os || 'ubuntu-latest' }}
     name: shard (${{ matrix.os }}, ${{ matrix.shard }}/${{ matrix.shards }})
     timeout-minutes: 30
     env:
       # A pull request runs its picked tests spread over the shards of each platform by measured time,
-      # as the queue runs all of them; a shard that gets none exits at once.
-      RUN: ${{ needs.scope.outputs.run == 'true' }}
+      # as the queue runs all of them; a shard that gets none skips on Linux.
+      RUN: ${{ needs.scope.outputs.run == 'true' && (needs.scope.outputs.targeted != 'true' || contains(matrix.os == 'windows-latest' && needs.scope.outputs.windows_shards || needs.scope.outputs.macos_shards, format(' {0} ', matrix.shard))) }}
     steps:
       - name: Skip
         if: env.RUN != 'true'
