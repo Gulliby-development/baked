@@ -25,6 +25,12 @@ export interface EntryPoint {
    * of the workspace links them, so the checks' build is reused instead of rebuilt per example.
    */
   link?: string[];
+  /**
+   * The project's build writes the command as a file at its root that a reader runs by path
+   * (`./ratdec`, `escript ratdec` after `mix escript.build`), so those forms resolve to it too
+   * (#2511).
+   */
+  byPath?: boolean;
 }
 
 interface EntryReader {
@@ -209,6 +215,33 @@ function packageJsonEntries(path: string, text: string): EntryPoint[] {
   );
 }
 
+/**
+ * The escript of a root `mix.exs` (`escript: [main_module: Ratdec.CLI]`), read with an
+ * approximate regex since the manifest is Elixir code (#2511). The escript is named after the app
+ * unless its keyword list names it; it runs as `mix run -e "X.main(System.argv())" -- args`, which
+ * calls the same `main/1` with the same arguments, through `mix`, which the checks start. Its
+ * `_build` is linked so the checks' compile is reused (`--no-compile`, EXAMPLE_BUILD).
+ */
+function mixEntries(path: string, text: string): EntryPoint[] {
+  // `mix run` reads the mix.exs of its working directory, the project root.
+  if (dirname(path) !== ".") return [];
+  const code = text.replace(/#.*$/gm, "");
+  if (!/\bescript:/.test(code)) return [];
+  const list = /\[([^[\]]*\bmain_module:\s*([A-Z][\w.]*)[^[\]]*)\]/.exec(code);
+  const main = list?.[2];
+  const name =
+    /\bname:\s*[:"']?([\w-]+)/.exec(list?.[1] ?? "")?.[1] ?? /\bapp:\s*:(\w+)/.exec(code)?.[1];
+  if (!main || !name) return [];
+  return [
+    {
+      name,
+      launcher: ["mix", "run", "-e", `${main}.main(System.argv())`, "--"],
+      link: ["_build"],
+      byPath: true,
+    },
+  ];
+}
+
 const NPM: readonly EntryReader[] = [{ name: /^package\.json$/, read: packageJsonEntries }];
 const JVM: readonly EntryReader[] = [
   { name: /^pom\.xml$/, read: pomEntries },
@@ -245,7 +278,7 @@ export const ENTRY_POINTS: LanguageRecord<readonly EntryReader[]> = {
   php: none("Composer bin scripts have no runner among the checks yet"),
   swift: none("Swift Package Manager manifests are Swift code"),
   lua: none("LuaRocks rockspecs are Lua code"),
-  elixir: none("Mix escripts are declared in mix.exs, which is Elixir code"),
+  elixir: [{ name: /^mix\.exs$/, read: mixEntries }],
   dart: none("pub executables have no runner among the checks yet"),
   zig: none("build.zig is Zig code"),
   bash: none("a shell script is run by its path"),
@@ -331,6 +364,27 @@ const programName = (executable: string): string =>
     .replace(/\.(?:cmd|bat|exe)$/i, "")
     .toLowerCase();
 
+/** A file at the project root named by path: `./ratdec` or `.\\ratdec`. */
+const ROOT_FILE = /^\.[\\/]([^\\/]+)$/;
+
+/**
+ * The command's name and arguments: a bare name, or, for an entry point the build writes at the
+ * root (`byPath`), its `./name` or `escript [./]name` forms (#2511).
+ */
+function commandOf(
+  argv: readonly string[],
+): { name: string; args: readonly string[]; byPath: boolean } | null {
+  const [program, ...args] = argv;
+  if (!program) return null;
+  if (program === "escript" && args[0]) {
+    const name = ROOT_FILE.exec(args[0])?.[1] ?? args[0];
+    return /[\\/]/.test(name) ? null : { name, args: args.slice(1), byPath: true };
+  }
+  const file = ROOT_FILE.exec(program)?.[1];
+  if (file) return { name: file, args, byPath: true };
+  return /[\\/]/.test(program) ? null : { name: program, args, byPath: false };
+}
+
 /**
  * The command that runs a project's own command (`routeshadow tree app.txt`) through its
  * launcher, with the launcher's program taken from the programs the checks start (a Python
@@ -342,9 +396,12 @@ export function entryPointCommand(
   argv: readonly string[],
   executables: readonly string[],
 ): { argv: string[]; entry: EntryPoint } | null {
-  const [program, ...args] = argv;
-  if (!program || /[\\/]/.test(program)) return null;
-  const entry = projectEntryPoints(root).find((e) => e.name === program);
+  const command = commandOf(argv);
+  if (!command) return null;
+  const { name, args } = command;
+  const entry = projectEntryPoints(root).find(
+    (e) => e.name === name && (!command.byPath || e.byPath),
+  );
   if (!entry) return null;
   const [launcher, ...prefix] = entry.launcher as [string, ...string[]];
   // A Python project's checks start its environment's interpreter; a package.json bin runs under

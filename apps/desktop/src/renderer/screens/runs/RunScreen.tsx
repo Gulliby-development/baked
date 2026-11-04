@@ -15,7 +15,9 @@ import {
 import {
   errorText,
   GROUP_B_CAPABILITY,
+  queuedText,
   type RollbackReport,
+  type RunQueued,
   runs,
   undoRun,
 } from "../../client/runs.js";
@@ -858,6 +860,20 @@ function StopNote({ run }: { run: RunData["status"] }) {
   );
 }
 
+/** A resumed run the parallel-run cap holds: why it is paused and what starts it (#2421). */
+export function QueuedNote({ queued }: { queued: RunQueued }) {
+  const { title, next } = queuedText(queued);
+  return (
+    <Alert role="status" aria-label="Waiting for a free slot" className="flex flex-col gap-1">
+      <span>{title}</span>
+      <span className="font-normal">{next}</span>
+      {queued.executing.length > 0 && (
+        <span className="font-mono text-[12px] font-normal">{queued.executing.join(", ")}</span>
+      )}
+    </Alert>
+  );
+}
+
 /** The station's gates in words: what each does, where it stands, blocks or advises, last result. */
 function StationGates({
   station,
@@ -1014,6 +1030,7 @@ function RunBody({
       />
       {undone && <UndoReport report={undone.report} onClose={() => setUndone(null)} />}
       {(run.status === "blocked" || run.status === "failed") && <StopNote run={run} />}
+      {run.status === "paused" && run.queued && <QueuedNote queued={run.queued} />}
       {run.status === "completed" && <PullRequestPanel projectKey={projectKey} runId={run.runId} />}
       {pending.length > 0 && (
         <section aria-label="Your part" className="flex flex-col gap-3">

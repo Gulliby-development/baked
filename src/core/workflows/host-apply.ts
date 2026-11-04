@@ -176,6 +176,12 @@ export interface HostApplyRecord extends HostApplyVerdict {
    */
   applied?: boolean;
   applyError?: string;
+  /**
+   * In `on` mode: why the task's `supplied-checks/` record keeps the implementer (#2462), the
+   * reason `suppliedCheckVeto` gives when the project's file-scoped check fails on the supplied
+   * content. An input of the decision, which it overrides; absent when the record found none.
+   */
+  suppliedConflict?: string;
 }
 
 /** Decides from the recorded writes; `replayHostApply` takes another rule to replay. */
@@ -282,14 +288,34 @@ export function applyRegion(text: string, section: string, region: MarkdownRegio
   return `${before}${before ? "\n" : ""}${body}${after ? `\n${after}` : ""}`;
 }
 
+/**
+ * A rule's verdict on the writes, kept from applying by a supplied-checks conflict (#2462): the
+ * content the project's own check rejects goes to an implementer, with the conflict as the reason.
+ */
+export function hostApplyVerdict(
+  writes: readonly HostApplyWrite[],
+  suppliedConflict: string | null | undefined,
+  decide: HostApplyRule = hostApplyDecision,
+): HostApplyVerdict {
+  const verdict = decide(writes);
+  return verdict.wouldApply && suppliedConflict ? no(suppliedConflict) : verdict;
+}
+
 /** The record of a task's apply decision from its writes' inputs. */
 export function hostApplyRecord(
   taskId: string,
   writes: HostApplyWrite[],
   decide: HostApplyRule = hostApplyDecision,
   mode: HostApplyRecord["mode"] = "shadow",
+  suppliedConflict: string | null = null,
 ): HostApplyRecord {
-  return { taskId, mode, writes, ...decide(writes) };
+  return {
+    taskId,
+    mode,
+    writes,
+    ...(suppliedConflict ? { suppliedConflict } : {}),
+    ...hostApplyVerdict(writes, suppliedConflict, decide),
+  };
 }
 
 /**

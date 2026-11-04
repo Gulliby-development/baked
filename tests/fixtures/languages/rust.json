@@ -94,6 +94,22 @@
     "diagnosticFormats": ["src/lib.rs: error[E0308]: mismatched types"],
     "testClasses": null,
     "testDeclarations": ["tests/sum.rs: 2 tests"],
-    "rowFileShapes": null
+    "rowFileShapes": [
+      "tests/parse_rows.rs",
+      "use sseknit::parse;",
+      "",
+      "const ROWS: &[(&str, &[&str])] = &[",
+      "    (\"data: x\\ndata: y\\n\\n\", &[\"x\\ny\"]),",
+      "    (\": comment\\n\\nevent: tick\\ndata: 1\\n\\n\", &[\"1\"]),",
+      "];",
+      "",
+      "#[test]",
+      "fn rows() {",
+      "    for (input, events) in ROWS {",
+      "        assert_eq!(parse(input), *events);",
+      "    }",
+      "}",
+      ""
+    ]
   }
 }

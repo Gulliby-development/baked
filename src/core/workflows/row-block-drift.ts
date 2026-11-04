@@ -76,6 +76,13 @@ import { suppliedRows } from "./sizing.js";
  * as a source failure. Such a row now drifts at that token, with both layer counts
  * (`RowMeasure.layers`).
  *
+ * A row the request gives more than once is held only as often as file rows match it (#2704): a
+ * dropped copy's literals are all in the copy the file keeps, so the whole-file lookup misses
+ * nothing and no file row takes its place. The k-th copy of a row's text (`RowMeasure.copy`, the
+ * counting `heldLines` in place-rows.ts does for `place_rows`) drifts when fewer than k file rows
+ * match it and at least one does (a file whose rows the reader does not place matches none). The
+ * session's edit guard (`rowEditBreaks`) does not gate on it: recorded only, like the would-stop.
+ *
  * The `row_block_drift` reason records each drifting row, and each added or duplicated row, as a
  * would-stop (shadow); a reordered row is only recorded. `row-blocks/<path>.json` records the
  * counts its decisions read (no text) for the replay.
@@ -111,7 +118,24 @@ export interface RowMeasure {
    * row's literal decode through (`\\n` two, `\n` one); absent otherwise (and in records before it).
    */
   layers?: EscapeLayers;
+  /**
+   * For a row whose text the request gives more than once (#2704): which copy it is (from 1), how
+   * many copies the request gives and how many file rows match it; absent otherwise (and in
+   * records before it).
+   */
+  copy?: RowCopy;
 }
+
+/** A copy of a row the request gives more than once against the file rows that match it (#2704). */
+export interface RowCopy {
+  nth: number;
+  given: number;
+  held: number;
+}
+
+/** The k-th copy of a row's text held by fewer than k file rows, while one holds it (#2704). */
+export const copyDropped = (r: Pick<RowMeasure, "copy" | "line">) =>
+  r.copy !== undefined && r.line === undefined && r.copy.held > 0 && r.copy.nth > r.copy.held;
 
 /** The escape layers a row's literal and the file row's decode through (#2545). */
 export interface EscapeLayers {
@@ -166,13 +190,14 @@ export interface RowBlockRecord {
 
 /**
  * The rows that drift: those with a literal the delivered file does not hold, a long byte run it
- * counts differently (#2515), or a token the file row in its place lacks or holds out of order
- * (#2521).
+ * counts differently (#2515), a token the file row in its place lacks or holds out of order
+ * (#2521), or a copy of a row the request gives more than once that the file does not hold
+ * (#2704).
  */
 export type RowBlockRule = (rows: readonly RowMeasure[]) => number[];
 export function rowBlockDecision(rows: readonly RowMeasure[]): number[] {
   return rows.flatMap((r) =>
-    r.missing.length || r.runs?.length || r.differs !== undefined ? [r.row] : [],
+    r.missing.length || r.runs?.length || r.differs !== undefined || copyDropped(r) ? [r.row] : [],
   );
 }
 
@@ -237,6 +262,8 @@ export interface RowBlockDrift {
     /** When the token differs only by escape layers (#2545). */
     layers?: EscapeLayers;
   } | null;
+  /** A copy of a row the request gives more than once that the file does not hold (#2704). */
+  copy?: RowCopy;
 }
 
 /** A long byte run of a row the file counts differently (#2515). */
@@ -294,8 +321,9 @@ const meaningful = (literal: string) => literal.replace(/\\[nrt]|\s/g, "") !== "
 
 /**
  * Each prescribed row of `rows` against a delivered file's text: its literals looked up in the
- * whole file, its long runs by their count (#2515), and its tokens against the file row that takes
- * its place (#2521; `fileRows`, read by `measureFileRows` when not given).
+ * whole file, its long runs by their count (#2515), its tokens against the file row that takes
+ * its place (#2521; `fileRows`, read by `measureFileRows` when not given), and, for a row the
+ * request gives more than once, which copy it is against the file rows that match it (#2704).
  */
 export function measureRows(
   rows: readonly string[],
@@ -305,6 +333,13 @@ export function measureRows(
   const places = rowPlaces(fileRows);
   const starts = fileRows.map((r) => r.line);
   const lines = file.split(/\r?\n/);
+  // Each row's text, how often the request gives it and which copy each row is (#2704).
+  const given = new Map<string, number>();
+  const nth = rows.map((line) => {
+    const k = (given.get(line.trim()) ?? 0) + 1;
+    given.set(line.trim(), k);
+    return k;
+  });
   return rows.map((line, index) => {
     const literals = rowLiterals(line).filter(meaningful);
     const missing = literals.flatMap((literal, i) => (literalHeld(file, literal) ? [] : [i + 1]));
@@ -313,6 +348,15 @@ export function measureRows(
     );
     const place = places.get(index + 1);
     const compared = place === undefined ? null : rowCompare(line, lines, place, starts);
+    const copies = given.get(line.trim()) ?? 1;
+    const copy =
+      copies > 1
+        ? {
+            nth: nth[index] ?? 1,
+            given: copies,
+            held: fileRows.filter((r) => r.matches.includes(index + 1)).length,
+          }
+        : null;
     return {
       row: index + 1,
       literals: literals.length,
@@ -326,6 +370,7 @@ export function measureRows(
             ...(compared.layers ? { layers: compared.layers } : {}),
           }
         : {}),
+      ...(copy ? { copy } : {}),
     };
   });
 }
@@ -751,6 +796,7 @@ export function rowBlockDrifts(
                   ...(measure.layers ? { layers: measure.layers } : {}),
                 }
               : null,
+          ...(measure.copy && copyDropped(measure) ? { copy: measure.copy } : {}),
         },
       ];
     });
@@ -792,7 +838,11 @@ export function rowBlockDriftSummary(
     drift.differs && !lacks
       ? `line ${drift.differs.line}, the row's place, does not hold "${drift.differs.text}" (value ${drift.differs.token} of ${drift.differs.tokens}) where the row gives it`
       : "";
-  const why = [what, runs, token].filter(Boolean).join("; ");
+  const times = (n: number) => `${n} time${n === 1 ? "" : "s"}`;
+  const copy = drift.copy
+    ? `the request gives the row ${times(drift.copy.given)} and the file holds it ${times(drift.copy.held)}`
+    : "";
+  const why = [what, runs, token, copy].filter(Boolean).join("; ");
   const who =
     restore === "would_restore"
       ? "The host would restore the row from the request's text (rowRestore shadow)"

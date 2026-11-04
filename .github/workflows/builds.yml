@@ -106,7 +106,10 @@ jobs:
           app="$RUNNER_TEMP/app"
           mkdir -p "$app" "$RUNNER_TEMP/home"
           cd "$app"
-          echo '{"name":"baked-smoke","private":true}' > package.json
+          # Pin every package to bun.lock: npm otherwise takes the newest release in each range,
+          # and a release the registry lists but cannot serve yet turned every PR red.
+          bun "$GITHUB_WORKSPACE/scripts/npm-smoke-overrides.ts" "$GITHUB_WORKSPACE/bun.lock" \
+            | bun -e 'const o = JSON.parse(await Bun.stdin.text()); await Bun.write("package.json", JSON.stringify({ name: "baked-smoke", private: true, ...o }))'
           npm install --no-audit --no-fund "$RUNNER_TEMP"/pack/*.tgz
           export HOME="$RUNNER_TEMP/home" USERPROFILE="$RUNNER_TEMP/home" LOCALAPPDATA="$RUNNER_TEMP/home/local"
           npx --no-install baked --version
@@ -188,6 +191,9 @@ jobs:
   windows:
     needs: scope
     runs-on: windows-latest
+    # A hung step otherwise holds the required check for GitHub's 6 h default and keeps the PR
+    # out of the merge queue (#2856's install step hung for 4.5 h).
+    timeout-minutes: 45
     steps:
       - name: Skip
         if: needs.scope.outputs.native != 'true'
@@ -234,6 +240,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install silently and self-check
         if: needs.scope.outputs.native == 'true'
+        timeout-minutes: 10
         shell: pwsh
         run: |
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version

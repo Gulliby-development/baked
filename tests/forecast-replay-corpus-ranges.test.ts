@@ -5,7 +5,7 @@ import { replayInitiativeStarts } from "../src/core/workflows/trace.js";
 import { featureUsage, ROOT } from "./helpers/replay-corpus.js";
 
 // Part of the bench-trace replay corpus (tests/forecast-replay-corpus.test.ts), in a file of its own
-// because it replays every initiative start of the corpus and takes minutes on a CI runner.
+// because it replays each initiative's first start over the whole corpus.
 
 describe("initiative feature ranges replay against what the features used (#1806, #1813)", () => {
   // At each initiative's first replayed start, the features that used less than the low end of
@@ -33,7 +33,7 @@ describe("initiative feature ranges replay against what the features used (#1806
     for (const path of readdirSync(ROOT, { recursive: true, encoding: "utf8" })
       .filter((p) => p.endsWith(".sqlite.gz"))
       .map((p) => join(ROOT, p))) {
-      const replays = replayInitiativeStarts(path);
+      const replays = replayInitiativeStarts(path, { firstStartOnly: true });
       if (!replays.length) continue;
       const { used, finished } = featureUsage(path);
       for (const replay of replays)

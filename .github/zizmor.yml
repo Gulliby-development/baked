@@ -5,9 +5,9 @@ rules:
     ignore:
       # `uses: ./.github/workflows/builds.yml` is the documented form for a reusable workflow of
       # this repository; the `$/` spelling is not used anywhere else here (#1844).
-      - release.yml:50
+      - release.yml:57
   adhoc-packages:
     ignore:
       # The npm-package smoke test installs the tarball the same job just packed with `npm pack`,
       # not a registry package (#1844).
-      - builds.yml:110
+      - builds.yml:113

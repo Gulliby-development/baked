@@ -1017,15 +1017,19 @@ export class LspBackend implements IntelligenceBackend {
     return doomed.length + starting.length;
   }
 
-  dispose(): void {
+  /**
+   * Stops every server, the ones still in their handshake too, and resolves once their processes
+   * have exited. A worker awaits it before it exits: a worker gone first leaves a killed server
+   * unreaped (a zombie on POSIX) and a ready one without its SIGKILL fallback.
+   */
+  async dispose(): Promise<void> {
     this.disposed = true;
-    for (const client of [...this.standaloneClients.values(), ...this.startingClients]) {
-      client.stop().catch(() => {});
-    }
+    const clients = [...this.standaloneClients.values(), ...this.startingClients];
     this.startingClients.clear();
     this.standaloneClients.clear();
     this.languageClients.clear();
     this.failedServers.clear();
+    await Promise.all(clients.map((client) => client.stop().catch(() => {})));
   }
 
   /**
@@ -1081,6 +1085,7 @@ export class LspBackend implements IntelligenceBackend {
    * Deduplicates concurrent calls for the same language to prevent duplicate processes.
    */
   private async getStandaloneClients(file: string): Promise<StandaloneLspClient[]> {
+    if (this.disposed) return [];
     const language = detectLanguage(file);
     if (!language) return [];
 
@@ -1127,7 +1132,15 @@ export class LspBackend implements IntelligenceBackend {
     if (configs.length === 0) return [];
 
     const clients: StandaloneLspClient[] = [];
+    // A start stopped midway (the backend disposed, or its directory about to be deleted) starts
+    // none of the language's remaining servers: one spawned after the stop would be nobody's to
+    // stop and outlive the backend or its worker.
+    let abandoned = false;
     for (const config of configs) {
+      if (this.disposed) {
+        abandoned = true;
+        break;
+      }
       const serverKey = `${config.command}:${projectRoot}`;
       const failedAt = this.failedServers.get(serverKey);
       if (failedAt !== undefined && Date.now() - failedAt < LspBackend.FAILED_SERVER_COOLDOWN_MS) {
@@ -1154,7 +1167,8 @@ export class LspBackend implements IntelligenceBackend {
         // Stopped while starting: the backend was disposed or its directory is about to go.
         if (!this.startingClients.delete(client) || this.disposed) {
           await client.stop().catch(() => {});
-          continue;
+          abandoned = true;
+          break;
         }
         this.standaloneClients.set(serverKey, client);
         this.failedServers.delete(serverKey);
@@ -1164,7 +1178,10 @@ export class LspBackend implements IntelligenceBackend {
         // A server that failed its handshake is still running: stop it, not just forget it.
         const stopped = !this.startingClients.delete(client);
         client.stop().catch(() => {});
-        if (stopped || this.disposed) continue;
+        if (stopped || this.disposed) {
+          abandoned = true;
+          break;
+        }
         this.failedServers.set(serverKey, Date.now());
         this.serverErrors.set(config.command, {
           command: config.command,
@@ -1175,6 +1192,7 @@ export class LspBackend implements IntelligenceBackend {
       }
     }
 
+    if (abandoned) return [];
     this.languageClients.set(langKey, clients);
     return clients;
   }

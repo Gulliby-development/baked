@@ -164,6 +164,13 @@ export function placeRowsRecord(
 export const INDENT_DEFAULT =
   "the line's own; after a line that opens the list, one level deeper, the level being the indentation of the request's own row lines, else the file's smallest indentation, else the language's convention (two spaces in TypeScript, JavaScript, Ruby, Scala, OCaml, R, Bash, Dart, Elixir and ReScript, a tab in Go, otherwise four spaces)";
 
+/**
+ * The default separator, as the description and the scheduler's note state it: a row the request
+ * ends with `,` or `;` (a C statement row, a row copied with its comma) keeps it, and an explicit
+ * `separator` or `lastSeparator` replaces it, so a placed line never ends in two (`...;,`).
+ */
+export const SEPARATOR_DEFAULT = "the row's own trailing comma or semicolon, else a comma";
+
 export const placeRowsInput = z
   .object({
     path: z.string().describe("The task's prescribed row file, which must already exist."),
@@ -192,12 +199,14 @@ export const placeRowsInput = z
     separator: z
       .enum([",", ";", ""])
       .optional()
-      .describe("What ends each row line, as the language lists rows; by default a comma."),
+      .describe(
+        `What ends each row line, as the language lists rows, in place of the row's own; by default ${SEPARATOR_DEFAULT}.`,
+      ),
     lastSeparator: z
       .enum([",", ";", ""])
       .optional()
       .describe(
-        "What ends the last placed row's line, when the list takes no separator after its last item; by default the separator.",
+        "What ends the last placed row's line, in place of the row's own, when the list takes no separator after its last item; by default the separator.",
       ),
   })
   .strict();
@@ -206,7 +215,7 @@ export type PlaceRowsInput = z.infer<typeof placeRowsInput>;
 /** The tool's description for a task with these targets. */
 export function placeRowsDescription(targets: ReadonlyMap<string, readonly string[]>): string {
   const files = [...targets].map(([path, rows]) => `${path} (rows 1 to ${rows.length})`).join(", ");
-  return `Insert the request's prescribed rows verbatim into ${files}: rows [first, last] go after the given line of the existing file, one row per line, in the request's order, exactly as the request writes them. Never type a prescribed row with edit_file or multi_edit: write everything else (imports, the row type, the list's opening and close, the harness calls) with edit_file, leaving the rows out, then place them with this tool. Give indent and separator when the defaults do not fit the language or the request's layout: indent by default is ${INDENT_DEFAULT}; a comma ends each row. The result shows the first placed line with its indentation; to fix the indentation of rows already placed, call again with reindent: true and the indent they take.`;
+  return `Insert the request's prescribed rows verbatim into ${files}: rows [first, last] go after the given line of the existing file, one row per line, in the request's order, exactly as the request writes them. Never type a prescribed row with edit_file or multi_edit: write everything else (imports, the row type, the list's opening and close, the harness calls) with edit_file, leaving the rows out, then place them with this tool. Give indent and separator when the defaults do not fit the language or the request's layout: indent by default is ${INDENT_DEFAULT}; the separator that ends each row is by default ${SEPARATOR_DEFAULT}. The result shows the first placed line with its indentation; to fix the indentation of rows already placed, call again with reindent: true and the indent they take.`;
 }
 
 /**
@@ -243,6 +252,29 @@ function levelOf(path: string, requested: string | undefined, lines: readonly st
 
 /** A row's text as a line holds it: trimmed, a trailing separator dropped. */
 const bare = (text: string) => text.trim().replace(/[,;]$/, "").trimEnd();
+
+/**
+ * The file line (from 0, -1 when not held) that holds each of `rows`: a row the request gives more
+ * than once takes the next equal line after the ones its earlier copies take, so a duplicate counts
+ * as held only when the file holds it as often.
+ */
+function heldLines(rows: readonly string[], lines: readonly string[]): number[] {
+  const taken = new Map<string, number[]>();
+  for (const [i, line] of lines.entries()) {
+    const text = bare(line);
+    if (!text) continue;
+    const at = taken.get(text);
+    if (at) at.push(i);
+    else taken.set(text, [i]);
+  }
+  const used = new Map<string, number>();
+  return rows.map((row) => {
+    const want = bare(row);
+    const k = used.get(want) ?? 0;
+    used.set(want, k + 1);
+    return taken.get(want)?.[k] ?? -1;
+  });
+}
 
 /**
  * The file with rows `input.rows` of `rows` placed after `input.line`, or the refusal with the
@@ -289,12 +321,8 @@ export function placeRows(
       refusal: `${path} has ${count} line${count === 1 ? "" : "s"}; line ${input.line} is not one of them. Give the line the rows follow (0 puts them before the first line).`,
     };
   const placed = span;
-  const at = new Map(
-    placed.map((n) => {
-      const want = bare(rows[n - 1] ?? "");
-      return [n, lines.findIndex((l) => bare(l) === want)] as const;
-    }),
-  );
+  const lineOf = heldLines(rows, lines);
+  const at = new Map(placed.map((n) => [n, lineOf[n - 1] ?? -1] as const));
   const held = placed.flatMap((n) => {
     const line = at.get(n) ?? -1;
     return line < 0 ? [] : [`row ${n} (line ${line + 1})`];
@@ -312,15 +340,16 @@ export function placeRows(
   const opens = /[[({=]$/.test(anchor.trimEnd());
   const indent =
     input.indent ?? (opens ? anchorIndent + levelOf(path, indents.get(path), lines) : anchorIndent);
-  const separator = input.separator ?? ",";
-  const lastSeparator = input.lastSeparator ?? separator;
-  // The line form of a restored row: the template's indentation and separator around the row.
-  const written = placed.map((n, i) =>
-    restoredLine(
-      `${indent}row${i === placed.length - 1 ? lastSeparator : separator}${eol}`,
-      rows[n - 1] ?? "",
-    ),
-  );
+  // The line form of a restored row: the template's indentation and separator around the row. A
+  // separator the row ends with is layout, not content: kept by default, replaced by the caller's.
+  const written = placed.map((n, i) => {
+    const row = (rows[n - 1] ?? "").trim();
+    const own = /[,;]$/.exec(row)?.[0];
+    const given =
+      i === placed.length - 1 ? (input.lastSeparator ?? input.separator) : input.separator;
+    const separator = given ?? own ?? ",";
+    return restoredLine(`${indent}row${separator}${eol}`, own ? row.slice(0, -1).trimEnd() : row);
+  });
   lines.splice(input.line, 0, ...written);
   return {
     content: lines.join("\n"),
