@@ -49,3 +49,28 @@ describe("OS tests workflow on a pull request (#2907)", () => {
     expect(workflow).toContain("run: bun scripts/test-shard.ts ${{ matrix.shard }} ${{ matrix.shards }}");
   });
 });
+
+// A pull request's picked tests often fill one or two shards; the others started a Windows or macOS
+// runner only to exit, while macOS arm64 runners were short (#2915).
+describe("OS tests workflow: only busy shards take a runner on a pull request (#2915)", () => {
+  test("the scope job plans each platform with the matrix's own shard count", () => {
+    for (const [table, os] of [
+      ["windows", "windows-latest"],
+      ["macos", "macos-latest"],
+    ] as const) {
+      const count = new Set(
+        [...workflow.matchAll(new RegExp(`\\{ os: ${os}, shard: \\d+, shards: (\\d+) \\}`, "g"))].map((m) => m[1]),
+      );
+      expect(count.size).toBe(1);
+      expect(workflow).toContain(`bun scripts/test-shard.ts --busy ${table} ${[...count][0]})`);
+    }
+  });
+
+  test("a shard runs, and asks for its platform's runner, under the same condition", () => {
+    const runsOn = workflow.match(/runs-on: \$\{\{ \((.*)\) && matrix\.os \|\| 'ubuntu-latest' \}\}/)?.[1];
+    const run = workflow.match(/RUN: \$\{\{ (.*) \}\}/)?.[1];
+    expect(runsOn).toBeDefined();
+    expect(run).toBe(runsOn);
+    expect(run).toContain("format(' {0} ', matrix.shard)");
+  });
+});
