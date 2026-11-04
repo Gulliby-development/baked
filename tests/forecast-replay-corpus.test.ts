@@ -514,7 +514,7 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
   // corpus names its trace after the app: no such store mapped, so R95 gapmeet's estimate read
   // none of R83 to R92's apps (#2894). A trace that recorded its folder (cellspan's instruction
   // files, binlayer's check executables) maps by it, one that recorded none (bytemerge's `bym`) by
-  // its app name; R87, R90 and R91 are not in the corpus, R83 cxa and R84 psx are no app it holds.
+  // its app name; R83 cxa and R84 psx are no app it holds.
   test("a store the bench kept under a short folder replays from its corpus trace (#2894)", () => {
     const trace = corpusHistoryTrace(ROOT);
     const mapped = (store: string) => {
@@ -531,8 +531,11 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     const [replay] = replayInitiativeStarts(join(ROOT, "R95", "gapmeet.sqlite.gz"), { firstStartOnly: true });
     const held = ["R83/bym", "R84/ssk", "R85/csp", "R85/tbl", "R86/bnl", "R86/evg", "R88/pkr", "R88/pws", "R92/uwv"];
     expect(replay!.missingHistory.filter((p) => held.some((s) => p.endsWith(s)))).toEqual([]);
-    // 22 of its 32 stores were missing, 13 are: R81, R82, R83 cxa, R84 psx, R87 and R89 to R91.
-    expect(replay!.missingHistory).toHaveLength(13);
+    // 22 of its 32 stores were missing on a corpus through R95. What stays missing is only a store no
+    // corpus trace holds (R81, R82, R83 cxa, R84 psx, and rounds whose traces have not landed), so
+    // the count falls as rounds' traces land and never counts a store the corpus holds.
+    expect(replay!.missingHistory.length).toBeLessThan(22);
+    for (const store of replay!.missingHistory) expect(mapped(store)).toBeNull();
   });
 });
 
