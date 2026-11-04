@@ -108,3 +108,35 @@ describe("scenario: R89 loopwatch, a one-file licence feature priced at its path
     expect(sizing.parse({}).fewPathPrice).toBeUndefined();
   });
 });
+
+// Bench round 92 (#2640 follow-up): both initiatives ran with `sizing.fewPathPrice` on, and no
+// estimate, split preview or share-gate record said whether the share priced any feature, so the
+// round could not tell whether the rule fired. Each feature's estimate now records it.
+describe("scenario: R92, the estimate records the few-path share it applied (#2640)", () => {
+  test("on: each feature names whether the rule applied, why, the share and its range before and after", () => {
+    const license = of(true, "license").fewPathShare;
+    expect(license).toMatchObject({ applied: true, reason: "legal", paths: 1 });
+    expect(license?.after.low).toBe(of(true, "license").tokens.low);
+    expect(license?.before.low).toBeGreaterThan(license?.after.low ?? 0);
+    expect(of(true, "docs").fewPathShare).toMatchObject({ applied: false, reason: "documentation" });
+    expect(of(true, "application").fewPathShare).toMatchObject({ applied: false, reason: "path-fit" });
+    const one = [feature("one", "medium", ["src/one.js"])];
+    const record = of(true, "one", one).fewPathShare;
+    expect(record).toMatchObject({ applied: true, reason: "fewer-paths", paths: 1, medianPaths: 3 });
+    expect(record?.share).toBeCloseTo(Math.sqrt(1 / 3), 3);
+    expect(record?.after.low).toBeLessThan(record?.before.low ?? 0);
+    expect(record?.after.low).toBe(of(true, "one", one).tokens.low);
+    expect(record?.before.low).toBe(of(false, "one", one).tokens.low);
+    const three = [feature("three", "medium", ["src/a.js", "src/b.js", "src/c.js"])];
+    expect(of(true, "three", three).fewPathShare).toMatchObject({ applied: false, reason: "not-fewer" });
+    // A feature no finished feature of its size prices: R92's first split preview.
+    expect(
+      estimateInitiative({ features: one, history: [], samples: [], maxTotalTokens: 30_000_000, fewPathPrice: true })
+        .features[0]?.fewPathShare,
+    ).toMatchObject({ applied: false, reason: "no-pool" });
+  });
+
+  test("off: no feature carries the record", () => {
+    for (const f of estimate(false).features) expect(f.fewPathShare).toBeUndefined();
+  });
+});

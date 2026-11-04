@@ -984,8 +984,9 @@ export const PolicySchema = z
          * Prices a feature with fewer paths than its size pool's median, where the pool's tokens
          * do not follow their paths (no path fit), at the square root of that path share of the
          * pool's range, and a feature of legal files alone (a `LICENSE`) at the per-path rate
-         * (`fewPathShare`, #2640). Documentation features keep their price. Absent means off: the
-         * size pool prices them as features of its usual paths.
+         * (`fewPathDetail`, #2640), recorded on each estimate (`fewPathShare`, #2869). Documentation
+         * features keep their price. Absent means off: the size pool prices them as features of its
+         * usual paths.
          */
         fewPathPrice: z.boolean().optional(),
         /**
