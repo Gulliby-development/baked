@@ -102,7 +102,7 @@ export function framedFeatureRows(request: string): Map<string, Set<number>> | n
 
 /**
  * The rows of a row file a feature's scope gives it in words (#2898): its block's name or file
- * stem followed by `rows 1-10`, `row 12`, `rows 1-17, 20 and 22`, or `all 28 rows` (every row).
+ * stem followed by `rows 1-10`, `row 12`, `rows 1-17, 20 and 22`, or `all 28 rows`, `all 24` or `all rows` (every row).
  * Null when the scope names no rows of the file.
  */
 export function scopeRowRanges(
@@ -117,7 +117,7 @@ export function scopeRowRanges(
   for (const name of new Set(names.filter(Boolean))) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const re = new RegExp(
-      String.raw`(?<![\w.])${escaped}(?![\w])(?:\s*\([^)]*\))?\s*[:,]?\s*(?:(all(?:\s+\d+)?\s+rows?)|rows?\s+(${list}))`,
+      String.raw`(?<![\w.])${escaped}(?![\w])(?:\s*\([^)]*\))?\s*[:,]?\s*(?:(all\s+\d+(?:\s+rows?)?(?![\w-])|all\s+rows?)|rows?\s+(${list}))`,
       "gi",
     );
     for (const m of text.matchAll(re)) {

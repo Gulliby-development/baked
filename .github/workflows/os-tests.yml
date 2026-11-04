@@ -93,12 +93,15 @@ jobs:
           - { os: macos-latest, shard: 1, shards: 3 }
           - { os: macos-latest, shard: 2, shards: 3 }
           - { os: macos-latest, shard: 3, shards: 3 }
-    runs-on: ${{ matrix.os }}
+    # A job that only skips runs on Linux: it would otherwise wait for a macOS or Windows runner
+    # it does not use, and on 2026-11-04 macOS arm64 runners never came and ejected #2908 (#2915).
+    runs-on: ${{ needs.scope.outputs.run == 'true' && matrix.os || 'ubuntu-latest' }}
     name: shard (${{ matrix.os }}, ${{ matrix.shard }}/${{ matrix.shards }})
     timeout-minutes: 30
     env:
-      # A pull request runs its picked tests in the first shard of each platform; the others skip.
-      RUN: ${{ needs.scope.outputs.run == 'true' && (needs.scope.outputs.targeted != 'true' || matrix.shard == 1) }}
+      # A pull request runs its picked tests spread over the shards of each platform by measured time,
+      # as the queue runs all of them; a shard that gets none exits at once.
+      RUN: ${{ needs.scope.outputs.run == 'true' }}
     steps:
       - name: Skip
         if: env.RUN != 'true'
@@ -141,7 +144,7 @@ jobs:
           SLOW_TESTS_FAIL: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '1' || '0' }}
           # A failed shard reruns each failed test alone and writes whether it is likely flaky.
           FLAKY_LEDGER: ${{ runner.temp }}/flaky-ledger.json
-          # A pull request's picked test files, which the first shard runs alone. The step keeps the runner's
+          # A pull request's picked test files, which the shards split by measured time. The step keeps the runner's
           # default shell: Git Bash on Windows would put GNU tar, which reads `D:\...` as a remote
           # host, ahead of the system tar for every test.
           TEST_FILES: ${{ needs.scope.outputs.targeted == 'true' && needs.scope.outputs.files || '' }}

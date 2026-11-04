@@ -4041,7 +4041,10 @@ export function replayInitiativeStarts(
     moments?: number[];
     /** Sets the initiative's `sizing.recencyHalfLife`, to backtest the weighting (#2150). */
     recencyHalfLife?: number;
-    /** Sets the initiative's `sizing.fewPathPrice`, to backtest it (#2640). */
+    /**
+     * Sets the initiative's `sizing.fewPathPrice` (#2640): `false` replays the size pools without
+     * the few-path share, which is on by default (#2893), to backtest it.
+     */
     fewPathPrice?: boolean;
     /**
      * Sets entries of the initiative's base policy `stopModes`, to replay a round at the mode it
@@ -4091,7 +4094,7 @@ export function replayInitiativeStarts(
       budgetAtStart: options.budgetAtStart !== false,
       moments: options.moments ?? [],
       ...(options.recencyHalfLife ? { recencyHalfLife: options.recencyHalfLife } : {}),
-      ...(options.fewPathPrice ? { fewPathPrice: true } : {}),
+      ...(options.fewPathPrice !== undefined ? { fewPathPrice: options.fewPathPrice } : {}),
       ...(options.stopModes ? { stopModes: options.stopModes } : {}),
       ...(options.planChargeExpected ? { planChargeExpected: options.planChargeExpected } : {}),
       firstStartOnly: options.firstStartOnly === true,
@@ -4247,15 +4250,15 @@ function replayStarts(
     // trace keeps no request text: the blocks are restored from the trace's own records first.
     if (settings.basePolicy?.rowFileWrite === "on") restoreRowBlocks(db, initiativeId);
     const missingHistory: string[] = [];
-    if (recencyHalfLife || fewPathPrice || stopModes) {
+    if (recencyHalfLife || fewPathPrice !== undefined || stopModes) {
       settings.basePolicy = {
         ...settings.basePolicy,
-        ...(recencyHalfLife || fewPathPrice
+        ...(recencyHalfLife || fewPathPrice !== undefined
           ? {
               sizing: {
                 ...settings.basePolicy?.sizing,
                 ...(recencyHalfLife ? { recencyHalfLife } : {}),
-                ...(fewPathPrice ? { fewPathPrice } : {}),
+                ...(fewPathPrice !== undefined ? { fewPathPrice } : {}),
               },
             }
           : {}),

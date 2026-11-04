@@ -361,6 +361,42 @@ describe("scenario: R80 ratdec, a downstream feature makes a closed upstream fea
   }
 });
 
+// #2898, bench round 96 varprompt template (run 0509c8c1): the host wrote rows into template that
+// need reports' VarsCommand.cs and StatsCommand.cs, and corrective T010 parked on a manual_evidence
+// request (`upstream-T010`) for a change of reports. Reports depends on template, so it runs only
+// after template: no answer could bring the change, and the request offered no remedy. A file of a
+// later feature is now refused with remedies (revise, accept-workspace, cancel), never parked.
+const later = (defect: string) => ({ featureId: "template", features: [{ id: "cli", scope: "Cli", paths: ["src/cli/**"] }, { id: "template", scope: "Template", paths: ["src/storage.ts", "src/handler.ts", "tests/handler.test.ts"], dependsOn: ["cli"] }, { id: "reports", scope: "Reports", paths: [defect], dependsOn: ["cli", "template"] }] });
+
+describe("scenario: R96 varprompt, a corrective names a file of a later feature (#2898)", () => {
+  const defect = "src/Varprompt/Commands/StatsCommand.cs";
+  for (const worktree of [false, true])
+    test(`enforced (${worktree ? "batch workers" : "single writer"}): the run blocks with remedies instead of waiting on a request no one can answer`, async () => {
+      const { runId, done, service, records } = await drive({ enforce: true, defect, bounds: later(defect), worktree });
+      expect(service.store.requests(runId).filter((r) => r.kind === "manual_evidence")).toEqual([]);
+      expect(done.status).toBe("blocked");
+      const result = records().find((r) => r.at === "result");
+      expect(result?.unowned).toEqual([expect.objectContaining({ path: defect, feature: "reports", upstream: { closed: false, testFile: false, sole: true, later: true }, decision: "refuse" })]);
+      const recovery = stopRecovery(service.store, runId);
+      expect(recovery?.message).toContain("which feature reports owns and writes only after this feature");
+      expect(recovery?.remedies.map((r) => r.action)).toEqual(expect.arrayContaining(["revise", "accept-workspace"]));
+    }, 120_000);
+
+  test("an upstream feature's file still parks: only a feature that depends on this one is later", async () => {
+    const bounds = later("src/cli/Stats.cs");
+    const { runId, done, service, records } = await drive({ enforce: true, defect: "src/cli/Stats.cs", bounds });
+    expect(done.status).toBe("waiting");
+    expect(service.store.requests(runId).some((r) => r.kind === "manual_evidence" && r.status === "pending")).toBe(true);
+    expect(records().find((r) => r.at === "result")?.unowned).toEqual([expect.objectContaining({ feature: "cli", decision: "park", upstream: { closed: false, testFile: false, sole: true } })]);
+  }, 120_000);
+
+  test("shadow (the default): the would-stop names the later feature", async () => {
+    const { wouldStops } = await drive({ enforce: false, defect, bounds: later(defect) });
+    const unowned = wouldStops.filter((w) => w.reason === "corrective_unowned_file");
+    expect(unowned.some((w) => w.summary.includes("which feature reports owns and writes only after this feature"))).toBe(true);
+  }, 120_000);
+});
+
 describe("scenario: a person answers a blocked corrective's unowned file with a remedy (#2155)", () => {
   for (const worktree of [false, true])
     test(`shadow (${worktree ? "batch workers" : "single writer"}): the block offers route to T001, and applying it corrects T001 and the run completes`, async () => {

@@ -104,7 +104,8 @@ describe("scenario: a split approval names one extension amount (#2525)", () => 
       { action: "extend", initiativeId: "values", suggestedTokens: 19_145_290 },
     ]);
     expect(served.next.recovery).toEqual(view.next.recovery);
-    expect(splitPreviewLine(preview)).toEndWith(" Extend to 19.1M before approving.");
+    // The few-path share (on by default, #2893) records why it priced none: no size pool yet.
+    expect(splitPreviewLine(preview)).toEndWith(" Extend to 19.1M before approving. Few-path share: applied to none; kept 3 no-pool.");
   }, 120000);
 
   test("a pool at what the cap pays for, below the high end, names no amount above the cap's tokens (tinyflate)", async () => {

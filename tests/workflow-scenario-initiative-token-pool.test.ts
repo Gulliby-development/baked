@@ -153,10 +153,11 @@ describe("scenario: the shared token pool names its amounts and would grow insid
       dispose();
     }
     // Rewound with the budget and usage of each moment: syntax was accepted at 14:26:58 and lint
-    // at 14:39:38 (the trace's run.state_changed events); select parked at 14:40:20.
+    // at 14:39:38 (the trace's run.state_changed events); select parked at 14:40:20. The round
+    // priced its features without the few-path share (on by default since #2893), and so does this.
     const syntax = Date.UTC(2026, 9, 24, 14, 26, 59, 558);
     const lint = Date.UTC(2026, 9, 24, 14, 39, 39, 627);
-    const [replay] = replayInitiativeStarts(R66, { budgetAtStart: true, moments: [syntax, lint] });
+    const [replay] = replayInitiativeStarts(R66, { budgetAtStart: true, moments: [syntax, lint], fewPathPrice: false });
     const at = (t: number) => replay?.starts.find((s) => s.at === t)?.pool;
     // With three measured features the blend weighs their 2.36x a third: 25.1M, under the pool. The
     // notice advises at the raw ratio (#2062): 31.8M, 13 minutes before select parked.
@@ -169,7 +170,7 @@ describe("scenario: the shared token pool names its amounts and would grow insid
     // No start before the third accepted feature warned: the estimate's point forecast stayed under the pool.
     expect(replay?.starts.filter((s) => s.at < syntax && s.pool?.notice)).toEqual([]);
     // Replayed on the final 38M budget, as the corpus gate did before #2061, nothing warns.
-    const [final] = replayInitiativeStarts(R66, { budgetAtStart: false });
+    const [final] = replayInitiativeStarts(R66, { budgetAtStart: false, fewPathPrice: false });
     expect(final?.starts.some((s) => s.pool?.notice)).toBe(false);
   }, 180000);
 });

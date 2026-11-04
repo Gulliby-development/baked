@@ -31,6 +31,13 @@ import { fixturePolicy } from "./helpers/workflow-fixture.js";
  * what the current code decides takes the default (`enforce`).
  */
 const RECORDED_PLAN_CHARGE = { stopModes: { "initiative-plan-charge": "shadow" as const } };
+/**
+ * The size pools the rounds before #2893 priced with: without the few-path share, which is on by
+ * default since. A test that pins a round's prices to show another rule (a forecast stop, a plan
+ * charge, the own-plan need, a dollar notice) replays it with them, so the sizing default does not
+ * move that rule's numbers; the range backtests (-pools, -ranges, -few-paths) take the default.
+ */
+const RECORDED_SIZE_POOLS = { fewPathPrice: false } as const;
 
 interface Accepted {
   newStops?: number;
@@ -276,7 +283,7 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     // forecast well above main; with none at all the start stops as it did in R50.
     const own = replayInitiativeStarts(selwhy, { priceSamples: (store, runIds) => forecastSamples(store, runIds) })[0];
     expect(own?.starts.find((b) => b.featureId === "selector-core")?.forecastUsd).toBeGreaterThan(start!.forecastUsd! * 1.3);
-    const unmeasured = replayInitiativeStarts(selwhy, { ...bindingAtOnce, priceSamples: () => [] })[0];
+    const unmeasured = replayInitiativeStarts(selwhy, { ...bindingAtOnce, ...RECORDED_SIZE_POOLS, priceSamples: () => [] })[0];
     const stopped = unmeasured?.starts.find((b) => b.featureId === "selector-core");
     expect(stopped?.replayed).toBe("park");
     expect(stopped!.forecastUsd!).toBeGreaterThan(stopped!.ceilingUsd!);
@@ -923,7 +930,7 @@ describe("own-plan feature need replays on recorded initiatives (#2043)", () => 
   // before the rule (R65 must not rise), and no start parks. R66 nodepluck, the round the issue
   // measured, has no trace in the corpus; its scenario test replays its numbers.
   test("R65 uritpl: the high end at every start is unchanged, encode's low end follows its plan", () => {
-    const [replay] = replayInitiativeStarts(join(ROOT, "R65/uritpl.sqlite.gz"));
+    const [replay] = replayInitiativeStarts(join(ROOT, "R65/uritpl.sqlite.gz"), RECORDED_SIZE_POOLS);
     expect(replay?.newStartStops).toBe(0);
     expect(replay?.starts.map((s) => [s.featureId, s.tokens?.high])).toEqual([
       ["base", 30_764_134],
@@ -981,6 +988,7 @@ describe("the plan charge replays on recorded initiatives (#2100, #2056)", () =>
     const advice: { feature: string; mode: string | undefined; remaining: number; advice: ReturnType<typeof shareShortfall> }[] = [];
     const [replay] = replayInitiativeStarts(join(ROOT, "R71", "xmlvet.sqlite.gz"), {
       budgetAtStart: true,
+      ...RECORDED_SIZE_POOLS,
       gate: (view, feature) => {
         const verdict = shareShortfall(view, feature);
         if (verdict) advice.push({ feature: feature.id, mode: view.budget.planCharge?.mode, remaining: view.budget.remaining.tokens, advice: verdict });
@@ -1133,7 +1141,7 @@ describe("the dollar notice replays at the measured ratio (#2186)", () => {
   test("R66 nodepluck: the measured ratio's forecast is nearer the final $28.45, and no notice warns under the $37.50 ceiling", () => {
     const syntax = Date.UTC(2026, 9, 24, 14, 26, 59, 558);
     const lint = Date.UTC(2026, 9, 24, 14, 39, 39, 627);
-    const [replay] = replayInitiativeStarts(join(ROOT, "R66", "nodepluck.sqlite.gz"), { budgetAtStart: true, moments: [syntax, lint] });
+    const [replay] = replayInitiativeStarts(join(ROOT, "R66", "nodepluck.sqlite.gz"), { budgetAtStart: true, moments: [syntax, lint], ...RECORDED_SIZE_POOLS });
     expect(replay?.finalUsd).toBeCloseTo(28.45, 2);
     const at = (t: number) => replay?.starts.find((s) => s.at === t);
     // At syntax the blend weighs the measured 1.55x a third (1.18x, $23.41), at lint 1.45x two thirds.
