@@ -1,4 +1,5 @@
 import { normalizeLiteral } from "../verification/criteria-cases.js";
+import { decodeXmlEntities } from "../verification/test-reports.js";
 
 /**
  * A planned test task's failing check whose expected values are the literals of its own criteria
@@ -11,8 +12,9 @@ import { normalizeLiteral } from "../verification/criteria-cases.js";
  *
  * `sourceDefectInput` reads the expected side of every assertion in the output (rspec, bun and
  * Jest, Minitest, testify, xUnit, JUnit, Dart, ExUnit, Rust `right:`, Go `want`, pytest
- * `assert a == b`, XCTest, PHPUnit, alcotest) and compares each with the case walk's literals of
- * the task's criteria. When every expected value is one of them, and the finished planned tasks
+ * `assert a == b`, XCTest, PHPUnit, alcotest; a Gradle or Maven report block's escaped `<failure>`
+ * decoded first, and a JUnit value that spans lines closed at `but was`, #2888) and compares each
+ * with the case walk's literals of the task's criteria. When every expected value is one of them, and the finished planned tasks
  * that carry those criteria wrote the sources the failing tests import, `sourceDefectDecision`
  * routes the failure to those tasks as the frame-located `finished` owner of #1564 does: no
  * continuation of the test task, and its corrective writes the tests and those sources at the
@@ -106,9 +108,24 @@ function bare(value: string): string {
   }
 }
 
+/**
+ * A JUnit-style `<failure>` or `<error>` element of a report block (`testReport`, Gradle and Maven),
+ * attributes and text: the block re-escapes the report's text, so its values read `&lt;x&gt;`.
+ */
+const REPORT_FAILURE = /<(failure|error)\b[^>]*?(?:\/>|>[\s\S]*?<\/\1>)/g;
+
+/**
+ * JUnit's `expected: <x> but was: <y>` whose expected value runs on to later lines: a value that
+ * ends in a newline (Kotlin's `Pair(0, "windowgate 0.1.0\n")`) prints its closing `>` and the
+ * `but was` marker on the next line (#2888, R95 windowgate).
+ */
+const JUNIT_SPANNING = /\bexpected\s*:\s*<([\s\S]*?)>\s*,?\s*but\s+was\b/i;
+/** How many lines a spanning JUnit value may take before the `but was` marker. */
+const SPAN_LINES = 10;
+
 /** The expected values of the assertions a failing check's output prints, as the tests spell them. */
 export function expectedValues(output: string): string[] {
-  const lines = output.split(/\r?\n/);
+  const lines = output.replace(REPORT_FAILURE, decodeXmlEntities).split(/\r?\n/);
   const values: string[] = [];
   let diff = false;
   for (let index = 0; index < lines.length; index++) {
@@ -123,6 +140,19 @@ export function expectedValues(output: string): string[] {
       if (removed) values.push(bare(removed));
       if (!line.trim()) diff = false;
       continue;
+    }
+    if (/\bexpected\s*:\s*</i.test(line) && !/\bbut\s+was\b/i.test(line)) {
+      const end = lines
+        .slice(index + 1, index + 1 + SPAN_LINES)
+        .findIndex((next) => /\bbut\s+was\b/i.test(next));
+      const value =
+        end < 0
+          ? undefined
+          : JUNIT_SPANNING.exec(lines.slice(index, index + end + 2).join("\n"))?.[1];
+      if (value?.trim()) {
+        values.push(bare(value));
+        continue;
+      }
     }
     for (const pattern of EXPECTED) {
       const found = pattern.exec(line);

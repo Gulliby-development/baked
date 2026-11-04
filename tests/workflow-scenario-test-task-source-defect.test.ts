@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
+import { testReport } from "../src/core/verification/test-reports.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import type { Check, RunPolicy, Spec, Task, TaskGraph } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
@@ -230,5 +231,55 @@ describe("expected values across test frameworks (#2220)", () => {
     expect(sourceDefectDecision({ ...base, matched: 1 })).toBe(false);
     expect(sourceDefectDecision({ ...base, owners: [], files: [] })).toBe(false);
     expect(sourceDefectDecision({ ...base, self: false })).toBe(false);
+  });
+});
+
+// R95 windowgate 7bbc2758 (#2888): Gradle's report of a Kotlin row test whose expected `Pair` ends
+// in a newline. The report block re-escapes the failure, so the expected value read
+// `&lt;(0, windowgate 0.1.0` and matched no criterion literal.
+const R95_FAILURE = [
+  '<failure message="org.opentest4j.AssertionFailedError: expected: &lt;(0, windowgate 0.1.0&#10;)&gt; but was: &lt;(0, windowgate ${Registry.VERSION}&#10;)&gt;" type="org.opentest4j.AssertionFailedError">org.opentest4j.AssertionFailedError: expected: &lt;(0, windowgate 0.1.0',
+  ")&gt; but was: &lt;(0, windowgate ${Registry.VERSION}",
+  ")&gt;",
+  "\tat app//org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)",
+  "\tat app//kotlin.test.junit5.JUnit5Asserter.assertEquals(JUnitSupport.kt:32)",
+  "\tat app//windowgate.RowsTest.version row(RowsTest.kt:14)",
+  "</failure>",
+].join("\n");
+
+function reportBlock(executable: string, folder: string): string {
+  const root = mkdtempSync(join(tmpdir(), "baked-2888-"));
+  cleanups.push(() => removeTempDir(root));
+  mkdirSync(join(root, folder), { recursive: true });
+  writeFileSync(
+    join(root, folder, "TEST-windowgate.RowsTest.xml"),
+    `<?xml version="1.0" encoding="UTF-8"?>\n<testsuite name="windowgate.RowsTest" tests="1" skipped="0" failures="1" errors="0">\n  <testcase name="version row()" classname="windowgate.RowsTest" time="0.012">\n    ${R95_FAILURE}\n  </testcase>\n</testsuite>\n`,
+  );
+  const block = testReport(executable, ["test"], root, 0, 1);
+  if (!block) throw new Error(`no report block for ${executable}`);
+  return block;
+}
+
+describe("expected values of an escaped, multi-line JUnit report block (#2888)", () => {
+  for (const [runner, executable, folder] of [
+    ["Gradle", "gradle", "build/test-results/test"],
+    ["Maven surefire", "mvn", "target/surefire-reports"],
+  ] as const)
+    test(`${runner}: the escaped two-line expected tuple reads as the test spells it`, () => {
+      const output = `> Task :test FAILED\n\nRowsTest > version row() FAILED\n    org.opentest4j.AssertionFailedError at RowsTest.kt:14\n\n${reportBlock(executable, folder)}`;
+      expect(output).toContain("&lt;(0, windowgate 0.1.0");
+      expect(expectedValues(output)).toEqual(["0, windowgate 0.1.0"]);
+      expect(criterionExpected(output, [{ criterionId: "AC-003", literal: "0, windowgate 0.1.0" }])).toMatchObject({ expected: 1, matched: 1, criterionIds: ["AC-003"] });
+    });
+
+  test("the console's unescaped JUnit value that spans lines closes at `but was`", () => {
+    const output = "org.opentest4j.AssertionFailedError: expected: <(0, windowgate 0.1.0\n)> but was: <(0, windowgate ${Registry.VERSION}\n)>";
+    expect(expectedValues(output)).toEqual(["0, windowgate 0.1.0"]);
+    expect(expectedValues("java.lang.AssertionError: expected:<[B1905\n]> but was:<[Bai\n]>")).toEqual(["B1905"]);
+  });
+
+  test("an escaped single-line JUnit value in a report block is decoded; text outside a block is not", () => {
+    expect(expectedValues('<failure message="expected: &lt;B1905&gt; but was: &lt;Bai&gt;"/>')).toEqual(["B1905"]);
+    expect(expectedValues('Expected: "a &lt; b"\nReceived: "a"')).toEqual(["a &lt; b"]);
   });
 });
