@@ -61,10 +61,17 @@ describe("the size pools' ranges over the last rounds (#2150)", () => {
   // rounds 70 to 75 at 31 of 90 above (the bound is 30.7). A language with fewer than three
   // finished features in the pool now gets a high end from first-language ratios (#2398): 17 of
   // 90 above, ladlemath 1, flatelens 4.
-  test("rounds 63 to 68 miss their range above the bound by default and within it at a half-life of 2; the rolling window is bounded", () => {
+  // The R87, R90 and R91 traces put the window above the bound below the range: R83 to R91 at 23
+  // of 62 (37.1%, the bound 36.0%; R87's alone 22 of 54 and R90's 22 of 57 on the mains they were
+  // opened on), 11 of them medium features of one to three paths priced at the no-fit medium
+  // pool's low end (1.11M-1.25M). The few-path share (#2640), the default since #2893, prices
+  // them at the root of their share of the pool's median paths: 15 of 62. It brings rounds 63 to
+  // 68 within the bound by default too, from 24 of 60 below to 18.
+  test("rounds 63 to 68 and the rolling window are within the bound by default and at a half-life of 2", () => {
     const off = rangeMisses();
     expect(off.r63to68.features).toBe(60);
-    expect(off.r63to68.below / off.r63to68.features).toBeGreaterThan(quarterBound(off.r63to68.features));
+    expect(off.r63to68.below / off.r63to68.features).toBeLessThanOrEqual(quarterBound(off.r63to68.features));
+    expect(off.r63to68.above / off.r63to68.features).toBeLessThanOrEqual(quarterBound(off.r63to68.features));
     const on = rangeMisses({ recencyHalfLife: 2 });
     for (const share of [on.r63to68, on.all]) {
       expect(share.below / share.features).toBeLessThanOrEqual(quarterBound(share.features));

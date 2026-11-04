@@ -106,6 +106,7 @@ import {
   estimateInitiative,
   type FeatureEstimate,
   type FeatureRunSample,
+  fewPathPriceOn,
   highCalibrationText,
   type InitiativeEstimate,
   type InitiativeProgress,
@@ -4324,7 +4325,7 @@ export class InitiativeService {
       ...(settings.basePolicy?.sizing?.recencyHalfLife
         ? { recencyHalfLife: settings.basePolicy.sizing.recencyHalfLife }
         : {}),
-      ...(settings.basePolicy?.sizing?.fewPathPrice ? { fewPathPrice: true } : {}),
+      fewPathPrice: fewPathPriceOn(settings.basePolicy?.sizing),
       // Read only when the request demands a test volume: the sizing history opens every store.
       ...(features.some((f) => f.testCases)
         ? {
@@ -4391,7 +4392,7 @@ export class InitiativeService {
       feature.need = needs.get(feature.id) ?? null;
       feature.needUsd = estimate.features.find((f) => f.featureId === feature.id)?.costUsd ?? null;
     }
-    // What `sizing.fewPathPrice` did to each waiting feature (#2640); none with the knob off.
+    // What `sizing.fewPathPrice` did to each waiting feature (#2640); none with the knob set off.
     const fewPathShare = fewPathShares(estimate.features, waiting);
     const cost = this.costView(row, settings, plan, runIds, used, accepted, estimate, null);
     const shares = splitShares(waiting, remaining, cost.remainingUsd);

@@ -148,7 +148,7 @@ export async function plannedForecastScenario(
     let view = await initiatives.start({ commandId: newId(), initiativeId: "values", prompt: "Write values", ownerLabel: "test", model: MODEL,
       plan, keepFeatures: true, featureAutoApproval: { maxTasks: 5, maxFiles: 5 },
       ...(options.forecastStop ? { forecastStop: true } : {}),
-      policy: { ...fixturePolicy, clarification: "assume", ...(options.planAhead ? { executionMode: "worktree" as const } : {}), checks: [{ ...fixturePolicy.checks[0]!, args: ["-e", "0"] }], sizing: { maxRunTokens: 50_000_000, historyStores: histories, ...(options.fewPathPrice ? { fewPathPrice: true } : {}) },
+      policy: { ...fixturePolicy, clarification: "assume", ...(options.planAhead ? { executionMode: "worktree" as const } : {}), checks: [{ ...fixturePolicy.checks[0]!, args: ["-e", "0"] }], sizing: { maxRunTokens: 50_000_000, historyStores: histories, ...(options.fewPathPrice !== undefined ? { fewPathPrice: options.fewPathPrice } : {}) },
         ...(options.stopModes ? { stopModes: options.stopModes } : {}) },
       budget: { maxTotalTokens: options.maxTotalTokens ?? 100_000_000, maxAgentCalls: 1000, maxActiveMs: 21_600_000 },
       ...(options.capUsd === null ? {} : { costBudget: { maxCostUsd: options.capUsd ?? 30, costTolerance: options.costTolerance ?? 0.25 } }),

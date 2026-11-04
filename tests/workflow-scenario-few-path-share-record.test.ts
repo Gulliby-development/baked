@@ -7,19 +7,20 @@ import { historyFixture, plannedForecastScenario } from "./helpers/initiative-pl
 // The preview at the split approval and every `feature.share_gate` record carried no word of the
 // few-path share, so the round could not tell whether the rule priced a feature or why not (in a
 // first split no finished feature of a size prices it, so it cannot). The preview and the record
-// now carry, per feature, whether it applied, why, and its range before and after; off, neither.
+// now carry, per feature, whether it applied, why, and its range before and after; set off
+// (`fewPathPrice: false`, the rule being on by default since #2893), neither.
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function scenario(fewPathPrice: boolean) {
+async function scenario(fewPathPrice?: boolean) {
   const history = await historyFixture(5, { taskShare: 0.4 });
   cleanups.push(() => history.dispose());
   const result = await plannedForecastScenario(3, 5, [history.root], {
     skeleton: false,
     approve: false,
-    ...(fewPathPrice ? { fewPathPrice } : {}),
+    ...(fewPathPrice !== undefined ? { fewPathPrice } : {}),
   });
   cleanups.push(() => result.fixture.dispose());
   const preview = result.initiatives.view("values").budget.preview;
@@ -58,7 +59,19 @@ describe("scenario: R92, the preview and the share-gate record name the few-path
     expect(gates[0]?.feature.fewPathShare).toMatchObject({ applied: false, reason: "no-pool" });
   });
 
-  test("off: neither the preview nor the share-gate record carries it", async () => {
+  // The rule is the default (#2893): rounds 83 to 91 ran without it and put 23 of 62 finished
+  // features below their range, 11 of them one- to three-path medium features at the medium
+  // pool's low end. A policy that names no `fewPathPrice` prices and records as `true` does.
+  test("default: a policy that does not name the knob carries the same records as one that sets it on", async () => {
+    const on = await scenario(true);
+    const { preview, gates } = await scenario();
+    expect(preview.fewPathShare).toEqual(on.preview.fewPathShare);
+    expect(Object.keys(preview.fewPathShare ?? {})).toEqual(["f1", "f2", "f3"]);
+    expect(splitPreviewLine(preview)).toEndWith(" Few-path share: applied to none; kept 3 no-pool.");
+    expect(gates[0]?.feature.fewPathShare).toMatchObject({ applied: false, reason: "no-pool" });
+  });
+
+  test("set off: neither the preview nor the share-gate record carries it", async () => {
     const { preview, gates } = await scenario(false);
     expect(preview.fewPathShare).toBeUndefined();
     expect(splitPreviewLine(preview)).not.toContain("Few-path share");

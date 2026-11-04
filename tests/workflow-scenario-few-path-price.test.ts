@@ -6,6 +6,7 @@ import {
   estimateInitiative,
   type FeatureRunSample,
   type FeatureToEstimate,
+  fewPathPriceOn,
 } from "../src/core/workflows/initiatives/estimate.js";
 import { PolicySchema } from "../src/core/workflows/schemas.js";
 
@@ -102,10 +103,22 @@ describe("scenario: R89 loopwatch, a one-file licence feature priced at its path
     expect(of(true, "three", three).tokens.low).toBe(of(false, "three", three).tokens.low);
   });
 
-  test("the policy knob is opt-in", () => {
+  // On by default since #2893: rounds 83 to 91 put 23 of 62 finished features below their range,
+  // 11 of them medium features of one to three paths priced at the no-fit medium pool's low end
+  // (1.11M-1.25M; R86 binlayer's one-path ones used 0.78M-0.93M).
+  test("the policy knob is on unless the policy sets it false", () => {
     const sizing = PolicySchema.shape.sizing.unwrap();
     expect(sizing.parse({ fewPathPrice: true }).fewPathPrice).toBe(true);
     expect(sizing.parse({}).fewPathPrice).toBeUndefined();
+    expect(fewPathPriceOn(sizing.parse({}))).toBe(true);
+    expect(fewPathPriceOn(undefined)).toBe(true);
+    expect(fewPathPriceOn(sizing.parse({ fewPathPrice: true }))).toBe(true);
+    expect(fewPathPriceOn(sizing.parse({ fewPathPrice: false }))).toBe(false);
+    // A policy that names no knob prices a one-path medium feature at the share of its pool.
+    const one = [feature("one", "medium", ["src/one.js"])];
+    const byDefault = estimate(fewPathPriceOn(sizing.parse({})), one).features[0];
+    expect(byDefault?.tokens.low).toBe(of(true, "one", one).tokens.low);
+    expect(byDefault?.tokens.low).toBeLessThan(of(false, "one", one).tokens.low);
   });
 });
 
