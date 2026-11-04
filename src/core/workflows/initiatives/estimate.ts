@@ -757,6 +757,17 @@ function fewPathDetail(
     : { share: null, reason: "not-fewer", medianPaths: typical };
 }
 
+/**
+ * Whether an initiative's policy prices its few-path features at a share of their size pool
+ * (`fewPathDetail`) and its legal-file features at the path rate: on unless `sizing.fewPathPrice`
+ * is `false` (#2893). Off, a no-fit pool priced every feature of its size at its middle half, and
+ * the last six rounds with the R87, R90 and R91 traces (R83 to R91) put 23 of 62 finished
+ * features below their range (37.1%, above the 36.0% bound of #2150), 11 of them medium features
+ * with one to three paths at the medium pool's 1.11M-1.25M low end; on, 15 of 62.
+ */
+export const fewPathPriceOn = (sizing: { fewPathPrice?: boolean } | undefined): boolean =>
+  sizing?.fewPathPrice !== false;
+
 /** The expected value and measured spread the budget text words its warning by (#1982). */
 export const budgetDetail = (
   estimate: Pick<InitiativeEstimate, "expectedTokens" | "highCalibration">,
@@ -1201,7 +1212,8 @@ export function estimateInitiative(input: {
   /**
    * `sizing.fewPathPrice` (#2640): a feature with fewer paths than its size pool's median, in a
    * pool with no path fit, at a share of the pool (`fewPathDetail`), and a feature of legal files
-   * alone at the path rate. Absent, the size pool prices them as before.
+   * alone at the path rate. Absent, the size pool prices them as before; the initiative service
+   * passes it on unless the policy turns it off (`fewPathPriceOn`, #2893).
    */
   fewPathPrice?: boolean;
 }): InitiativeEstimate {
