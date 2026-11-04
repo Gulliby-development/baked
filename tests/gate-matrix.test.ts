@@ -86,7 +86,7 @@ import { toolchainCommand } from "../src/core/workflows/toolchain.js";
 import { type HostEdit, hostOnlyEvidence, plannerGraph } from "../src/core/workflows/host-edits.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { fixerProbeDecision } from "../src/core/workflows/fixer-run.js";
-import { STOP_REASONS } from "../src/core/workflows/stop-reasons.js";
+import { STOP_REASONS, stopMode } from "../src/core/workflows/stop-reasons.js";
 import { sizePlan, splitTestTasks, suppliedBlocks } from "../src/core/workflows/sizing.js";
 import { withPerTestTimeout } from "../src/core/workflows/test-timeout.js";
 import { detectProfile } from "../src/core/tools/project.js";
@@ -6043,6 +6043,17 @@ describe("review and converge gates: a documentation finding marked noRepro (#28
     expect(reviewGateDecision(gate([doc({ kind: "partial" })]))).toEqual(["F1"]);
     expect(convergenceGateDecision(convergence([doc()])).verdicts).toEqual([{ id: "F1", verdict: "repro" }]);
     expect(reproAllows({ kind: "correctness", severity: "medium" }, undefined, true)).toBe(false);
+  });
+
+  // #2866, R92 tailclose: `enforce` is a mode of the reason, and under it the gates repair the
+  // README finding with the documentation rule; shadow stays the default.
+  test("enforce: the gates repair the README finding; shadow is the default", () => {
+    expect(STOP_REASONS.doc_finding_unrepaired.modes).toContain("enforce");
+    expect(STOP_REASONS.doc_finding_unrepaired.defaultMode).toBe("shadow");
+    const enforced = stopMode({ stopModes: { doc_finding_unrepaired: "enforce" } }, "doc_finding_unrepaired") === "enforce";
+    expect(reviewGateDecision(gate([doc(), doc({ id: "F2", doc: undefined })]), { doc: enforced })).toEqual(["F1"]);
+    expect(convergenceGateDecision(convergence([doc()]), { doc: enforced }).verdicts).toEqual([{ id: "F1", verdict: "repair" }]);
+    expect(stopMode({}, "doc_finding_unrepaired")).toBe("shadow");
   });
 
   test("docFindingRepairs and gateFinding read documentation files", () => {

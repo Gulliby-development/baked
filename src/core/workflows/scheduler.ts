@@ -936,6 +936,7 @@ import {
   convergenceGateFinding,
   convergenceReproCandidates,
   type GateFinding,
+  type GateShadowRules,
   gateFinding,
   REVIEW_GATE_DIR,
   REVIEW_GATE_KIND,
@@ -1508,6 +1509,15 @@ const REVIEW_ATTEMPT_STEPS = 16;
 const TASK_END_ERRORS = 20;
 /** Commands the case walk runs per attempt before it refuses a test task (#1836). */
 const CASE_PROBES = 4;
+
+/**
+ * The gate rules a policy applies live: `doc_finding_unrepaired` under `enforce` repairs a
+ * documentation finding marked `noRepro` as a `partial` one in the review and converge gates
+ * (#2866); in shadow and advisory it only records the would-stop (#2835).
+ */
+const docGateRules = (policy: RunPolicy): GateShadowRules => ({
+  doc: stopMode(policy, "doc_finding_unrepaired") === "enforce",
+});
 
 export class WorkflowScheduler {
   dispose(): void {
@@ -3556,7 +3566,8 @@ export class WorkflowScheduler {
                   ),
                 );
               const crashes = this.reproCrashes(gate.findings, outcomes, review.findings);
-              const decision = convergenceGateDecision(gate);
+              // Under `enforce` a noRepro documentation finding repairs as a partial one (#2866).
+              const decision = convergenceGateDecision(gate, docGateRules(policy));
               const gatePath = `${CONVERGENCE_GATE_DIR}${newId()}.json`;
               this.store.transaction(() =>
                 this.store.artifact(
@@ -19857,7 +19868,8 @@ ${note}`;
             ),
           );
         const crashes = this.reproCrashes(gate.findings, outcomes, result.findings);
-        const decided = new Set(reviewGateDecision(gate));
+        // Under `enforce` a noRepro documentation finding repairs as a partial one (#2866).
+        const decided = new Set(reviewGateDecision(gate, docGateRules(policy)));
         const gatePath = `${REVIEW_GATE_DIR}${reviewer.key}-${newId()}.json`;
         this.store.transaction(() =>
           this.store.artifact(

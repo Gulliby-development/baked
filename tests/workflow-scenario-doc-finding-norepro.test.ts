@@ -35,7 +35,7 @@ afterEach(() => {
 const spec: Spec = { schemaVersion: 1, featureId: "fixture", revision: 1, title: "Escapes", problem: "No reader", outcome: "A reader", inScope: ["Escapes"], outOfScope: [], assumptions: [], openQuestions: [], requirements: [{ id: "FR-001", text: "The README documents the escapes \\n, \\t, \\\\ and \\xHH", priority: "must", verification: "automated", sourceRefs: [] }], criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: "the README", when: "a reader types its escapes", then: "the program reads the bytes the request names", method: "automated" }], dependencies: [] };
 const markdown = "# Plan\n## Context\nOne reader.\n## Decisions\nDEC-001: FR-001 in README.md.\n## Components\nsrc/escapes.ts, README.md\n## Data\nNone\n## Verification\nTests\n## Risks\nNone for fixture";
 const check: Check = { id: "tests", executable: "bun", args: ["-e", "const t = await Bun.file('README.md').text(); if (!t.includes('Escapes')) process.exit(1)"], cwd: ".", timeoutMs: 10000, required: true, scope: "feature", envNames: [], writes: [] };
-const policy: RunPolicy = { ...defaultWorkflowPolicy, maxRepairRounds: 3, maxConvergenceRounds: 3, checks: [check] };
+const basePolicy: RunPolicy = { ...defaultWorkflowPolicy, maxRepairRounds: 3, maxConvergenceRounds: 3, checks: [check] };
 const task: Task = { id: "T001", title: "Write the README", description: "Write README.md and src/escapes.ts", requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn: [], profileId: "implementer", writes: [{ path: "README.md", action: "create" }, { path: "src/escapes.ts", action: "create" }], readHints: [], checkIds: ["tests"], origin: "planned", findingIds: [], rationale: "Required behavior" };
 // The delivered README doubles each backslash in its code spans, as R91 stopcut's did.
 const readme = "# stopcut\n\n## Escapes and input format\n\n- `\\\\n` newline\n- `\\\\t` tab\n- `\\\\\\\\` backslash\n- `\\\\xHH` byte\n";
@@ -60,6 +60,7 @@ const finding = (id: string, file: string, evidenceIds: string[]): Review["findi
 class DocExecutor implements AgentExecutor {
   reviews = 0;
   convergences = 0;
+  corrections = 0;
   constructor(private root: string) {}
   async execute(request: ExecutionRequest) {
     const current = request.task;
@@ -75,7 +76,9 @@ class DocExecutor implements AgentExecutor {
       case "analysis": output = { schemaVersion: 1, inputHash: data.inputHash, verdict: "pass", findings: [] }; break;
       case "implementation": {
         mkdirSync(dirname(join(root, "src/escapes.ts")), { recursive: true });
-        writeFileSync(join(root, "README.md"), readme);
+        // A correction rewrites the README with single backslashes (one more line per round).
+        const fixed = current?.origin === "planned" ? readme : `${readme.replaceAll("\\\\", "\\")}\nRound ${String(++this.corrections)}.\n`;
+        writeFileSync(join(root, "README.md"), fixed);
         writeFileSync(join(root, "src/escapes.ts"), "export const ESCAPES = ['\\n', '\\t', '\\\\'];\n");
         output = { schemaVersion: 1, taskId: current?.id, outcome: "implemented", summary: "Wrote the files", evidenceIds: [], unresolved: [] };
         break;
@@ -98,7 +101,7 @@ class DocExecutor implements AgentExecutor {
   }
 }
 
-async function drive() {
+async function drive(policy: RunPolicy = basePolicy) {
   const root = mkdtempSync(join(tmpdir(), "baked-doc-norepro-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const executor = new DocExecutor(root);
@@ -120,7 +123,8 @@ async function drive() {
   const stops = service.store
     .eventsOfType(started.runId, "decision.would_stop")
     .flatMap((e) => (e.type === "decision.would_stop" && e.payload.reason === "doc_finding_unrepaired" ? [e.payload] : []));
-  return { done, reviews: records<ReviewGateRecord>(REVIEW_GATE_DIR), convergences: records<ConvergenceGateRecord>(CONVERGENCE_GATE_DIR), stops };
+  const tasks = service.store.tasks(started.runId).map((t) => JSON.parse(t.definition_json) as Task);
+  return { done, reviews: records<ReviewGateRecord>(REVIEW_GATE_DIR), convergences: records<ConvergenceGateRecord>(CONVERGENCE_GATE_DIR), stops, tasks };
 }
 
 describe("scenario: a README correctness finding marked noRepro (#2835)", () => {
@@ -153,4 +157,34 @@ describe("scenario: a README correctness finding marked noRepro (#2835)", () => 
     );
     expect(stops.every((s) => s.summary.includes("README.md"))).toBe(true);
   });
+});
+
+// #2866, R92 tailclose: the README shipped a literal `\n` in a transcript line and doubled
+// backslashes, because the rule was shadow only. Under `enforce` both gates repair the README
+// finding as a partial one; the same claim on a source file stays a note.
+describe("scenario: doc_finding_unrepaired under enforce (#2866)", () => {
+  test("the README finding opens a correction in the review gate; the source one stays a note; nothing is recorded as a would-stop", async () => {
+    const { done, reviews, convergences, stops, tasks } = await drive({ ...basePolicy, stopModes: { doc_finding_unrepaired: "enforce" } });
+    const review = reviews.find((g) => g.record.findings.some((f) => f.id === "F1"));
+    if (!review) throw new Error("No review gate recorded F1");
+    expect(review.record.repaired).toEqual(["F1"]);
+    expect(reviewGateDecision(review.record, { doc: true })).toEqual(["F1"]);
+    const corrective = tasks.filter((t) => t.origin !== "planned");
+    expect(corrective.length).toBeGreaterThan(0);
+    expect(corrective.flatMap((t) => t.findingIds)).toContain("F1");
+    expect(corrective.flatMap((t) => t.findingIds)).not.toContain("F2");
+    // The converge gate decides with the same rule. After a correction it repairs only high and
+    // critical findings, so its medium README finding stays a note for its severity; with the
+    // round's medium severity it repairs, and the source one does not.
+    const converge = convergences.find((g) => g.record.findings.some((f) => f.id === "C1"));
+    if (!converge) throw new Error("No convergence gate recorded C1");
+    expect(converge.record.decision).toEqual(convergenceGateDecision(converge.record, { doc: true }));
+    const medium = convergenceGateDecision({ ...converge.record, severities: ["critical", "high", "medium"] }, { doc: true });
+    const verdicts = new Map(medium.verdicts.map((v) => [v.id, v.verdict]));
+    expect(verdicts.get("C1")).toBe("repair");
+    expect(verdicts.get("C2")).not.toBe("repair");
+    expect(stops).toEqual([]);
+    expect(done.status).toBe("completed");
+  });
+
 });
