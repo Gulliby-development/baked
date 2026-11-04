@@ -35,3 +35,15 @@ describe("tests a pull request runs on Windows and macOS before the queue", () =
     expect(targetedTests(["docs/guide.md"], files, read, weights)).toEqual([]);
   });
 });
+
+describe("the shards split a pull request's picked tests", () => {
+  test("TEST_FILES is planned over the shard count it is given, not run in one shard", () => {
+    // In one Windows job, #2907's three changed replay-corpus files (about 25 minutes) and the tests naming its
+    // sources passed the job's 30 minutes. A shard of the given count runs its share; one with none exits at once.
+    const run = Bun.spawnSync([process.execPath, "scripts/test-shard.ts", "2", "2"], {
+      env: { ...process.env, TEST_FILES: "tests/pr-targeted-tests.test.ts" },
+    });
+    expect(run.exitCode).toBe(0);
+    expect(run.stdout.toString()).toContain("Shard 2/2: 0 of 1 test files");
+  });
+});
