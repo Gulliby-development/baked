@@ -611,7 +611,10 @@ export function formatWrittenChecks(
 
 /**
  * `ranges` without the given 1-based lines, split where a line is taken out (#2596). A line with
- * no letter or digit (`}`, `)`) stays: it is in every block, so it says nothing about who wrote it.
+ * no letter or digit (`}`, `)`) is in every block, so on its own it says nothing about who wrote
+ * it and stays; in a run of consecutive given lines that holds a word it closes or opens a
+ * supplied statement of several lines and leaves too, or a range formatter that grows the range
+ * to the statement rewrites the lines around it (#2910).
  */
 export function rangesWithout(
   ranges: readonly LineRange[],
@@ -620,10 +623,21 @@ export function rangesWithout(
 ): LineRange[] {
   if (!lines.size) return [...ranges];
   const all = text.split("\n");
+  const word = (line: number) => /\w/.test(all[line - 1] ?? "");
+  // The given lines that belong to a run of consecutive given lines with a word in it.
+  const taken = new Set<number>();
+  for (const line of lines) {
+    if (taken.has(line) || lines.has(line - 1)) continue;
+    let end = line;
+    while (lines.has(end + 1)) end++;
+    let worded = false;
+    for (let at = line; at <= end && !worded; at++) worded = word(at);
+    if (worded) for (let at = line; at <= end; at++) taken.add(at);
+  }
   const out: [number, number][] = [];
   for (const [start, end] of ranges)
     for (let line = start; line <= end; line++) {
-      if (lines.has(line) && /\w/.test(all[line - 1] ?? "")) continue;
+      if (taken.has(line)) continue;
       const last = out.at(-1);
       if (last && last[1] === line - 1) last[1] = line;
       else out.push([line, line]);
@@ -660,7 +674,8 @@ function formatWrittenOf(
       if (before !== null && !isStub(write.path, before)) {
         const text = readFileSync(absolute, "utf8");
         // The lines the request supplies keep its bytes, as a supplied created file does (#2504):
-        // a range formatter that rewraps them makes `supplied_drift` report the file (#2596).
+        // a range formatter that rewraps them makes `supplied_drift` report the file (#2596), and
+        // the bracket line that closes a supplied statement of several lines leaves too (#2910).
         const ranges = rangesWithout(
           changedLineRanges(before, text),
           suppliedLines(write.path, text),
