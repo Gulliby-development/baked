@@ -5279,12 +5279,16 @@ export class WorkflowScheduler {
           isStaticCheck(check) &&
           !isTestCheck(check)
         ) {
-          const keys = baselineKeys(result.output, root);
+          const keys = baselineKeys(result.output, root, runRoots(this.store.workspace, state));
           if (keys.length) debt[commandKey(check)] = keys;
         }
         if (scaffold) continue;
         if (result.status === "failed" && isWholeUnitCheck(check))
-          diagnostics[commandKey(check)] = baselineKeys(result.output, root);
+          diagnostics[commandKey(check)] = baselineKeys(
+            result.output,
+            root,
+            runRoots(this.store.workspace, state),
+          );
         if (result.truncated || result.status === "inconclusive") continue;
         const found = outputCounts(result.output, result.status === "passed");
         if (found.length) counts[commandKey(check)] = found;
@@ -5330,7 +5334,12 @@ export class WorkflowScheduler {
     );
     const tracked = new Set((await gitBaseline(root))?.tracked ?? []);
     for (const { check, output } of failing) {
-      const found = baselineFindings(output, root, check.cwd);
+      const found = baselineFindings(
+        output,
+        root,
+        check.cwd,
+        runRoots(this.store.workspace, state),
+      );
       const input: BaselineFailureInput = {
         fileLocal: isStaticCheck(check) && !isTestCheck(check) && !isWholeUnitCheck(check),
         fix: Boolean(check.fix),
@@ -6024,11 +6033,12 @@ export class WorkflowScheduler {
     const changed = ((state.rootGraph ?? state.graph)?.tasks ?? []).flatMap((t) =>
       t.writes.map((w) => w.path),
     );
-    const debt = baselineDebt(output, runRoot(this.store.workspace, state), {
-      baseline,
-      changed,
-      summary: diagnosticCount(output)?.count ?? null,
-    });
+    const debt = baselineDebt(
+      output,
+      runRoot(this.store.workspace, state),
+      { baseline, changed, summary: diagnosticCount(output)?.count ?? null },
+      runRoots(this.store.workspace, state),
+    );
     if (!debt) return null;
     this.store.transaction(() =>
       this.store.artifact(
