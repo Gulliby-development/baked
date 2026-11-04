@@ -599,6 +599,26 @@ function pathFitOf(
   };
 }
 
+/**
+ * The least a size pool's path fit places a feature of path weight `weight` at (#2895): the pool's
+ * cheapest sample that names paths, times the square root of the feature's share of that sample's
+ * paths when it has fewer. The cheapest whole sample alone floored few-path features at a
+ * many-path feature's cost: R91 stopcut's one-path medium features at the medium pool's 774k
+ * (used 0.57M and 0.69M), its two- and three-path large ones at the large pool's 0.94M-1.04M
+ * (used 0.66M and 0.91M). The square root, as the few-path share without a fit (`fewPathDetail`):
+ * the lowest per-path rate times the paths put R85 cellspan's one-path large `graph` at
+ * 174k-525k (used 1.38M), and five more large features above their high end.
+ */
+function fitFloor(
+  pool: FeatureRunSample[],
+  value: (s: FeatureRunSample) => number,
+  weight: number,
+): number {
+  const named = pool.filter((s) => pathWeight(s) > 0);
+  const cheapest = named.reduce((a, s) => (value(s) < value(a) ? s : a));
+  return value(cheapest) * Math.min(1, Math.sqrt(weight / pathWeight(cheapest)));
+}
+
 function estimateFeature(
   feature: FeatureToEstimate,
   history: PastRun[],
@@ -646,15 +666,13 @@ function estimateFeature(
       : rangeOf(pool.map(value));
   const measured = ownRuns ? null : poolRange((s) => s.tokens);
   // A feature that names paths sits where its paths put it among them, with their spread around
-  // the fit; never below the cheapest of them.
+  // the fit; never below `fitFloor`.
   const placeBy = (value: (s: FeatureRunSample) => number) => {
-    const f = pathWeight(feature) > 0 ? pathFitOf(pool, value) : null;
-    const cheapest = Math.min(...pool.map(value));
+    const weight = pathWeight(feature);
+    const f = weight > 0 ? pathFitOf(pool, value) : null;
+    const floor = f && fitFloor(pool, value, weight);
     const range =
-      f &&
-      rangeOf(
-        f.residuals.map((r) => Math.max(cheapest, f.base + f.perPath * pathWeight(feature) + r)),
-      );
+      f && rangeOf(f.residuals.map((r) => Math.max(floor ?? 0, f.base + f.perPath * weight + r)));
     return range ? { fit: f, range } : null;
   };
   const byTokens = measured ? placeBy((s) => s.tokens) : null;
