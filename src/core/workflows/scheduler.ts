@@ -981,6 +981,7 @@ import {
   rowBlockExtraSummary,
   rowRunFindings,
   rowRunText,
+  rowTupleHeld,
 } from "./row-block-drift.js";
 import { repairRunRows, rowClaimRecords } from "./row-claim-repair.js";
 import {
@@ -1049,7 +1050,7 @@ import {
   isNotPrescribedFinding,
   isSuppliedContentFinding,
   notPrescribedFindings,
-  perRowNotPrescribed,
+  perRowReading,
   prescribedRowFiles,
   suppliedConflictCriteria,
   suppliedContentFindings,
@@ -2619,28 +2620,31 @@ export class WorkflowScheduler {
               );
               findings = [...findings.filter((f) => !isNotPrescribedFinding(f)), ...notPrescribed];
               const notPrescribedMode = stopMode(policy, "case_not_prescribed");
-              if (notPrescribedMode !== "enforce")
+              if (notPrescribedMode !== "enforce") {
+                // The same rows read row by row (#2544, shadow): recorded beside the joined answer.
+                const perRow = perRowReading(
+                  spec,
+                  graph,
+                  statedRequest(state, this.store.requests(runId)),
+                  { checks: policy.checks },
+                );
                 for (const finding of notPrescribed)
                   recordWouldStop(this.store, runId, {
                     reason: "case_not_prescribed",
                     mode: notPrescribedMode,
                     key: `analysis-${finding.refs[1] ?? finding.id}`,
                     summary: finding.description,
-                    // `literal`: a quoted case no prescribed row holds, as against `per-row` (#2532).
+                    // `literal`: a quoted case no prescribed row holds, as against `per-row` (#2532);
+                    // `perRow`: whether one row holds its literals read row by row (#2544).
                     inputs: {
                       criterionId: finding.refs[1] ?? null,
                       finding: finding.id,
                       kind: "literal",
+                      perRow: perRow.noted.get(finding.refs[1] ?? "") ?? "none",
                     },
                   });
-              // The cases only the joined rows hold, read row by row (#2544, shadow): recorded only.
-              if (notPrescribedMode !== "enforce")
-                for (const found of perRowNotPrescribed(
-                  spec,
-                  graph,
-                  statedRequest(state, this.store.requests(runId)),
-                  { checks: policy.checks },
-                ))
+                // The cases only the joined rows hold, which no single row holds: recorded only.
+                for (const found of perRow.notPrescribed)
                   recordWouldStop(this.store, runId, {
                     reason: "case_not_prescribed",
                     mode: notPrescribedMode,
@@ -2648,6 +2652,7 @@ export class WorkflowScheduler {
                     summary: `${found.criterionId} cites ${JSON.stringify(found.literal)}, whose values the request's prescribed rows hold only spread over several rows; read row by row, no row holds it`,
                     inputs: { ...found, kind: "per-row" },
                   });
+              }
               // Analysis passes when no finding blocks: the rest are notes, whatever the model's verdict.
               const blocking = findings.some((f) => f.blocking);
               state.analysisPassed = !blocking && analysis.verdict !== "inconclusive";
@@ -7438,6 +7443,8 @@ export class WorkflowScheduler {
               hostRows: generatedRows.filter((file) => file.inline === true),
               // The rows the request prescribes, for files written yet or not (#2501).
               prescribedRows: this.prescribedRows(runId, state),
+              // The per-row reader of a row restated as a tuple, in shadow (#2544).
+              rowHold: rowTupleHeld,
               // The files it supplies verbatim, whose helpers a criterion may name (#2646).
               suppliedFiles: this.suppliedFiles(runId, state),
               // Every row file it names, also another feature's (#2889).
@@ -18341,7 +18348,8 @@ ${note}`;
    * which the walk did not demand from a task that writes only prescribed row files, once per task,
    * criterion and literal, with both. `inputs.kind` says which reader answered `none` (#2532):
    * `literal` for the walk's own answer, `per-row` for the shadow reader that asks each row alone
-   * (#2544, `prescribedPerRow`) where the joined rows held the case.
+   * (#2544, `prescribedPerRow`) where the joined rows held the case. A `literal` record carries
+   * that reader's answer as `perRow` (`own` or `sibling` where one row holds it after all).
    */
   private caseNotPrescribedWouldStop(
     runId: string,
@@ -18367,6 +18375,7 @@ ${note}`;
             criterionId: found.criterionId,
             literal: found.literal,
             kind: "literal",
+            perRow: c.prescribedPerRow ?? "none",
           },
         });
       else if (c.prescribedPerRow === "none")

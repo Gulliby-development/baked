@@ -547,6 +547,12 @@ export interface CaseContext {
    */
   citedCases?: "demand" | "skip";
   /**
+   * The per-row reader of a literal that restates a row in its own tuple notation (#2544, shadow):
+   * `rowTupleHeld` from `row-block-drift.ts`, which the caller passes since that module reads this
+   * one. Only `prescribedPerRow` reads it; absent, the per-row answer reads no tuple.
+   */
+  rowHold?: RowHold;
+  /**
    * Receives each walk's holds and refusals, for the run's record and its replay (#1715), and the
    * walked cases by the same index, for a caller that records a case's literal outside the trace.
    */
@@ -600,9 +606,11 @@ export interface CaseWalk {
     prescribed?: CasePrescribed;
     /**
      * The same question asked row by row (#2544, shadow): a case of several values on one line is
-     * held by a prescribed row only when one row holds them all, not the rows' joined text.
+     * held by a prescribed row only when one row holds them all, not the rows' joined text, and a
+     * literal that restates a row as a tuple by its values in order within one row (`rowHold`).
      * Present only where it answers differently from `prescribed`; the decision does not read it
-     * yet, and a `none` here is recorded `case_not_prescribed` with `kind: "per-row"`.
+     * yet. A `none` here is recorded `case_not_prescribed` with `kind: "per-row"`, and a `none` of
+     * `prescribed` carries this answer as `perRow`, so a bench round counts both readers.
      */
     prescribedPerRow?: CasePrescribed;
     /**
@@ -669,20 +677,36 @@ function multiValue(c: CriterionCase): boolean {
 }
 
 /**
+ * Whether one prescribed row holds a literal that restates a row (#2544): true or false when the
+ * reader reads the literal as a row's values, null when it does not (the walk's matcher decides).
+ */
+export type RowHold = (literal: string, row: string) => boolean | null;
+
+/**
  * Whether prescribed rows hold a case (#2501): the walk's own matcher on the rows' text, as a row
  * slice owns a literal by the rows that hold it (#2466). The one test of a criterion literal
  * against a request's row block; a new reader of prescribed rows for the walk goes through it.
  * `perRow` (#2544, shadow) holds a multi-value case only when one row holds it: on the joined
  * text, `["render","--var","a=1"]` of one row and the output `42` of another hold
- * `render --var a=1 => 42`, which no row tests.
+ * `render --var a=1 => 42`, which no row tests. A `RowHold` there also reads a literal that
+ * restates a row in another notation by its values: R98 spendgate's criteria quoted rows as
+ * tuples the walk's matcher does not find in the row that holds them (10 false notes). Such a
+ * literal is read row by row whether `multiValue` counts it or not (a `\r\n` in it decodes to a
+ * line break), never on the joined text.
  */
 export function prescribedRowsHeld(
   c: CriterionCase,
   rows: readonly string[],
-  perRow = false,
+  perRow: boolean | RowHold = false,
 ): boolean {
   if (!rows.length) return false;
-  if (perRow && multiValue(c)) return rows.some((row) => missingCases([c], [row]).length === 0);
+  const inRow = () => rows.some((row) => missingCases([c], [row]).length === 0);
+  if (typeof perRow === "function") {
+    const held = rows.map((row) => perRow(c.literal, row));
+    // A literal the reader reads is held by one row, by its values or by the walk's matcher.
+    if (held.some((h) => h !== null)) return held.includes(true) || inRow();
+  }
+  if (perRow && multiValue(c)) return inRow();
   return missingCases([c], [rows.join("\n")]).length === 0;
 }
 
@@ -698,7 +722,7 @@ export function casePrescribed(
   c: CriterionCase,
   own: readonly string[],
   rows: PrescribedRows | undefined,
-  perRow = false,
+  perRow: boolean | RowHold = false,
 ): CasePrescribed | undefined {
   if (!rows?.size) return undefined;
   const mine = new Set(own.map(rowPath));
@@ -1976,7 +2000,8 @@ export function caseCheck(
         const unheld = !own[i] && !(intact && c.row);
         const prescribed = unheld ? casePrescribed(c, tests, context.prescribedRows) : undefined;
         // The per-row answer, recorded beside the joined one while it is in shadow (#2544).
-        const perRow = prescribed && casePrescribed(c, tests, context.prescribedRows, true);
+        const perRow =
+          prescribed && casePrescribed(c, tests, context.prescribedRows, context.rowHold ?? true);
         const cited = unheld && context.citedCases === "skip" ? c.cited : undefined;
         return {
           criterionId: c.criterionId,
