@@ -13,7 +13,12 @@ import {
 } from "./host-identity.js";
 import { mutationLeaseFor, type WorkspaceLeases } from "./leases.js";
 import { isMcpToolName, toolListAllows } from "./mcp-grants.js";
-import { capturePreImage, createdByRunLineage, uncommittedEdits } from "./rollback.js";
+import {
+  capturePreImage,
+  createdByRunLineage,
+  taskWritesElsewhere,
+  uncommittedEdits,
+} from "./rollback.js";
 import { rowEditBreaks, rowEditBreakText } from "./row-restore.js";
 import type { AgentProfile, RunPolicy } from "./schemas.js";
 import { suppliedRows } from "./sizing.js";
@@ -181,6 +186,13 @@ export class WorkflowToolPolicy {
     const ownEffect =
       writes.filter((effect) => effect.attempt_id === this.attemptId).at(-1) ??
       (reverted ? undefined : inherited);
+    // A continuation, restart or candidate of the task in another root (a batch worker cut from
+    // the run root's content) holds the file as the task's attempt in the other root left it: no
+    // effect of this root explains it, yet it is the task's own write, not an outside change (#2928).
+    const elsewhere =
+      !ownEffect &&
+      !reverted &&
+      taskWritesElsewhere(this.store, this.runId, this.task.id, path, root).has(existing);
     // The baseline lists the files the snapshot can see. A file that exists but is not listed is
     // git-ignored and untracked (for example a docs directory in .gitignore): the snapshot has no
     // reference hash for it, so there is nothing to compare, and refusing it would make an approved
@@ -189,6 +201,7 @@ export class WorkflowToolPolicy {
     if (
       baseline &&
       !unseen &&
+      !elsewhere &&
       !(reverted && !ownEffect) &&
       existing !== (ownEffect ? ownEffect.after_hash : (baseline[path] ?? null)) &&
       !sameContentIgnoringEol(
@@ -207,6 +220,7 @@ export class WorkflowToolPolicy {
       existing !== null &&
       !ownEffect &&
       !reverted &&
+      !elsewhere &&
       !createdByRunLineage(this.store, this.runId, path, existing)
     )
       throw new WorkflowFault("INPUT_CHANGED", `${WRITE_REFUSALS.exists}: ${path}`);

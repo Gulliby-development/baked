@@ -109,6 +109,7 @@ import {
   renderProjectMemory,
 } from "./project-memory.js";
 import { checkRecoveryNote, noteInterruptedChecks, withRecoveryNote } from "./recovery.js";
+import { refusalInRunRoot } from "./refused-edit.js";
 import {
   recordReleasedCreates,
   releasedCreatesBetween,
@@ -1667,7 +1668,7 @@ export class NativeWorkflowService implements WorkflowService {
       hash: string | null;
     };
     const state = this.store.state(runId);
-    if (refused.root !== (state.worktree?.path ?? "")) return null;
+    if (!refusalInRunRoot(state, refused.root)) return null;
     const current = fileHash(workspacePath(runRoot(this.workspace, state), refused.path));
     if (current !== refused.hash) return null;
     return {

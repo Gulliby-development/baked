@@ -36,6 +36,7 @@ import type { TestRunner } from "../src/core/verification/output-counts.js";
 import { unrequestedManifestFields } from "../src/core/workflows/quality/dependencies.js";
 import { historyFixture, plannedForecastScenario } from "./helpers/initiative-planned-forecast.js";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { refusalInRunRoot, refusedEditAdvice } from "../src/core/workflows/refused-edit.js";
 import { directoryFixers, directoryFixerScenario } from "./helpers/directory-fixer-scenario.js";
 import { baselineCreatedFilesScenario, FIRST_RUN_OUTPUTS } from "./helpers/baseline-created-files-scenario.js";
 import { sourceManifest, TOOL_CACHES } from "../src/core/verification/snapshot.js";
@@ -6512,4 +6513,24 @@ describe("documented-example fixture gate: a printf or echo line that writes the
     test(command, () => {
       expect(redirectFixture(command)).toEqual(expected);
     });
+});
+
+describe("refused-edit gate: accept-workspace only for a refusal in the run root (#2928)", () => {
+  // R99 skillseek T004: three refusals in the batch worker `.baked/worktrees/fb6cd52c/T004`.
+  const state = { worktree: { path: ".baked/worktrees/fb6cd52c/main" } } as Parameters<typeof refusalInRunRoot>[0];
+  const cases: [string, string, string[]][] = [
+    ["the run root", ".baked/worktrees/fb6cd52c/main", ["accept-workspace"]],
+    ["a batch worker", ".baked/worktrees/fb6cd52c/T004", ["resume", "revise"]],
+    ["a best-of-N candidate", ".baked/worktrees/fb6cd52c/T004-c1", ["resume", "revise"]],
+  ];
+  for (const [name, root, remedies] of cases)
+    test(name, () => {
+      const runRoot = refusalInRunRoot(state, root);
+      const advice = refusedEditAdvice({ runId: "fb6cd52c", attemptId: "e9f80a4b", path: "spec/cli_spec.rb", count: 3, root, runRoot });
+      expect(advice.remedies.map((r) => r.action)).toEqual(remedies);
+      expect(advice.message.includes("--accept-workspace")).toBe(runRoot);
+    });
+  test("an inline run's root is the run root", () => {
+    expect(refusalInRunRoot({ worktree: null } as unknown as Parameters<typeof refusalInRunRoot>[0], "")).toBe(true);
+  });
 });
