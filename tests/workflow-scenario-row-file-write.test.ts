@@ -294,10 +294,12 @@ describe("rowFilePlan: the host writes a prescribed row file from its shape (#25
     expect(rowFilePlan("tests/header_test.cpp", headers, { source: "reference", text: table(['{"", 0, 0}']) }).content).toBe(table(headers));
   });
 
-  test("Java: a `Stream.of(` with one row gives no separator between rows, its `));` closes the list", () => {
+  test("Java: a `Stream.of(` with one row is the list's last row, its `));` closes the list (#2930)", () => {
     const one = BYTEMERGE.reference.text.replace('        Arguments.of("x", "[120]"),\n', "");
-    const { inputs } = rowFilePlan(ENCODE_PATH, rowsOf(BYTEMERGE), { source: "reference", text: one });
-    expect(rowFileRefusal(ENCODE_PATH, inputs)).toContain("no separator");
+    const { inputs, content } = rowFilePlan(ENCODE_PATH, rowsOf(BYTEMERGE), { source: "reference", text: one });
+    expect(rowFileRefusal(ENCODE_PATH, inputs)).toBeNull();
+    // The rows before the last take the list's `,`, never the `;` of its close.
+    expect(content).toBe(BYTEMERGE.written);
     // One prescribed row takes the one row's place, close and all.
     expect(rowFilePlan(ENCODE_PATH, rowsOf(BYTEMERGE).slice(0, 1), { source: "reference", text: one }).content).toBe(encodeFile(rowsOf(BYTEMERGE).slice(0, 1)));
   });
@@ -342,8 +344,9 @@ describe("rowFilePlan: the host writes a prescribed row file from its shape (#25
     expect(refusal(deflateFile(['{ "00", "0300", 0 }']))).toContain("argument count");
     // A row spread over lines.
     expect(refusal(deflateFile(['{ "00",\n    "0300" }']))).toContain("spreads a row");
-    // One row with no separator: the separator between rows is not known.
-    expect(refusal(['  rows([', '    row(["a"], "", 0, "", "")', "  ])", ""].join("\n"), ['row(["b"], "", 0, "", "")', 'row(["c"], "", 0, "", "")'], "test/eval_rows_test.exs")).toContain("no separator");
+    // One statement row with no separator: the separator between rows is not known (a list's
+    // one row is its last row, #2930).
+    expect(refusal(['  test "rows" do', '    row(["a"], "", 0, "", "")', "  end", ""].join("\n"), ['row(["b"], "", 0, "", "")', 'row(["c"], "", 0, "", "")'], "test/eval_rows_test.exs")).toContain("no separator");
     // Rows of two heads.
     expect(refusal(TINYFLATE.reference.text, ['{ "a", "b" }', 'ROW("a", "b")'])).toContain("one row head");
     // A language without a row yet (#2553).
@@ -508,7 +511,9 @@ class RowFileExecutor extends FixtureExecutor {
     if (request.profile.output === "plan") {
       const graph = (result.output as { taskGraph: TaskGraph }).taskGraph;
       const first = graph.tasks[0]!;
-      graph.tasks.push({ ...first, id: "T002", title: "Row file", dependsOn: ["T001"], writes: [{ path: this.shape.path, action: "create" }], reference: this.shape.reference.path, checkIds: [] });
+      // A shape at the row file's own path is the file in the task's base (#2930): the task modifies it.
+      const own = this.shape.reference.path === this.shape.path;
+      graph.tasks.push({ ...first, id: "T002", title: "Row file", dependsOn: ["T001"], writes: [{ path: this.shape.path, action: own ? "modify" : "create" }], ...(own ? {} : { reference: this.shape.reference.path }), checkIds: [] });
     }
     if (request.profile.output === "implementation") {
       this.sessions.push(request.task?.id ?? "");
@@ -779,6 +784,77 @@ describe("scenario: a row file in the languages of #2553 part B, written by the 
       expect(file).toBe(shape.written);
       expect(record).toMatchObject({ mode: "on", wouldApply: true, applied: true });
       expect(record?.writes[0]?.rows).toEqual({ count: rowsOf(shape).length, ...OK });
+      expect(skipped).toBe("host-written");
+    }, 120000);
+});
+
+// #2930: a row file two features share (R99 skillseek, Ruby: `foundation` wrote row 1 of
+// `spec/terms_spec.rb`, `terms-score` rows 2 to 15). The file an earlier feature left with one row
+// is the later task's shape, and in a language whose list puts no separator after its last row
+// that one row has none: the host declined the file ("no separator") and a session spent 655k
+// tokens on rows the host writes at 0. The one row is the list's last row; the separator between
+// rows comes from the request's rows or the language (`listSeparator`). Every language with a row
+// shape is a case here, so a new `ROW_FILE_SHAPES` row whose list's last row has no separator
+// fails until it says how its last row ends.
+const oneRowShapes = Object.entries(ROW_FILE_SHAPES).flatMap(([language, record]) => {
+  if (isNoRow(record)) return [];
+  const { path, reference, rows } = record.example;
+  const oneRow = rowFilePlan(path, rows.slice(0, 1), { source: "reference", text: reference }).content ?? "";
+  const written = rowFilePlan(path, rows, { source: "reference", text: reference }).content ?? "";
+  const shape: WriteShape = { path, reference: { path, text: oneRow }, block: [`Rows in ${path} (${rows.length} rows)`, ...rows], written };
+  return [[language, shape] as const];
+});
+const AFFECTED_2930 = ["elixir", "java", "scala", "csharp", "ruby", "r"];
+
+describe("rowFilePlan: a shared row file an earlier feature left with one row (#2930)", () => {
+  for (const [language, shape] of oneRowShapes)
+    test(`${language}: the file's one row is a shape, and the host writes every prescribed row`, () => {
+      expect(shape.written).not.toBe("");
+      const { inputs, content } = plan(shape, shape.reference.text, "file");
+      expect(rowFileRefusal(shape.path, inputs)).toBeNull();
+      expect(content).toBe(shape.written);
+    });
+
+  test("R99 skillseek (Ruby): the request's rows give the separator, and the file's one row stays the last", () => {
+    const spec = (rows: string[]) => ['require "terms"', "", "TERMS = [", ...rows.map((r) => `  ${r}`), "].freeze", ""].join("\n");
+    const rows = ['["a b", ["a", "b"]],', '["A-b", ["a", "b"]],', '["", []]'];
+    expect(rowFilePlan("spec/terms_spec.rb", rows, { source: "file", text: spec(['["x", ["x"]]']) }).content).toBe(spec(rows));
+    // In a language that names no list separator too: a Python list without its magic comma.
+    const params = (rows: string[]) => ["import pytest", "", '@pytest.mark.parametrize("text,count", [', ...rows.map((r) => `    ${r}`), "])", "def test_count(text, count):", "    assert count_words(text) == count", ""].join("\n");
+    const pyRows = ['("a b", 2),', '("", 0)'];
+    expect(rowFilePlan("tests/test_count.py", pyRows, { source: "file", text: params(['("a", 1)']) }).content).toBe(params(pyRows));
+  });
+
+  test("a list's close on the one row's line is no separator: Java and Kotlin `Stream.of(`, a gtest `Values(`", () => {
+    const java = BYTEMERGE.reference.text.replace('        Arguments.of("x", "[120]"),\n', "");
+    expect(rowFilePlan(ENCODE_PATH, rowsOf(BYTEMERGE), { source: "file", text: java }).content).toBe(BYTEMERGE.written);
+    const stream = (rows: string[]) => ["fun rows(): Stream<Arguments> =", "    Stream.of(", ...rows.map((r, i) => `        ${r}${i === rows.length - 1 ? ")" : ","}`), ""].join("\n");
+    const kt = ['Arguments.of("a b", 2)', 'Arguments.of("", 0)'];
+    expect(rowFilePlan("src/test/kotlin/CountRowsTest.kt", kt, { source: "file", text: stream(['Arguments.of("x", 1)']) }).content).toBe(stream(kt));
+    const values = (rows: string[]) => ["INSTANTIATE_TEST_SUITE_P(", "    Rows, CliTest,", "    ::testing::Values(", ...rows.map((r, i) => `        ${r}${i === rows.length - 1 ? "));" : ","}`), ""].join("\n");
+    const cpp = ['CliRow{{"--version"}, 0, "v\\n", ""}', 'CliRow{{}, 2, "", "usage\\n"}'];
+    expect(rowFilePlan("tests/cli_test.cpp", cpp, { source: "file", text: values(['CliRow{{"a"}, 0, "", ""}']) }).content).toBe(values(cpp));
+  });
+
+  test("a statement row needs no separator and none is guessed: one such row still declines", () => {
+    const refusal = (path: string, text: string, rows: string[]) => rowFileRefusal(path, rowFilePlan(path, rows, { source: "file", text }).inputs);
+    // A Ruby call statement in a test method, an Elixir one in a `test` block, an OCaml list row.
+    expect(refusal("test/rows_test.rb", 'def test_rows\n  check("a", 1)\nend\n', ['check("b", 2)', 'check("c", 3)'])).toContain("no separator");
+    expect(refusal("test/rows_test.exs", 'test "rows" do\n  check("a", 1)\nend\n', ['check("b", 2)', 'check("c", 3)'])).toContain("no separator");
+    expect(refusal("test/test_rows.ml", 'let rows = [\n  ("a", 1)\n]\n', ['("b", 2)', '("c", 3)'])).toContain("no separator");
+  });
+});
+
+describe("scenario: R99 skillseek, a later feature's task writes a shared row file that holds one row (#2930)", () => {
+  for (const [language, shape] of oneRowShapes.filter(([language]) => AFFECTED_2930.includes(language)))
+    test(`${language}: the task's base holds ${shape.path} with one row; the host writes every row and no session opens`, async () => {
+      const { final, file, sessions, record, skipped } = await deliver(shape, { rowFileWrite: "on" });
+      expect(final.status).toBe("completed");
+      // On main the host declines ("one row with no separator") and a session writes it: T001, T002.
+      expect(sessions).toEqual(["T001"]);
+      expect(file).toBe(shape.written);
+      expect(record).toMatchObject({ mode: "on", wouldApply: true, applied: true });
+      expect(record?.writes[0]?.rows).toEqual({ count: rowsOf(shape).length, ...OK, shape: "file" });
       expect(skipped).toBe("host-written");
     }, 120000);
 });
