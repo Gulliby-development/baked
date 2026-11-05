@@ -222,7 +222,18 @@ export const placeRowsInput = z
       .number()
       .int()
       .min(0)
-      .describe("The file line (from 1) the rows go after; 0 puts them before the first line."),
+      .optional()
+      .describe(
+        "The file line (from 1) the rows go after; 0 puts them before the first line. Every insert moves the lines below it, so for a second call give after instead.",
+      ),
+    after: z
+      .string()
+      .min(1)
+      .max(400)
+      .optional()
+      .describe(
+        "The text of the line the rows go after, as the file holds it (surrounding whitespace ignored), such as the opening line of the list the rows belong in. It survives an earlier insert, unlike line; when the file holds it more than once, line picks the nearest.",
+      ),
     rows: z
       .array(z.number().int())
       .min(1)
@@ -264,7 +275,7 @@ export function placeRowsDescription(
   const files = [...targets]
     .map(([path, rows]) => `${path} (rows ${rowsText(numbersOf(numbers, path, rows))})`)
     .join(", ");
-  return `Insert the request's prescribed rows verbatim into ${files}: rows [first, last] go after the given line of the existing file, one row per line, in the request's order, exactly as the request writes them. Never type a prescribed row with edit_file or multi_edit: write everything else (imports, the row type, the list's opening and close, the harness calls) with edit_file, leaving the rows out, then place them with this tool. Give indent and separator when the defaults do not fit the language or the request's layout: indent by default is ${INDENT_DEFAULT}; the separator that ends each row is by default ${SEPARATOR_DEFAULT}. The result shows the first placed line with its indentation; to fix the indentation of rows already placed, call again with reindent: true and the indent they take.`;
+  return `Insert the request's prescribed rows verbatim into ${files}: rows [first, last] go after the given line of the existing file, one row per line, in the request's order, exactly as the request writes them. Never type a prescribed row with edit_file or multi_edit: write everything else (imports, the row type, the list's opening and close, the harness calls) with edit_file, leaving the rows out, then place them with this tool. Give indent and separator when the defaults do not fit the language or the request's layout: indent by default is ${INDENT_DEFAULT}; the separator that ends each row is by default ${SEPARATOR_DEFAULT}. A file with more than one list, or rows placed in more than one call: give after (the opening line of the list the rows belong in, such as \`static const std::vector<Row> totals = {\`) instead of line, since every insert moves the lines below it, or place the rows of the last list first. The result names the line the rows follow and the list that holds them, and shows the first placed line with its indentation; to fix the indentation of rows already placed, call again with reindent: true and the indent they take.`;
 }
 
 /**
@@ -325,6 +336,50 @@ function heldLines(rows: readonly string[], lines: readonly string[]): number[] 
   });
 }
 
+/** A line that opens a row list: `= {`, `List.of(`, `ROWS = [`. */
+const OPENS_LIST = /[[({=]$/;
+
+/**
+ * The line (from 1, 0 before the first line) the rows go after (#2956): the line whose text is
+ * `input.after`, else `input.line`, or why neither names one. An absolute line moves with every
+ * insert above it: R102 tailcut filters T002 placed a two-list C++ file in two calls, computed the
+ * second list's line before the first insert, and put its rows inside the first list. A quoted
+ * line survives the insert; when the file holds it more than once, `line` picks the nearest.
+ */
+export function anchorLine(
+  input: Pick<PlaceRowsInput, "line" | "after">,
+  lines: readonly string[],
+): number | string {
+  if (input.after === undefined) {
+    if (input.line === undefined)
+      return "give the line the rows go after: after with its text (such as the list's opening line), or line with its number.";
+    return input.line;
+  }
+  const want = input.after.trim();
+  const matches = lines.flatMap((line, i) => (line.trim() === want ? [i + 1] : []));
+  if (!matches.length)
+    return `no line reads ${JSON.stringify(want)}. Give after as the whole text of one line of the file (such as the list's opening line), or line with its number.`;
+  if (matches.length === 1) return matches[0] as number;
+  const near = input.line;
+  if (near === undefined)
+    return `lines ${matches.join(", ")} all read ${JSON.stringify(want)}. Give line too, and the nearest of them is used.`;
+  return matches.reduce((best, m) => (Math.abs(m - near) < Math.abs(best - near) ? m : best));
+}
+
+/**
+ * The nearest line above line `at` (from 0) that opens a list, from 1 with its text (#2956); none
+ * when a list's close comes first.
+ */
+function listOf(lines: readonly string[], at: number): { list?: { line: number; text: string } } {
+  for (let i = at - 1; i >= 0; i--) {
+    const text = (lines[i] ?? "").replace(/\r$/, "");
+    if (OPENS_LIST.test(text.trimEnd())) return { list: { line: i + 1, text: text.trim() } };
+    // A list's close (`};`, `]`, `)`): the rows are after that list, in none above it.
+    if (/^[\])}]/.test(text.trim())) return {};
+  }
+  return {};
+}
+
 /**
  * The file with rows `input.rows` of `rows` placed after `input.line`, or the refusal with the
  * change the worker can make. `text` is the file's content, null when it does not exist. `indents`
@@ -340,7 +395,17 @@ export function placeRows(
   indents: ReadonlyMap<string, string> = new Map(),
   numbers: ReadonlyMap<string, readonly number[]> = new Map(),
 ):
-  | { content: string; placed: number[]; lines: [number, number]; first: string; reindented?: true }
+  | {
+      content: string;
+      placed: number[];
+      lines: [number, number];
+      first: string;
+      reindented?: true;
+      /** The line the rows follow, as the file holds it ("" before the first line, #2956). */
+      follows?: string;
+      /** The line (from 1) and text of the nearest list opening above the rows (#2956). */
+      list?: { line: number; text: string };
+    }
   | { refusal: string } {
   const { path } = input;
   const rows = targets.get(path);
@@ -379,9 +444,11 @@ export function placeRows(
     };
   const lines = text.split("\n");
   const count = text.endsWith("\n") ? lines.length - 1 : lines.length;
-  if (input.line > count)
+  const where = input.reindent ? 0 : anchorLine(input, lines.slice(0, count));
+  if (typeof where === "string") return { refusal: `${path}: ${where}` };
+  if (where > count)
     return {
-      refusal: `${path} has ${count} line${count === 1 ? "" : "s"}; line ${input.line} is not one of them. Give the line the rows follow (0 puts them before the first line).`,
+      refusal: `${path} has ${count} line${count === 1 ? "" : "s"}; line ${where} is not one of them. Give the line the rows follow (0 puts them before the first line).`,
     };
   const placed = span;
   const lineOf = heldLines(rows, lines);
@@ -393,12 +460,12 @@ export function placeRows(
     return {
       refusal: `${path} already holds ${held.join(", ")}. Place only the rows the file does not hold yet; to change only the indentation of placed rows, call place_rows with reindent: true and their indent.`,
     };
-  const anchor = input.line > 0 ? (lines[input.line - 1] ?? "") : "";
+  const anchor = where > 0 ? (lines[where - 1] ?? "") : "";
   const eol = (anchor || (lines[0] ?? "")).endsWith("\r") ? "\r" : "";
   const anchorIndent = /^[ \t]*/.exec(anchor)?.[0] ?? "";
   // After a line that opens the list (`= {`, `List.of(`, `ROWS = [`) a row is one level deeper;
   // after a row or any other line it keeps that line's indentation.
-  const opens = /[[({=]$/.test(anchor.trimEnd());
+  const opens = OPENS_LIST.test(anchor.trimEnd());
   const indent =
     input.indent ?? (opens ? anchorIndent + levelOf(path, indents.get(path), lines) : anchorIndent);
   // The line form of a restored row: the template's indentation and separator around the row. A
@@ -411,12 +478,14 @@ export function placeRows(
     const separator = given ?? own ?? ",";
     return restoredLine(`${indent}row${separator}${eol}`, own ? row.slice(0, -1).trimEnd() : row);
   });
-  lines.splice(input.line, 0, ...written);
+  lines.splice(where, 0, ...written);
   return {
     content: lines.join("\n"),
     placed: placed.map(label),
-    lines: [input.line + 1, input.line + written.length],
+    lines: [where + 1, where + written.length],
     first: (written[0] ?? "").replace(/\r$/, ""),
+    follows: anchor.replace(/\r$/, ""),
+    ...listOf(lines, where),
   };
 }
 
@@ -455,4 +524,28 @@ function reindented(
     first: (lines[top] ?? "").replace(/\r$/, ""),
     reindented: true,
   };
+}
+
+/**
+ * Where placed rows went, for the result (#2956): the line they follow and the list that holds
+ * them, so a call that put rows in the wrong list shows it at once. Empty for a re-indent.
+ */
+export function placedWhere(placed: {
+  lines: [number, number];
+  reindented?: true;
+  follows?: string;
+  list?: { line: number; text: string };
+}): string {
+  if (placed.reindented || placed.follows === undefined) return "";
+  const [from] = placed.lines;
+  const after =
+    from > 1
+      ? ` They follow line ${from - 1}, ${JSON.stringify(placed.follows.trim())}`
+      : " They are the file's first lines";
+  const list = placed.list
+    ? placed.list.line === from - 1
+      ? ", which opens their list."
+      : `, in the list opened at line ${placed.list.line}, ${JSON.stringify(placed.list.text)}.`
+    : ", under no line that opens a list.";
+  return `${after}${list}`;
 }

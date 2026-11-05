@@ -64,6 +64,7 @@ import { INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } fro
 import { docFindingRepairs, documentationFinding, reproAllows, reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
 import { packageNeeds } from "../src/core/workflows/package-probe.js";
 import { extractFixtures, nodeUnderBun, redirectFixture, writeIntoCopy } from "../src/core/verification/doc-examples.js";
+import { placedWhere, placeRows } from "../src/core/tools/place-rows.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
@@ -6564,6 +6565,26 @@ describe("documented-example fixture gate: no write through a folder the copy li
       rmSync(outside, { recursive: true, force: true });
     }
   });
+});
+
+describe("place_rows anchor: a quoted line survives an earlier insert (#2956)", () => {
+  // R102 tailcut filters T002: two calls on a two-list C++ file, the second line computed first.
+  const path = "tests/two_test.cpp";
+  const targets = new Map([[path, ['{"a", 1}', '{"b", 2}']]]);
+  const frame = "static const std::vector<Row> rows = {\n};\nstatic const std::vector<Row> totals = {\n};\n";
+  const cases: [string, { line?: number; after?: string }, string][] = [
+    ["absolute line, stale after the first insert", { line: 2 }, "rows"],
+    ["after the second list's opening line", { after: "static const std::vector<Row> totals = {" }, "totals"],
+  ];
+  for (const [name, where, list] of cases)
+    test(name, () => {
+      const first = placeRows({ path, line: 1, rows: [1] }, targets, frame);
+      if ("refusal" in first) throw new Error(first.refusal);
+      const second = placeRows({ path, rows: [2], ...where }, targets, first.content);
+      if ("refusal" in second) throw new Error(second.refusal);
+      expect(second.list?.text).toBe(`static const std::vector<Row> ${list} = {`);
+      expect(placedWhere(second)).toContain(list === "rows" ? "in the list opened at line 1" : "which opens their list");
+    });
 });
 
 describe("refused-edit gate: accept-workspace only for a refusal in the run root (#2928)", () => {
