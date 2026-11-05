@@ -1378,7 +1378,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                   const [first] = planned.placed;
                   return {
                     success: true,
-                    output: `${planned.reindented ? "Re-indented" : "Placed"} ${planned.placed.length === 1 ? `row ${first}` : `rows ${rowsText(planned.placed)}`} of the request's rows for ${path} at lines ${from} to ${to}, as the request writes them.${placedWhere(planned)} Line ${from} now reads ${JSON.stringify(planned.first)}; if its indentation does not fit the file, call place_rows with reindent: true and the indent.`,
+                    output: `${planned.reindented ? "Re-indented" : planned.moved ? "Moved" : "Placed"} ${planned.placed.length === 1 ? `row ${first}` : `rows ${rowsText(planned.placed)}`} of the request's rows for ${path} at lines ${from} to ${to}, as the request writes them.${placedWhere(planned)} Line ${from} now reads ${JSON.stringify(planned.first)}; if its indentation does not fit the file, call place_rows with reindent: true and the indent.`,
                   };
                 });
                 return withSyntaxNote(result, async () => {

@@ -187,10 +187,28 @@ export function rowEditBreaks(
   return { path: plainPath, rows, texts: rows.map((n) => cut(block.lines[n - 1] ?? "")) };
 }
 
-/** The answer to an edit `rowEditBreaks` put back. */
-export function rowEditBreakText(broken: RowEditBreak): string {
+/**
+ * Whether a task asks for prescribed rows to change place (#2955): its title or description (a
+ * corrective's carries its finding) names an order, a move, a swap, a split or another list.
+ */
+const MOVE_ASK =
+  /\b(?:re-?order\w*|out of order|(?:wrong|another|other|request'?s?|their|row) order|order of (?:the )?rows|mov(?:e|es|ed|ing)|swap\w*|split\w*|(?:wrong|another|other|second|first) list)\b/i;
+export function asksForMove(task: Pick<Task, "title" | "description"> | null | undefined): boolean {
+  return task ? MOVE_ASK.test(`${task.title}\n${task.description}`) : false;
+}
+
+/**
+ * The answer to an edit `rowEditBreaks` put back. `move` (the task asks for a move, `asksForMove`,
+ * #2955) adds the one-call move: the guard judges each call alone, so the literal advice alone left
+ * R102 tailcut's corrective with no route to the order it had to restore. A row still a line of
+ * the file elsewhere after the edit is held there, so the guard never breaks it: a put-back move is
+ * always a deletion, and only the task's words tell it from a session dropping a row.
+ */
+export function rowEditBreakText(broken: RowEditBreak, move = false): string {
   const which = broken.rows.map((n, i) => `row ${n} (${broken.texts[i]})`).join("; ");
-  return `Edit put back: it changed the request's prescribed ${broken.rows.length === 1 ? "row" : "rows"} of ${broken.path} that the file held: ${which}. The request fixes these rows, their inputs and expected outputs exactly; keep the test's literals as they are and change the source so it produces the expected output.`;
+  const text = `Edit put back: it changed the request's prescribed ${broken.rows.length === 1 ? "row" : "rows"} of ${broken.path} that the file held: ${which}. The request fixes these rows, their inputs and expected outputs exactly; keep the test's literals as they are and change the source so it produces the expected output.`;
+  if (!move) return text;
+  return `${text} If the task is to move prescribed rows (another order, or another list of the file), that is allowed when one call leaves every prescribed row in the file: each call is judged alone, so a deletion alone is put back. Use place_rows with move: true, rows [first, last] and the line they go after, or a single multi_edit that removes the rows and inserts them at their new place.`;
 }
 
 /**
