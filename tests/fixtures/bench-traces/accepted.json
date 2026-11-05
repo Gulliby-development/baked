@@ -262,5 +262,9 @@
   "R89/namesound-update.sqlite.gz#3e63ee34-7434-4337-93bd-4d0fe0b9929f": {
     "newRecoveries": 1,
     "reason": "#2820: research attempt 85cd6609 ended at once with a provider error (\"Selected model is at capacity\"); its last call has no first byte and no status, and the trace was recorded before call timings carried `failure`, so the replay reads it as a stall. Calls recorded from #2820 on say `failure: \"error\"` and are not replayed as stalls."
+  },
+  "R99/stv.sqlite.gz#7b8b26b6-898b-40e6-b7ea-4b163d9a7917": {
+    "newTestSplits": 1,
+    "reason": "#2932: replayTestSplits ignores basis supplied. T004 is priced from the request's diffs (basis supplied, 60 cases, 5 files, host-applied at 0 tokens, recorded whole), which the current sizing never splits by case capacity. Remove this entry with the fix."
   }
 }
