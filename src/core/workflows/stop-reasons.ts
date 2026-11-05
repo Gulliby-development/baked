@@ -128,10 +128,10 @@ export const STOP_REASONS = {
   },
   repeated_failure: {
     label:
-      "A corrective's required checks fail exactly as the corrective's before it, or a task ends unfinished on the same failing checks as its previous unfinished end",
-    // Shadow only until two bench rounds show no false would-stop (#1996, #2437); its promotion is
-    // a pull request of its own that adds `enforce` and blocks the chain, or the unfinished task's
-    // resume, before the next session.
+      "A corrective's required checks fail exactly as the corrective's before it, a planned task's whole-unit check fails on another task's file as it did before a finished corrective, or a task ends unfinished on the same failing checks as its previous unfinished end",
+    // Shadow only until two bench rounds show no false would-stop (#1996, #2437, #2948); its
+    // promotion is a pull request of its own that adds `enforce` and blocks the chain, the cascade's
+    // next corrective, or the unfinished task's resume, before the next session.
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
