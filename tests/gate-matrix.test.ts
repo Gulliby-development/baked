@@ -50,8 +50,10 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -61,7 +63,7 @@ import { criterionCases, missingCases, testsHold, writtenTestPaths } from "../sr
 import { INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } from "../src/core/workflows/acceptance-rows-inline.js";
 import { docFindingRepairs, documentationFinding, reproAllows, reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
 import { packageNeeds } from "../src/core/workflows/package-probe.js";
-import { nodeUnderBun, redirectFixture } from "../src/core/verification/doc-examples.js";
+import { extractFixtures, nodeUnderBun, redirectFixture, writeIntoCopy } from "../src/core/verification/doc-examples.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
@@ -6527,6 +6529,41 @@ describe("documented-example fixture gate: a printf or echo line that writes the
     test(command, () => {
       expect(redirectFixture(command)).toEqual(expected);
     });
+});
+
+describe("documented-example fixture gate: no write through a folder the copy links (#2947)", () => {
+  // R101 dieodds-update: a sentence naming `src/Dieodds/bin/Release/net10.0/dieodds.exe` made the
+  // next block a fixture, written through the linked `bin` (EEXIST on Windows, host_error).
+  const named: [string, string, string[]][] = [
+    ["a built program under bin", "src/App/bin/Release/net10.0/app.exe", []],
+    ["a Rust binary under target", "target/release/tool.exe", []],
+    ["a Swift binary under .build", ".build/release/tool.o", []],
+    ["an Elixir beam under _build", "_build/dev/lib/x.beam", []],
+    ["a Zig binary under zig-out", "zig-out/bin/tool.exe", []],
+    ["a Dart kernel under .dart_tool", ".dart_tool/build/tool.dill", []],
+    ["a source input", "data/input.txt", ["data/input.txt"]],
+  ];
+  for (const [name, path, fixtures] of named)
+    test(`${name}: ${path}`, () => {
+      const readme = [`The program is \`${path}\`, run it:`, "```sh", `${path} --help`, "```"].join("\n");
+      expect(extractFixtures(readme).map((f) => f.path)).toEqual(fixtures);
+    });
+
+  test("a write through a link is refused with a reason, a failing write gives a reason", () => {
+    const outside = mkdtempSync(join(tmpdir(), "baked-gate-2947-"));
+    const copy = mkdtempSync(join(tmpdir(), "baked-gate-2947-"));
+    try {
+      symlinkSync(outside, join(copy, "bin"), process.platform === "win32" ? "junction" : "dir");
+      writeFileSync(join(copy, "data"), "a file");
+      expect(writeIntoCopy(copy, "bin/out.txt", "x")).toContain("is in bin");
+      expect(readdirSync(outside)).toEqual([]);
+      expect(writeIntoCopy(copy, "data/in.txt", "x")).toStartWith("the host could not write data/in.txt");
+      expect(writeIntoCopy(copy, "in/ok.txt", "x")).toBeNull();
+    } finally {
+      rmSync(copy, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("refused-edit gate: accept-workspace only for a refusal in the run root (#2928)", () => {
