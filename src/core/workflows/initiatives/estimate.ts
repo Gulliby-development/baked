@@ -681,7 +681,12 @@ function estimateFeature(
   const few = fewPaths && measured && !placed ? fewPathDetail(feature, pool) : null;
   const share = few?.share ?? null;
   if (measured) {
-    const tokens = placed ?? (share ? scaled(measured, share) : measured);
+    // The share sets the low end and the point, not the high end (#2941): few paths say how cheap
+    // a feature can be, not how dear, and the pool's high end, or the measured ratios' bound below
+    // it, stays its ceiling.
+    const shared = share ? scaled(measured, share) : null;
+    const point = placed ?? shared ?? measured;
+    const tokens = placed ?? (shared ? { low: shared.low, high: measured.high } : measured);
     return {
       ...head,
       ...(fewPaths
@@ -695,7 +700,7 @@ function estimateFeature(
           }
         : {}),
       tokens,
-      expectedTokens: middle(tokens),
+      expectedTokens: middle(point),
       // Its tasks follow its paths the same way, so a two-path module does not plan six-path counts.
       tasks: hasTasks
         ? (placeBy((s) => s.taskCount)?.range ??
@@ -756,6 +761,11 @@ function estimateFeature(
  * The square root, not the ratio: over the median the ratio put rounds 45 to 80 at 58 features
  * below their range and 85 above, past a quarter each way, and over the first quartile it put
  * three of those binlayer features above their high end. The path floor still holds the low end.
+ * The share scales the low end alone (#2941): scaling the pool's upper quartile with it put the
+ * high end at about twice the low end, under the measured ratios' bound, which only narrows a
+ * range, and 12 of the 22 share-priced features of rounds 95 to 100 above it: R99 cronwhen's
+ * `expansion` at 0.68M-1.68M used 2.07M, R100 retrylane's one-path `breaker` at 374k-675k used
+ * 735k. On the pool's high end four of those are in range, and 17 on the whole corpus.
  */
 function fewPathDetail(
   feature: FeatureToEstimate,
@@ -906,7 +916,8 @@ function reforecast(
   // Host-written skeletons have a different cost from delivering a feature, regardless of size.
   const representative = accepted.filter((f) => !f.skeleton);
   const ratioOf = (features: FeatureEstimate[]): number | null => {
-    const forecast = features.reduce((total, f) => total + middle(f.tokens), 0);
+    // The point each was forecast at: the middle of its range, or a few-path feature's share (#2941).
+    const forecast = features.reduce((total, f) => total + f.expectedTokens, 0);
     const measured = features.reduce((total, f) => total + used(f).spent, 0);
     // Cheap accepted features must calibrate the remaining work below 25% of the prior too.
     // A lower bound inflated the dollar forecast despite a spend rate that fit the cap (#1607).
@@ -919,7 +930,7 @@ function reforecast(
       ? null
       : calibrationRatio(
           representative.reduce((total, f) => total + used(f).spent, 0),
-          representative.reduce((total, f) => total + middle(f.tokens), 0),
+          representative.reduce((total, f) => total + f.expectedTokens, 0),
           Number.MAX_SAFE_INTEGER,
         );
   // Accepted features against what their own plans expected: the ratio that scales the plan of a
@@ -1010,6 +1021,10 @@ function reforecast(
         : null;
     const sized = scale === null ? f.tokens : scaled(f.tokens, scale);
     const base = legal ?? sized;
+    // A few-path feature's point is the middle of its share of the pool, below its range's middle,
+    // whose high end is the pool's (#2941): scaled as its range is, so the point stays where it was.
+    const shareRange = { low: f.tokens.low, high: 2 * f.expectedTokens - f.tokens.low };
+    const pointBase = legal ?? (scale === null ? shareRange : scaled(shareRange, scale));
     // Floors from what is known of the feature itself: its spec's criteria, its boundary's paths,
     // and the run its plan sized, its tasks and what is spent around them (language's plan priced
     // 4.55 to 8.08 dollars of tasks while its estimate still said 2.65M tokens at most). Once the spec is written its criteria
@@ -1048,7 +1063,7 @@ function reforecast(
     // The plan's own range sets its point forecast, as before #2043, which raised only the need:
     // the dollar forecast priced R66 nodepluck at $28.41 of a $28.45 actual.
     let expectedTokens = Math.max(
-      middle(base),
+      middle(pointBase),
       ...floors.map(([kind, r]) => (kind === "plan" && planned ? middle(planned) : middle(r))),
       tokens.low,
       spent,
