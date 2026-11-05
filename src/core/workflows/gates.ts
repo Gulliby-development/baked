@@ -658,6 +658,8 @@ function pwshGates(workspace: string): GateSuggestion[] {
  * lintr is preselected with a `.lintr` config and offered without one, since its default linters
  * may already fail on the code. styler is offered, not preselected, with the fixer
  * `styler::style_file` on the task's file; the format-written check holds new files to it.
+ * styler owns indentation: where it is installed lintr's `indentation_linter` lints are left out,
+ * since the two disagree on a multi-line `if` condition and no text passes both (#2948).
  */
 function rGates(workspace: string): GateSuggestion[] {
   const pkg = has(workspace, "DESCRIPTION");
