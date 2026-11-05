@@ -900,6 +900,25 @@ function partSkeleton(
     : {};
 }
 
+/**
+ * The typed rows of a split feature that part `index` keeps (#2939 follow-up): each path's rows
+ * (`joinedRows`) go to the first part whose paths name the path, as its skeleton files do, so each
+ * row keeps one owner. A part that got none would state no rows, and a sharer that states none
+ * takes the rows no other sharer states: the split feature's rows went to a silent sibling.
+ */
+function partRows(
+  original: InitiativeFeature,
+  parts: readonly { paths?: string[] | undefined }[],
+  index: number,
+): Pick<InitiativeFeature, "rows"> {
+  const names = (i: number, path: string) =>
+    (parts[i]?.paths ?? original.boundary.paths).some((p) => patternsMeet(path, p));
+  const kept = joinedRows(original.rows ?? []).filter(
+    ({ path }) => parts.findIndex((_, i) => names(i, path)) === index,
+  );
+  return kept.length ? { rows: kept } : {};
+}
+
 /** Edits a person may apply to a proposed split. Each one produces a new plan revision. */
 export const SplitEditSchema = z.discriminatedUnion("op", [
   z
@@ -1305,6 +1324,7 @@ export function applySplitEdit(
         mandatory: original.mandatory,
         ...(original.workflow ? { workflow: original.workflow } : {}),
         ...partSkeleton(original, edit.into, index),
+        ...partRows(original, edit.into, index),
       }));
       features = plan.features.flatMap((f) =>
         f.id === original.id
