@@ -954,24 +954,26 @@ describe("own-plan feature need replays on recorded initiatives (#2043)", () => 
   // A feature whose run has a sized plan is priced at its plan's expected tokens (times the
   // measured plan-to-actual ratio) when that is above its class need. R65 uritpl ran without plan
   // ahead: at its syntax start the encode run's plan (expected 2.10M) raises encode's low end from
-  // its class value (1.38M), and nothing else moves. The high end at every start is what it was
-  // before the rule (R65 must not rise), and no start parks. R66 nodepluck, the round the issue
+  // its class value (1.38M), and nothing else moves. The expected tokens at every start are what
+  // they were before the rule (R65 must not rise), and no start parks. The high ends are the
+  // measured ratio bound's where it is above a size pool's upper quartile (#2950): before that,
+  // 30.8M at base's start and 24.3M at cli's, for 22.7M used. R66 nodepluck, the round the issue
   // measured, has no trace in the corpus; its scenario test replays its numbers.
-  test("R65 uritpl: the high end at every start is unchanged, encode's low end follows its plan", () => {
+  test("R65 uritpl: the expected tokens at every start are unchanged, encode's low end follows its plan", () => {
     const [replay] = replayInitiativeStarts(join(ROOT, "R65/uritpl.sqlite.gz"), RECORDED_SIZE_POOLS);
     expect(replay?.newStartStops).toBe(0);
-    expect(replay?.starts.map((s) => [s.featureId, s.tokens?.high])).toEqual([
-      ["base", 30_764_134],
-      ["values", 31_330_378],
-      ["encode", 31_330_378],
-      ["syntax", 29_687_632],
-      ["expansion", 27_316_895],
-      ["problem", 23_100_637],
-      ["cmd-read", 22_809_650],
-      ["lint", 22_680_087],
-      ["cmd-expand", 23_849_366],
-      ["cli", 24_343_314],
-      ["docs", 22_864_328],
+    expect(replay?.starts.map((s) => [s.featureId, s.tokens?.expected, s.tokens?.high])).toEqual([
+      ["base", 22_094_012, 34_056_377],
+      ["values", 22_094_012, 34_056_377],
+      ["encode", 22_094_012, 34_056_377],
+      ["syntax", 21_549_220, 33_117_709],
+      ["expansion", 20_299_613, 30_503_448],
+      ["problem", 17_765_109, 23_967_803],
+      ["cmd-read", 17_811_005, 23_967_803],
+      ["lint", 17_471_910, 22_680_087],
+      ["cmd-expand", 20_175_997, 25_722_980],
+      ["cli", 21_134_265, 25_569_382],
+      ["docs", 22_659_106, 22_864_328],
     ]);
     const syntax = replay?.starts.find((s) => s.featureId === "syntax");
     // Before #2043: low 14,743,241, encode 1,381,658-3,513,129.

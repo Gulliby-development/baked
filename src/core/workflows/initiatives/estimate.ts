@@ -1090,6 +1090,13 @@ function reforecast(
         ),
       );
     }
+    // The measured bound is a high end on outcomes; the range's own high end, a size pool's upper
+    // quartile, is a typical cost, so where that sits under the bound the bound sets it too (#2950).
+    // R96 to R101 put 18 of 42 finished features above their range, whose high end sat at 1.8 to
+    // 3.4 times the low end, under the 2.6 to 3.6 the ratios measured; with it, 14. Only the bound
+    // moves, not the expectation, as for a new language below.
+    const raised = bound !== null && !ratios && bound > tokens.high;
+    if (raised) tokens.high = bound;
     // A language new to the pool overruns what other languages' features price it at: its high end
     // covers the measured first-language ratios (#2398). Only the bound moves, not the expectation.
     const firstLanguageHigh = newLanguage
@@ -1104,7 +1111,7 @@ function reforecast(
       expectedTokens,
       basis: scale === null && !floor ? f.basis : "calibrated",
       ...(floor ? { floor } : {}),
-      ...(ratios ? { highBasis: "ratios" as const } : {}),
+      ...(ratios || raised ? { highBasis: "ratios" as const } : {}),
       ...(widened ? { newLanguage: true as const } : {}),
       // The legal rule replaces what the size class, or the share rule, gave it (#2640).
       ...(legal
