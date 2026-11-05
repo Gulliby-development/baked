@@ -1168,6 +1168,33 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.hostApplyPartial",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Partial host apply of a task",
+    help: "When one file of a task the host would write from the request (verbatim content under host apply, prescribed rows under the host-written row file) declines, the host writes the task's other files and a session gets only the declined files to write; the host-written files are the session's read hints.",
+    scopes: BOTH,
+    type: "enum",
+    default: "shadow",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "A session writes every file of the task, and nothing is recorded.",
+      },
+      {
+        value: "shadow",
+        label: "shadow",
+        help: "A session writes every file of the task; the host records which files it would write and which the session would get.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Write the files the host can and give the session only the declined ones.",
+      },
+    ],
+  },
+  {
     id: "quality.defectClasses",
     page: "code-quality",
     section: "Workflow runs",

@@ -190,6 +190,21 @@ export interface HostApplyRecord extends HostApplyVerdict {
   written?: Record<string, string>;
   /** Each rerun of the applied task after an invalidation, decided by `hostRerunDecision` (#2877). */
   rerun?: HostApplyRerun[];
+  /**
+   * When the task verdict keeps the implementer but some writes apply on their own
+   * (`hostApplyPartialSplit`, #2937): the files the host writes and the ones the session gets.
+   * Recorded under `hostApplyPartial` shadow (the default) and `on`; `applied: true` once the
+   * host wrote `written` under `on` (their hashes join the record's `written`). Absent under
+   * `off`, for a task that applies whole or splits not at all, and in records before #2937.
+   */
+  partial?: HostApplyPartial;
+}
+
+/** A task's partial apply (#2937): host-written files, and the declined ones a session writes. */
+export interface HostApplyPartial {
+  written: string[];
+  session: string[];
+  applied?: true;
 }
 
 /** How the host settled one rerun of a task it applied (#2877). */
@@ -261,46 +276,64 @@ const no = (reason: string): HostApplyVerdict => ({ wouldApply: false, reason })
  * (#2438), and every diff applies to the task's base or creates a file the base already holds
  * exactly (`present`, #2594). A test file the request prescribes rows for,
  * with no verbatim block of it, is written from its shape when `rowFileRefusal` has no reason
- * (#2528). Otherwise an implementer starts, with the first write that keeps it as the reason.
+ * (#2528). Otherwise an implementer starts, with the first write that keeps it as the reason. The
+ * task verdict is the per-write verdicts of `hostApplyWriteReason` in write order, so a partial
+ * apply (`hostApplyPartialSplit`, #2937) reads the same rule one write at a time.
  */
 export const hostApplyDecision: HostApplyRule = (writes) => {
   if (!writes.length) return no("the task writes no file");
   for (const w of writes) {
-    if (w.action === "delete") return no(`the task deletes ${w.path}`);
-    if (w.rows && !w.files && !w.diffs) {
-      const refusal = rowFileRefusal(w.path, w.rows);
-      if (refusal) return no(refusal);
-      continue;
-    }
-    if (!w.files && !w.diffs) return no(`the request gives no verbatim block for ${w.path}`);
-    if (w.files && w.diffs)
-      return no(`the request gives both a fenced file and a diff for ${w.path}`);
-    if (w.files > 1) return no(`the request gives ${w.files} fenced blocks for ${w.path}`);
-    // A Markdown section the host writes into the file (#2101): appended, or in place of the one
-    // section of its heading.
-    if (w.files && w.region) {
-      if (w.region.matches > 1)
-        return no(
-          `the section the request gives for ${w.path} has a heading that ${w.region.matches} sections of the file share`,
-        );
-      continue;
-    }
-    // A new file too: a block only its header comment names may be the file's API listing (#2438).
-    if (w.files && w.listing)
-      return no(
-        `the fenced block for ${w.path} may be a listing, not the file: only its first-line comment names the path and the prose before it does not say it is the whole file`,
-      );
-    if (w.files && w.exists && !w.whole)
-      return no(
-        `the fenced block for ${w.path}, which exists, may be an excerpt: the prose before it does not say it is the whole file`,
-      );
-    if (w.diffs && w.applies !== true && !w.present)
-      return no(
-        `the diff for ${w.path} does not apply to the task's base${w.refusal ? `: ${w.refusal}` : ""}`,
-      );
+    const reason = hostApplyWriteReason(w);
+    if (reason) return no(reason);
   }
   return { wouldApply: true, reason: null };
 };
+
+/**
+ * The per-write verdict of `hostApplyDecision` (#2937): why the host would not write this one
+ * write from the request; null when it would. A new host-written kind adds its verdict here.
+ */
+export function hostApplyWriteReason(w: HostApplyWrite): string | null {
+  if (w.action === "delete") return `the task deletes ${w.path}`;
+  if (w.rows && !w.files && !w.diffs) return rowFileRefusal(w.path, w.rows);
+  if (!w.files && !w.diffs) return `the request gives no verbatim block for ${w.path}`;
+  if (w.files && w.diffs) return `the request gives both a fenced file and a diff for ${w.path}`;
+  if (w.files > 1) return `the request gives ${w.files} fenced blocks for ${w.path}`;
+  // A Markdown section the host writes into the file (#2101): appended, or in place of the one
+  // section of its heading.
+  if (w.files && w.region)
+    return w.region.matches > 1
+      ? `the section the request gives for ${w.path} has a heading that ${w.region.matches} sections of the file share`
+      : null;
+  // A new file too: a block only its header comment names may be the file's API listing (#2438).
+  if (w.files && w.listing)
+    return `the fenced block for ${w.path} may be a listing, not the file: only its first-line comment names the path and the prose before it does not say it is the whole file`;
+  if (w.files && w.exists && !w.whole)
+    return `the fenced block for ${w.path}, which exists, may be an excerpt: the prose before it does not say it is the whole file`;
+  if (w.diffs && w.applies !== true && !w.present)
+    return `the diff for ${w.path} does not apply to the task's base${w.refusal ? `: ${w.refusal}` : ""}`;
+  return null;
+}
+
+/**
+ * How the host would split a task the decision keeps whole for an implementer (#2937): the writes
+ * whose own verdict (`hostApplyWriteReason`) applies are host-written, and only the others go to
+ * the session. R99 skillseek `terms-score` T004 had seven prescribed row files and one declined;
+ * a session wrote all seven (655,288 tokens). Null when nothing splits: the task applies whole,
+ * no write applies, or the task's supplied-checks record has a conflict (it names no file the
+ * host could keep out). Each written kind is still the host's only under its own setting
+ * (`hostApply`, `rowFileWrite`), which the scheduler checks before it writes.
+ */
+export function hostApplyPartialSplit(
+  writes: readonly HostApplyWrite[],
+  suppliedConflict: string | null | undefined = null,
+): HostApplyPartial | null {
+  if (suppliedConflict) return null;
+  const written: string[] = [];
+  const session: string[] = [];
+  for (const w of writes) (hostApplyWriteReason(w) === null ? written : session).push(w.path);
+  return written.length && session.length ? { written, session } : null;
+}
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 const HEADING_LINE = /^ {0,3}(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/;
@@ -366,20 +399,36 @@ export function hostApplyVerdict(
   return verdict.wouldApply && suppliedConflict ? no(suppliedConflict) : verdict;
 }
 
-/** The record of a task's apply decision from its writes' inputs. */
+/** The policy's `hostApplyPartial` (#2937): absent is `shadow`, so stored policies keep their hash. */
+export type HostApplyPartialMode = "off" | "shadow" | "on";
+export const hostApplyPartialMode = (
+  policy: Pick<RunPolicy, "hostApplyPartial">,
+): HostApplyPartialMode => policy.hostApplyPartial ?? "shadow";
+
+/**
+ * The record of a task's apply decision from its writes' inputs. Under a `partial` mode other
+ * than `off`, a task the verdict keeps whole for an implementer records its split (#2937).
+ */
 export function hostApplyRecord(
   taskId: string,
   writes: HostApplyWrite[],
   decide: HostApplyRule = hostApplyDecision,
   mode: HostApplyRecord["mode"] = "shadow",
   suppliedConflict: string | null = null,
+  partial: HostApplyPartialMode = "off",
 ): HostApplyRecord {
+  const verdict = hostApplyVerdict(writes, suppliedConflict, decide);
+  const split =
+    partial !== "off" && !verdict.wouldApply
+      ? hostApplyPartialSplit(writes, suppliedConflict)
+      : null;
   return {
     taskId,
     mode,
     writes,
     ...(suppliedConflict ? { suppliedConflict } : {}),
-    ...hostApplyVerdict(writes, suppliedConflict, decide),
+    ...verdict,
+    ...(split ? { partial: split } : {}),
   };
 }
 
@@ -744,6 +793,39 @@ export function rowFileTasks(request: string, graph: Pick<TaskGraph, "tasks">): 
 }
 
 /**
+ * Planned tasks the host may apply in part under `hostApplyPartial: "on"` (#2937), for the
+ * scheduler's single-writer path, which makes the partial write before the session: a task of
+ * two writes or more with one the request gives verbatim blocks of (under `hostApply: "on"`) or
+ * prescribes rows for (under `rowFileWrite: "on"`). Reads the request only, as
+ * `hostAppliableTasks` and `rowFileTasks` do; whether a write declines is decided when the task
+ * starts. Host-written tasks are left out. Empty under any other mode.
+ */
+export function hostPartialTasks(
+  request: string,
+  graph: Pick<TaskGraph, "tasks">,
+  policy: Pick<RunPolicy, "hostApply" | "rowFileWrite" | "hostApplyPartial">,
+): string[] {
+  if (hostApplyPartialMode(policy) !== "on") return [];
+  if (policy.hostApply !== "on" && policy.rowFileWrite !== "on") return [];
+  const supplied = suppliedBlocks(request, hostApplyPaths({ writes: [] }, graph));
+  return graph.tasks.flatMap((task) => {
+    if (task.origin !== "planned" || hostWritten(task) || task.writes.length < 2) return [];
+    const rows = prescribedRows(
+      request,
+      task.writes.map((w) => w.path),
+      supplied,
+    );
+    const host = task.writes.filter((w) => {
+      if (w.action === "delete") return false;
+      if (rows.has(w.path)) return policy.rowFileWrite === "on";
+      const blocks = supplied.get(w.path) ?? [];
+      return policy.hostApply === "on" && blocks.length > 0;
+    });
+    return host.length > 0 ? [task.id] : [];
+  });
+}
+
+/**
  * The tasks the host writes from their prescribed rows under `rowFileWrite: "on"`, as sizing prices
  * them (#2633): the scheduler's own `rowFileTasks`, less a task with a file of a language that has
  * no `ROW_FILE_SHAPES` row, which the host refuses and a session writes. Empty under shadow.
@@ -829,14 +911,16 @@ export function hostApplySummary(
   reason: string | null;
   applied?: boolean;
   applyError?: string;
+  partial?: HostApplyPartial;
 }[] {
   return hostApplyRecords(store, runId).map(
-    ({ taskId, wouldApply, reason, applied, applyError }) => ({
+    ({ taskId, wouldApply, reason, applied, applyError, partial }) => ({
       taskId,
       wouldApply,
       reason,
       ...(applied !== undefined ? { applied } : {}),
       ...(applyError ? { applyError } : {}),
+      ...(partial ? { partial } : {}),
     }),
   );
 }

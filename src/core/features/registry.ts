@@ -1456,6 +1456,18 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "host-apply-partial",
+    group: "Workflow runs",
+    title:
+      "Write the other files of a task on the host when one of its host-applied or host-written row files declines, and give the session only the declined files",
+    tui: ["/code-quality"],
+    cli: notNeeded(
+      "quality.hostApplyPartial in config.json; the split shows as the task's host-apply record (partial) in baked workflow status and as host edits of the written files",
+    ),
+    api: ["/v1/settings: code-quality page"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "row-run-restore",
     group: "Workflow runs",
     title: "Restore a miscounted prescribed test row on resume and before a task's session",
