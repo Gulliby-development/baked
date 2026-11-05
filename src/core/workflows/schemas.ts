@@ -774,6 +774,15 @@ export const PolicySchema = z
      */
     hostApply: z.literal("on").optional(),
     /**
+     * The host's partial apply of a task (host-apply.ts `hostApplyPartialSplit`, #2937): when the
+     * decision keeps a task whole for an implementer because one write declines, `on` lets the
+     * host write the task's other files (each under its own `hostApply` or `rowFileWrite` "on")
+     * and gives the session only the declined files as writes. `off` records nothing. Absent
+     * means shadow (the split is recorded as the record's `partial`, a session writes every
+     * file), so stored policies keep their hash.
+     */
+    hostApplyPartial: z.enum(["off", "on"]).optional(),
+    /**
      * The edge-input probe of a source task (edge-inputs.ts, #1808): `on` asks the `edge-cases`
      * profile once per planned source task that settled without failures for extreme legal inputs
      * its criteria allow; the host runs them through the project's entry points and a case that

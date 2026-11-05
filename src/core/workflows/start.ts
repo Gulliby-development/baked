@@ -265,6 +265,7 @@ export async function prepareStart(
     rowRestore: policyRowRestore,
     rowFileWrite: policyRowFileWrite,
     hostApply: policyHostApply,
+    hostApplyPartial: policyHostApplyPartial,
     edgeProbe: policyEdgeProbe,
     defectClasses: policyDefectClasses,
     conflictFinish: policyConflictFinish,
@@ -328,6 +329,8 @@ export async function prepareStart(
   const rowRestore = policyRowRestore ?? config.quality?.rowRestore ?? "off";
   const rowFileWrite = policyRowFileWrite ?? config.quality?.rowFileWrite ?? "off";
   const hostApply = policyHostApply ?? config.quality?.hostApply ?? "off";
+  // Shadow by default (#2937): only `off` and `on` are kept, so stored policies keep their hash.
+  const hostApplyPartial = policyHostApplyPartial ?? config.quality?.hostApplyPartial ?? "shadow";
   const edgeProbe = policyEdgeProbe ?? config.quality?.edgeProbe ?? "off";
   const defectClasses = policyDefectClasses ?? config.quality?.defectClasses ?? "off";
   const conflictFinish = policyConflictFinish ?? config.quality?.conflictFinish ?? "off";
@@ -403,6 +406,7 @@ export async function prepareStart(
     ...(rowRestore === "on" ? { rowRestore } : {}),
     ...(rowFileWrite === "on" ? { rowFileWrite } : {}),
     ...(hostApply === "on" ? { hostApply } : {}),
+    ...(hostApplyPartial !== "shadow" ? { hostApplyPartial } : {}),
     ...(edgeProbe === "on" ? { edgeProbe } : {}),
     ...(defectClasses === "on" ? { defectClasses } : {}),
     ...(conflictFinish === "on" ? { conflictFinish } : {}),

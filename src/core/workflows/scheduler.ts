@@ -550,15 +550,20 @@ import {
   HOST_APPLY_DIR,
   HOST_APPLY_KIND,
   HOST_PLAN_CONTENT_DIR,
+  type HostApplyPartial,
   type HostApplyRecord,
   type HostApplyRerun,
+  type HostApplyWrite,
   hostAppliableTasks,
   hostApplyContents,
   hostApplyDecision,
   hostApplyInputs,
+  hostApplyPartialMode,
+  hostApplyPartialSplit,
   hostApplyRecord,
   hostApplyRecords,
   hostApplyText,
+  hostPartialTasks,
   hostRerunDecision,
   hostRowFileTasks,
   rowFileTasks,
@@ -9337,7 +9342,7 @@ ${note}`;
         });
         return;
       }
-      await this.beforeSession(runId, state, task, root, firstRun);
+      await this.beforeSession(runId, state, policy, task, root, firstRun);
       if (await this.affectedBaseline(runId, child, state, policy, task, signal, root))
         this.store.transaction(() => this.store.saveState(runId, state));
       const before = await sourceManifest(root, generatedPaths(policy), signal);
@@ -9376,12 +9381,21 @@ ${note}`;
         ? null
         : narrowCorrectionWrites(task, focus.files, !diagnostics);
       // The task as this attempt may write it: a correction's first attempt only where its
-      // findings point.
+      // findings point, a task the host applied in part only its declined files, the host's
+      // files then read hints (#2937).
+      const partial = this.partialScope(runId, task.id);
+      const own: Task = partial
+        ? {
+            ...task,
+            writes: task.writes.filter((w) => partial.session.includes(w.path)),
+            readHints: [...new Set([...task.readHints, ...partial.written])],
+          }
+        : task;
       const scoped: Task = this.rowRepairedTask(
         runId,
         state,
         policy,
-        narrow ? { ...task, writes: narrow } : task,
+        narrow ? { ...task, writes: narrow } : own,
       );
       if (narrow) state.narrowedCorrections[task.id] ??= narrow.map((w) => w.path);
       const preloaded = await preloadTaskFiles(
@@ -9459,6 +9473,15 @@ ${note}`;
               ...this.misquoteContinue(runId, state, task.id),
               ...this.exactText(runId, state, policy, task),
               ...rowRunContext(rowRuns),
+              ...(partial
+                ? {
+                    hostWritten: {
+                      files: partial.written,
+                      writable: partial.session,
+                      note: "The host already wrote these files of the task from the request's own content; they are in place and are not yours to write. Do not retype them: write only the writable files, and read the host's files only when your files need them.",
+                    },
+                  }
+                : {}),
               ...this.rowClaimContext(runId, state, policy, task),
               ...(focus.files.length
                 ? {
@@ -9955,6 +9978,10 @@ ${note}`;
         ...(policy.rowFileWrite === "on" && state.graph
           ? rowFileTasks(state.requestText || state.prompt, state.graph)
           : []),
+        // And a task the host may apply in part under `hostApplyPartial: "on"` (#2937).
+        ...(state.graph
+          ? hostPartialTasks(state.requestText || state.prompt, state.graph, policy)
+          : []),
       ]);
       const pending = new Set(
         this.store
@@ -9970,7 +9997,9 @@ ${note}`;
             t.writes.length === 0 ||
             hostWritten(t) ||
             (appliable.has(t.id) &&
-              (pending.has(t.id) || this.appliedRecord(runId, t.id) !== null)),
+              (pending.has(t.id) ||
+                this.appliedRecord(runId, t.id) !== null ||
+                this.partialScope(runId, t.id) !== null)),
         );
       signal.throwIfAborted();
       if (single) {
@@ -11097,7 +11126,7 @@ ${note}`;
       before = await sourceManifest(root, generatedPaths(policy), signal);
       const kept = keepOutside(root, before, new Set(task.writes.map((w) => w.path)));
       // On the task's base, before an earlier attempt's edits are carried over (#2138).
-      await this.beforeSession(runId, state, task, root, entry.firstRun);
+      await this.beforeSession(runId, state, policy, task, root, entry.firstRun);
       await this.affectedBaseline(runId, entry.child, state, policy, task, signal, root);
       const earlierEdits = await this.applyCarry(runId, state, entry, root);
       // A correction's first attempt writes only where its findings point, as on the single-writer
@@ -11110,11 +11139,21 @@ ${note}`;
             correctionFocus(this.store, runId, state, task).files,
             !staticCorrection(this.store, runId, policy, task),
           );
+      // A task the host applied in part writes only the declined files; the host's are read
+      // hints (#2937).
+      const partial = this.partialScope(runId, task.id);
+      const own: Task = partial
+        ? {
+            ...task,
+            writes: task.writes.filter((w) => partial.session.includes(w.path)),
+            readHints: [...new Set([...task.readHints, ...partial.written])],
+          }
+        : task;
       const scoped: Task = this.rowRepairedTask(
         runId,
         state,
         policy,
-        narrow ? { ...task, writes: narrow } : task,
+        narrow ? { ...task, writes: narrow } : own,
       );
       if (narrow) state.narrowedCorrections[task.id] ??= narrow.map((w) => w.path);
       const currentChanges = async (): Promise<{
@@ -21590,12 +21629,14 @@ ${note}`;
   private async beforeSession(
     runId: string,
     state: RuntimeState,
+    policy: RunPolicy,
     task: Task,
     root: string,
     firstRun: boolean,
   ): Promise<void> {
     // Shadow (#2023): whether the host would apply the request's verbatim content itself.
-    if (firstRun && task.origin === "planned") await this.recordHostApply(runId, state, task, root);
+    if (firstRun && task.origin === "planned")
+      await this.recordHostApply(runId, state, policy, task, root);
     // Shadow (#2275): whether the request's verbatim content passes the project's static checks.
     if (firstRun && task.origin === "planned")
       await this.recordSuppliedChecks(runId, state, task, root);
@@ -22072,6 +22113,7 @@ ${note}`;
   private async recordHostApply(
     runId: string,
     state: RuntimeState,
+    policy: RunPolicy,
     task: Task,
     root: string,
   ): Promise<void> {
@@ -22089,7 +22131,17 @@ ${note}`;
         runId,
         HOST_APPLY_KIND,
         path,
-        canonical(hostApplyRecord(task.id, writes)),
+        canonical(
+          hostApplyRecord(
+            task.id,
+            writes,
+            hostApplyDecision,
+            "shadow",
+            null,
+            // Shadow under `on` too: this record is made only when the host wrote nothing (#2937).
+            hostApplyPartialMode(policy) === "off" ? "off" : "shadow",
+          ),
+        ),
       );
     } catch {}
   }
@@ -22100,6 +22152,10 @@ ${note}`;
    * `applied`. True when the host wrote them: no implementer runs, the task checks decide it.
    * False (and the implementer runs as before) when the policy is off, the request gives the task
    * no verbatim block, the decision keeps the implementer, or the content cannot be computed.
+   * When the decision keeps the implementer for some writes only (`hostApplyPartialSplit`,
+   * #2937), the record names the split under `hostApplyPartial` shadow, and under `on` the host
+   * writes the other files the same way (`partial.applied`) and the session gets only the
+   * declined ones (`partialScope`); false then too.
    */
   private async hostApply(
     runId: string,
@@ -22114,30 +22170,40 @@ ${note}`;
     if (this.store.latestArtifact(runId, path)) return false;
     const root = runRoot(this.store.workspace, state);
     const request = state.requestText || state.prompt;
+    const partialMode = hostApplyPartialMode(policy);
     let record: HostApplyRecord;
     let contents: { path: string; content: string }[] = [];
+    // Each kind of write is the host's under its own setting (#2528): a prescribed row file under
+    // `rowFileWrite`, the request's verbatim content under `hostApply`.
+    const hostKind = (w: HostApplyWrite): boolean => (w.rows ? rowsOn : policy.hostApply === "on");
+    let partialOn = false;
     try {
       const writes = await hostApplyInputs(root, request, task, state.graph);
       if (!writes) return false;
-      // Each kind of write is the host's under its own setting (#2528): a prescribed row file under
-      // `rowFileWrite`, the request's verbatim content under `hostApply`. Otherwise the shadow
-      // record before the session (`recordHostApply`) keeps the decision.
-      if (!writes.every((w) => (w.rows ? rowsOn : policy.hostApply === "on"))) return false;
       // Content the project's own file-scoped check rejects goes to an implementer (#2462): the
       // task's supplied-checks record, made just before this, is read only through its veto.
-      record = hostApplyRecord(
-        task.id,
-        writes,
-        hostApplyDecision,
-        "on",
-        suppliedCheckVeto(this.suppliedCheckOf(runId, task.id)),
-      );
+      const veto = suppliedCheckVeto(this.suppliedCheckOf(runId, task.id));
+      // A partial apply writes only kinds whose setting is on; a declined write needs none (#2937).
+      const split = partialMode === "on" ? hostApplyPartialSplit(writes, veto) : null;
+      partialOn =
+        split?.written.every((p) => writes.some((w) => w.path === p && hostKind(w))) === true;
+      // Otherwise the shadow record before the session (`recordHostApply`) keeps the decision.
+      if (!writes.every(hostKind) && !partialOn) return false;
+      record = hostApplyRecord(task.id, writes, hostApplyDecision, "on", veto, partialMode);
     } catch {
       return false;
     }
-    if (record.wouldApply)
+    const partial = partialOn ? record.partial : undefined;
+    if (record.wouldApply || partial)
       try {
-        contents = await hostApplyContents(root, request, task, state.graph);
+        contents = await hostApplyContents(
+          root,
+          request,
+          partial
+            ? { ...task, writes: task.writes.filter((w) => partial.written.includes(w.path)) }
+            : task,
+          state.graph,
+        );
       } catch (error) {
         record = {
           ...record,
@@ -22145,8 +22211,8 @@ ${note}`;
           applyError: (error instanceof Error ? error.message : String(error)).slice(0, 300),
         };
       }
-    const applied = record.wouldApply && record.applied !== false;
-    if (applied) {
+    const wrote = (record.wouldApply || partial !== undefined) && record.applied !== false;
+    if (wrote) {
       this.writeHostFiles(runId, child, state, policy, {
         writes: contents.map((c) => ({
           path: c.path,
@@ -22156,12 +22222,28 @@ ${note}`;
       });
       record = {
         ...record,
-        applied: true,
+        applied: record.wouldApply,
         written: Object.fromEntries(contents.map((c) => [c.path, hashBytes(c.content)])),
+        ...(partial ? { partial: { ...partial, applied: true as const } } : {}),
       };
     } else if (record.applied === undefined) record = { ...record, applied: false };
     this.store.artifact(runId, HOST_APPLY_KIND, path, canonical(record));
-    return applied;
+    return record.wouldApply && wrote;
+  }
+  /**
+   * The split of a task the host applied in part (`partial.applied`, #2937): the session of this
+   * and every later attempt (a retry, a restart, a rerun after an invalidation) writes only
+   * `session`, and reads the host's `written` files. Null for any other task.
+   */
+  private partialScope(runId: string, taskId: string): HostApplyPartial | null {
+    const artifact = this.store.latestArtifact(runId, `${HOST_APPLY_DIR}${taskId}.json`);
+    if (!artifact) return null;
+    try {
+      const record = JSON.parse(this.store.readArtifact(runId, artifact.id)) as HostApplyRecord;
+      return record.partial?.applied ? record.partial : null;
+    } catch {
+      return null;
+    }
   }
   /**
    * A rerun of a planned task the host applied before (#2877): a corrective's edit invalidated it,

@@ -151,8 +151,10 @@ import {
 import { withHistorySnapshot } from "./history-snapshot.js";
 import {
   HOST_APPLY_KIND,
+  type HostApplyPartial,
   type HostApplyRule,
   hostApplyDecision,
+  hostApplyPartialSplit,
   hostApplyRecords,
   hostApplyVerdict,
 } from "./host-apply.js";
@@ -2142,6 +2144,12 @@ export interface HostApplyBoundary {
   replayed: boolean;
   /** Why the current rule would start an implementer; null when it would apply. */
   reason: string | null;
+  /**
+   * For a record with a partial split (#2937): the recorded split and the current rule's, from
+   * the same writes (`hostApplyPartialSplit`, null when it splits nothing). Absent for a record
+   * without one.
+   */
+  partial?: { recorded: HostApplyPartial; replayed: HostApplyPartial | null };
 }
 
 /**
@@ -2156,11 +2164,22 @@ export function replayHostApply(
 ): HostApplyBoundary[] {
   return hostApplyRecords(store, runId).map((record) => {
     const verdict = hostApplyVerdict(record.writes ?? [], record.suppliedConflict, decide);
+    const { written, session } = record.partial ?? { written: [], session: [] };
     return {
       taskId: record.taskId,
       recorded: record.wouldApply,
       replayed: verdict.wouldApply,
       reason: verdict.reason,
+      ...(record.partial
+        ? {
+            partial: {
+              recorded: { written, session },
+              replayed: verdict.wouldApply
+                ? null
+                : hostApplyPartialSplit(record.writes ?? [], record.suppliedConflict),
+            },
+          }
+        : {}),
     };
   });
 }
