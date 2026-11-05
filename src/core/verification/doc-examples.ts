@@ -2,6 +2,7 @@ import {
   appendFileSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   statSync,
@@ -9,13 +10,19 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { rowOf, SUPPORTED_LANGUAGES } from "../intelligence/language-records.js";
 import { tmpDir } from "../platform/index.js";
 import type { SandboxRequest } from "../security/sandbox.js";
 import { linkDependencies } from "../workflows/dependency-dirs.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
 import { fileArgs, recordCommandTimeout } from "./command-timeouts.js";
 import { entryPointCommand } from "./entry-points.js";
-import { commandShape, linkBuildOutput, prepareExampleBuild } from "./example-build.js";
+import {
+  commandShape,
+  EXAMPLE_BUILD,
+  linkBuildOutput,
+  prepareExampleBuild,
+} from "./example-build.js";
 import { REPRO_TIMEOUT_MS, removeScratch, reproEnv } from "./repro.js";
 
 /** Examples the host runs per review stage; each runs for up to REPRO_TIMEOUT_MS. */
@@ -25,6 +32,18 @@ export const DOC_EXAMPLE_COPY_BYTES = 64 * 1024 * 1024;
 const OUTPUT_LIMIT = 2000;
 /** Directories compilers and bundlers write their output to; a source manifest never lists them. */
 const BUILD_DIRS = new Set(["bin", "obj", "target", "dist", "build", "out"]);
+/**
+ * Every folder name the example runner may link from the workspace into its copy (#2947): the
+ * build directories an example names by path (`linkBuildOutput`), the build directories of the
+ * toolchain rows (`prepareExampleBuild`) and those of the entry points (`linkInto`: `target`,
+ * `build`, `_build`). A file under one of them is build output, never a file a reader saves, and
+ * a write there would go through the link into the workspace's own build.
+ */
+export const LINKED_DIRS: ReadonlySet<string> = new Set([
+  ...BUILD_DIRS,
+  "_build",
+  ...SUPPORTED_LANGUAGES.flatMap((language) => rowOf(EXAMPLE_BUILD, language)?.link ?? []),
+]);
 const SHELL_LANGS = new Set(["", "sh", "bash", "shell", "console", "zsh", "terminal"]);
 const OUTPUT_LANGS = new Set(["", "text", "txt", "output", "plaintext", "console"]);
 
@@ -317,7 +336,9 @@ function fixtureName(block: Fence): string | null {
   );
   const header = /^\s*(?:#|\/\/)\s*([\w./-]+\.\w{1,8})\s*$/.exec(block.lines[0] ?? "")?.[1];
   return (
-    [...spans, ...bare, ...(header ? [header] : [])].find((name) => FIXTURE_PATH.test(name)) ?? null
+    [...spans, ...bare, ...(header ? [header] : [])].find(
+      (name) => FIXTURE_PATH.test(name) && !name.split("/").some((dir) => LINKED_DIRS.has(dir)),
+    ) ?? null
   );
 }
 
@@ -671,12 +692,46 @@ export function nodeUnderBun(argv: readonly string[], executables: readonly stri
   return !executables.includes("node") && executables.includes("bun");
 }
 
-/** Writes a fixture into the copy unless the workspace already has a file there. */
-function writeFixture(copy: string, fixture: DocFixture): void {
-  const target = join(copy, ...fixture.path.split("/"));
-  if (existsSync(target)) return;
-  mkdirSync(dirname(target), { recursive: true });
-  writeFileSync(target, fixture.content);
+/**
+ * Writes a file into the copy, or says why not (#2947). A path through a folder the copy links
+ * from the workspace (a build directory, `node_modules`) would write into the workspace itself,
+ * and on Windows a recursive mkdir through a junction in the temp folder throws EEXIST: R101
+ * dieodds-update's README fixture `src/Dieodds/bin/Release/net10.0/dieodds.exe` ended the review
+ * with host_error. A file-system error is a reason too, never an exception of the review. Every
+ * write of the example runner into its copy goes through here.
+ */
+export function writeIntoCopy(
+  copy: string,
+  path: string,
+  content: string,
+  append = false,
+): string | null {
+  const segments = path.split("/");
+  for (let i = 1; i <= segments.length; i++) {
+    let linked: boolean;
+    try {
+      linked = lstatSync(join(copy, ...segments.slice(0, i))).isSymbolicLink();
+    } catch {
+      break;
+    }
+    if (linked)
+      return `${path} is in ${segments.slice(0, i).join("/")}, a folder of the workspace the copy links, so the host does not write it`;
+  }
+  const target = join(copy, ...segments);
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    if (append) appendFileSync(target, content);
+    else writeFileSync(target, content);
+  } catch (error) {
+    return `the host could not write ${path} into the copy: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  return null;
+}
+
+/** Writes a fixture into the copy unless the workspace already has a file there; why not, or null. */
+function writeFixture(copy: string, fixture: DocFixture): string | null {
+  if (existsSync(join(copy, ...fixture.path.split("/")))) return null;
+  return writeIntoCopy(copy, fixture.path, fixture.content);
 }
 
 /**
@@ -730,6 +785,16 @@ export async function runDocExamples(
     const fixtures = extractFixtures(doc.text);
     // Each document starts from the workspace as the change left it, as its reader would.
     let copy: string | null | undefined;
+    // Why the copy could not be made, when copying threw (#2947): every example is not_run then.
+    let copyFailure: string | null = null;
+    const tryCopy = (): string | null => {
+      try {
+        return copyWorkspace(options.root, options.files);
+      } catch (error) {
+        copyFailure = `the host could not copy the workspace to run the examples: ${error instanceof Error ? error.message : String(error)}`;
+        return null;
+      }
+    };
     // What the document's printf and echo lines wrote so far, by path (#2693).
     const written = new Map<string, string>();
     try {
@@ -743,15 +808,19 @@ export async function runDocExamples(
         const skip = (reason: string) => results.push({ ...base, status: "not_run", reason });
         const write = redirectFixture(example.command);
         if (write) {
-          if (copy === undefined) copy = copyWorkspace(options.root, options.files);
+          if (copy === undefined) copy = tryCopy();
           if (copy === null) {
-            skip(`The workspace is larger than ${DOC_EXAMPLE_COPY_BYTES / 1024 / 1024} MiB`);
+            skip(
+              copyFailure ??
+                `The workspace is larger than ${DOC_EXAMPLE_COPY_BYTES / 1024 / 1024} MiB`,
+            );
             continue;
           }
-          const target = join(copy, ...write.path.split("/"));
-          mkdirSync(dirname(target), { recursive: true });
-          if (write.append) appendFileSync(target, write.content);
-          else writeFileSync(target, write.content);
+          const refused = writeIntoCopy(copy, write.path, write.content, write.append);
+          if (refused) {
+            skip(refused);
+            continue;
+          }
           written.set(
             write.path,
             (write.append ? (written.get(write.path) ?? "") : "") + write.content,
@@ -806,18 +875,36 @@ export async function runDocExamples(
           skip(`Only ${DOC_EXAMPLE_LIMIT} examples run per review`);
           continue;
         }
-        if (copy === undefined) copy = copyWorkspace(options.root, options.files);
+        if (copy === undefined) copy = tryCopy();
         if (copy === null) {
-          skip(`The workspace is larger than ${DOC_EXAMPLE_COPY_BYTES / 1024 / 1024} MiB`);
+          skip(
+            copyFailure ??
+              `The workspace is larger than ${DOC_EXAMPLE_COPY_BYTES / 1024 / 1024} MiB`,
+          );
           continue;
         }
-        for (const dir of entry?.entry.link ?? []) linkInto(options.root, copy, dir);
-        // The build the checks made, reused instead of building in the copy (#2505).
-        const args = prepareExampleBuild([program, ...entryArgs], options.root, copy).slice(1);
-        linkBuildOutput([program, ...args], options.root, copy, BUILD_DIRS);
+        const root = copy;
+        let args: string[];
+        try {
+          for (const dir of entry?.entry.link ?? []) linkInto(options.root, root, dir);
+          // The build the checks made, reused instead of building in the copy (#2505).
+          args = prepareExampleBuild([program, ...entryArgs], options.root, root).slice(1);
+          linkBuildOutput([program, ...args], options.root, root, BUILD_DIRS);
+        } catch (error) {
+          skip(
+            `the host could not link the workspace's build into the copy: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          continue;
+        }
         // The files the document tells its reader to save before this example (#1849).
-        for (const fixture of fixtures)
-          if (fixture.line < example.line) writeFixture(copy, fixture);
+        const refused = fixtures
+          .filter((fixture) => fixture.line < example.line)
+          .map((fixture) => writeFixture(root, fixture))
+          .find((reason) => reason !== null);
+        if (refused) {
+          skip(refused);
+          continue;
+        }
         const unbuilt = missingBuildOutput([program, ...args], copy);
         if (unbuilt) {
           skip(
