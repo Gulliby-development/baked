@@ -6147,6 +6147,20 @@ describe("review and converge gates: a documentation finding marked noRepro (#28
     expect(convergenceGateDecision(convergence([doc()]), { doc: enforced }).verdicts).toEqual([{ id: "F1", verdict: "repair" }]);
   });
 
+  // #2931, R99 cronwhen guide: under enforce the first round repairs F1, the repeat F1-2 at medium
+  // stays out of a later round's floor and is its own shadow rule, whatever the first rule's mode.
+  test("a repeat below a later round's floor under enforce: kept out of the decision, listed for doc_finding_repeat", () => {
+    const later = (findings: GateFinding[]): ReviewGate => ({ ...gate(findings), severities: ["critical", "high"] });
+    const repeat = doc({ id: "F1-2" });
+    expect(reviewGateDecision(later([repeat]), { doc: true })).toEqual([]);
+    expect(reviewGateDocRepeats(later([repeat]), new Set(["F1-2"]))).toEqual(["F1-2"]);
+    const converge = { ...convergence([repeat]), severities: ["critical", "high"] };
+    expect(convergenceGateDecision(converge, { doc: true }).verdicts.some((v) => v.verdict === "repair")).toBe(false);
+    expect(convergenceGateDocRepeats(converge, new Set(["F1-2"]))).toEqual(["F1-2"]);
+    expect(STOP_REASONS.doc_finding_repeat.modes).toEqual(["shadow", "advisory"]);
+    expect(stopMode({ stopModes: { doc_finding_unrepaired: "enforce" } }, "doc_finding_repeat")).toBe("shadow");
+  });
+
   // Promotion after R92-R93 (3 true would-stops, no false one): a policy that names no mode
   // repairs the README finding in both gates; an explicit `shadow` keeps the old note.
   test("default enforce: a policy without stopModes repairs; explicit shadow keeps the note", () => {

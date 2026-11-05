@@ -129,14 +129,14 @@ class CarryExecutor implements AgentExecutor {
   }
 }
 
-async function drive(stage: Stage, stubborn = false) {
+async function drive(stage: Stage, stubborn = false, run: RunPolicy = policy) {
   const root = mkdtempSync(join(tmpdir(), "baked-doc-carry-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const executor = new CarryExecutor(root, stage, stubborn);
-  const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy } };
+  const config = { ...DEFAULT_CONFIG, defaultModel: "fixture/model", workflows: { enabled: true, importsEnabled: true, defaultWorkflow: "sdd", policy: run } };
   const service = new NativeWorkflowService(root, config, executor);
   cleanups.push(() => service.close());
-  const started = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Document the escapes", ownerLabel: "test", policy });
+  const started = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: "Document the escapes", ownerLabel: "test", policy: run });
   await service.drive(started.runId, new AbortController().signal);
   const snapshot = await service.get(started.runId);
   const approval = service.store.requests(started.runId).find((r) => r.kind === "approval" && r.status === "pending");
@@ -148,10 +148,11 @@ async function drive(stage: Stage, stubborn = false) {
       .artifacts(started.runId)
       .filter((a) => a.logical_path.startsWith(dir))
       .map((a) => ({ path: a.logical_path, record: JSON.parse(service.store.readArtifact(started.runId, a.id)) as T }));
-  const stops = service.store
-    .eventsOfType(started.runId, "decision.would_stop")
-    .flatMap((e) => (e.type === "decision.would_stop" && e.payload.reason === "doc_finding_unrepaired" ? [e.payload] : []));
-  return { done, executor, readme: readFileSync(join(root, "README.md"), "utf8"), reviews: records<ReviewGateRecord>(REVIEW_GATE_DIR), convergences: records<ConvergenceGateRecord>(CONVERGENCE_GATE_DIR), stops };
+  const stopsOf = (reason: string) =>
+    service.store
+      .eventsOfType(started.runId, "decision.would_stop")
+      .flatMap((e) => (e.type === "decision.would_stop" && e.payload.reason === reason ? [e.payload] : []));
+  return { done, executor, readme: readFileSync(join(root, "README.md"), "utf8"), reviews: records<ReviewGateRecord>(REVIEW_GATE_DIR), convergences: records<ConvergenceGateRecord>(CONVERGENCE_GATE_DIR), stops: stopsOf("doc_finding_unrepaired"), repeats: stopsOf("doc_finding_repeat") };
 }
 
 describe("scenario: a kept README finding rides the correction the same gate starts (#2868)", () => {
@@ -204,5 +205,40 @@ describe("scenario: a kept README finding rides the correction the same gate sta
     const stop = stops.find((s) => s.key === `${repeat.path}#F1-2`);
     expect(stop?.inputs).toMatchObject({ findingId: "F1-2", carried: false, repeatOf: "F1", belowFloor: true });
     expect(stop?.summary).toContain("would open one more correction");
+  });
+});
+
+// #2931, R99 cronwhen (PHP) guide c0676172: under `enforce` (the default) review 1 repaired F1 and F2
+// on the README; the corrective fixed part of them, review 2 raised F1 and F2 again at medium, the
+// round's floor (critical, high) kept them notes, and the run completed with two unclosed code spans.
+// `docFindingWouldStops` returned before its repeat rule under `enforce`, so nothing recorded the
+// repeat. It now records a `doc_finding_repeat` would-stop (shadow) in every mode.
+describe("scenario: R99 cronwhen, a README finding repeated below the floor is recorded under enforce (#2931)", () => {
+  const enforced: RunPolicy = { ...policy, stopModes: { doc_finding_unrepaired: "enforce" } };
+  for (const stage of ["review", "convergence"] as const)
+    test(`${stage} gate: the repeat records doc_finding_repeat; the first round repaired the finding`, async () => {
+      const { done, executor, readme, reviews, convergences, stops, repeats } = await drive(stage, true, enforced);
+      const prefix = stage === "review" ? "F" : "C";
+      const gates = stage === "review" ? reviews : convergences;
+      expect(done.status).toBe("completed");
+      // Enforce repairs the first round's finding with the usage finding; the corrective leaves the
+      // escapes, and the repeat stays a note, as in R99.
+      expect(executor.correctives).toHaveLength(1);
+      expect(executor.correctives[0]).toContain(ESCAPES_CLAIM);
+      expect(readme).toContain(doubled);
+      const repeat = gates.find((g) => g.record.findings.some((f) => f.id === `${prefix}1-2`));
+      if (!repeat) throw new Error("No gate recorded the repeat");
+      expect(stops).toEqual([]);
+      expect(repeats.map((r) => [r.key, r.mode])).toEqual([[`${repeat.path}#${prefix}1-2`, "shadow"]]);
+      expect(repeats[0]?.inputs).toMatchObject({ findingId: `${prefix}1-2`, repeatOf: `${prefix}1`, severity: "medium", carried: false });
+      expect(repeats[0]?.summary).toContain("would open one more correction");
+    });
+
+  test("shadow: the doc_finding_unrepaired record of the repeat is unchanged, and the repeat rule records it too", async () => {
+    const { stops, repeats, reviews } = await drive("review", true);
+    const repeat = reviews.find((g) => g.record.findings.some((f) => f.id === "F1-2"));
+    if (!repeat) throw new Error("No review gate recorded the repeat");
+    expect(stops.find((s) => s.key === `${repeat.path}#F1-2`)?.inputs).toMatchObject({ findingId: "F1-2", carried: false, repeatOf: "F1", belowFloor: true });
+    expect(repeats.map((r) => r.key)).toEqual([`${repeat.path}#F1-2`]);
   });
 });
