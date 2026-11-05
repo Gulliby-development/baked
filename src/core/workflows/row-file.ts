@@ -40,6 +40,14 @@ export interface RowFileShape {
    * command row per line). A one-row shape of such rows gives the separator (none) between rows.
    */
   bareRows?: RegExp;
+  /**
+   * The separator between the rows of a list whose last row has none (#2930: a Ruby `[`, an
+   * Elixir `[`, a Scala `Seq(`, an R `list(`, a Java or Kotlin `Stream.of(`, a gtest `Values(`).
+   * A one-row shape whose row is in such a list (its close follows the row on its line, or the
+   * lines around the row open and close a `(` or `[`) is the list's last row, and the rows before
+   * it take this separator. Absent when every list row of the language ends in its separator.
+   */
+  listSeparator?: ",";
   /** A shape file and the rows its golden writes into it (`tests/language-parity.test.ts`). */
   example: { path: string; reference: string; rows: readonly string[] };
 }
@@ -189,6 +197,7 @@ export const ROW_FILE_SHAPES: LanguageRecord<RowFileShape> = {
   },
   elixir: {
     rowLine: /^\s*(?:%?\{|[A-Za-z_][\w.]*\(|\[)/,
+    listSeparator: ",",
     example: {
       path: "test/eval_rows_test.exs",
       reference: [
@@ -213,6 +222,7 @@ export const ROW_FILE_SHAPES: LanguageRecord<RowFileShape> = {
     // (`{{"--help"}, 0, "usage\\n", ""},`), a typed one in a gtest `::testing::Values(` call
     // (`CliRow{...},`, the last row `CliRow{...}));`) or a `std::make_tuple(...)` row.
     rowLine: /^\s*(?:[A-Za-z_:][\w:]*)?[{(]/,
+    listSeparator: ",",
     example: {
       path: "tests/cli_test.cpp",
       reference: [
@@ -280,6 +290,7 @@ export const ROW_FILE_SHAPES: LanguageRecord<RowFileShape> = {
     // `Arguments.of(...)` rows in a `Stream.of(` (the last row `Arguments.of(...));`). A JUnit
     // `@CsvSource` row is a bare string, which `rowHead` reads no head from: #2553.
     rowLine: CALL_OR_LITERAL,
+    listSeparator: ",",
     example: {
       path: "src/test/java/bytemerge/EncodeIdsTest.java",
       reference: [
@@ -318,6 +329,7 @@ export const ROW_FILE_SHAPES: LanguageRecord<RowFileShape> = {
     // `Arguments.of(...)` rows in a `listOf(` or `Stream.of(` (ktlint's trailing comma on each).
     // A JUnit `@CsvSource` row is a bare string, which `rowHead` reads no head from (as for Java).
     rowLine: CALL_OR_LITERAL,
+    listSeparator: ",",
     example: {
       path: "src/test/kotlin/wordcount/CountRowsTest.kt",
       reference: [
@@ -356,6 +368,7 @@ export const ROW_FILE_SHAPES: LanguageRecord<RowFileShape> = {
   scala: {
     // Tuples in a `Seq(` (`("a", 0),`; scalafmt's default writes no comma after the last row).
     rowLine: CALL_OR_LITERAL,
+    listSeparator: ",",
     example: {
       path: "src/test/scala/wordcount/CountRowsSuite.scala",
       reference: [
@@ -381,11 +394,12 @@ export const ROW_FILE_SHAPES: LanguageRecord<RowFileShape> = {
     },
   },
   csharp: {
-    // xUnit `[InlineData(...)]` attribute rows (no separator, so a shape of one such row declines),
+    // xUnit `[InlineData(...)]` attribute rows (no separator, so one such row is a shape, #2930),
     // `TheoryData` initialiser rows (`{ "a", 0 },`) and `TheoryData` `Add(...);` rows. Other
     // attributes (`[Theory]`) are not rows. An `[InlineData(` row's arguments are one argument of
     // the bracket `rowArity` reads, so its argument count does not tell two row shapes apart.
     rowLine: /^\s*(?:\[\s*InlineData\s*\(|\{|Add\s*\()/,
+    bareRows: /^\[$/,
     example: {
       path: "tests/Wordcount.Tests/CountRowsTests.cs",
       reference: [
@@ -412,6 +426,7 @@ export const ROW_FILE_SHAPES: LanguageRecord<RowFileShape> = {
   ruby: {
     // Arrays (or hashes) in a `ROWS = [` list; rubocop's layout puts no comma after the last row.
     rowLine: CALL_OR_LITERAL,
+    listSeparator: ",",
     example: {
       path: "test/split_rows_test.rb",
       reference: [
@@ -616,6 +631,7 @@ export const ROW_FILE_SHAPES: LanguageRecord<RowFileShape> = {
     // `tibble::tribble(` row is bare cells (`"a", 0,`) with no bracket of its own, which `rowHead`
     // reads no head from: such a shape declines.
     rowLine: CALL_OR_LITERAL,
+    listSeparator: ",",
     example: {
       path: "tests/testthat/test-count-rows.R",
       reference: [
@@ -742,7 +758,10 @@ export interface RowFileInputs {
   sameHead: boolean;
   /** Every prescribed row has the argument count of the shape's rows. */
   arity: boolean;
-  /** A separator between rows is known: the shape has two rows, or its one row has one. */
+  /**
+   * A separator between rows is known: the shape has two rows, its one row has one or needs none,
+   * or its one row is a list's last row and the request's rows or the language give it (#2930).
+   */
   separated: boolean;
 }
 
@@ -809,6 +828,30 @@ function shapeRuns(
   return { runs, oneLine };
 }
 
+/**
+ * The separator between rows when a one-row shape's row is a list's last row, which has none
+ * (#2930: a shared row file an earlier feature left with its one row). The request's rows give it
+ * when every one but the last ends in one `,` or `;`; otherwise the language's `listSeparator`,
+ * when the row is in a list: a close of the list follows it on its line (`));`, never read as a
+ * `;` separator), or the line before it opens a `(` or `[` and the line after it closes one. Null
+ * when neither tells it: a statement row needs none, and the host does not guess.
+ */
+function lastRowSeparator(
+  rows: readonly string[],
+  tail: string,
+  before: string,
+  after: string,
+  record: RowFileShape,
+): string | null {
+  const tails = new Set(rows.slice(0, -1).map((r) => rowTail(r.trim())));
+  const [given] = tails;
+  if (tails.size === 1 && given && /^[,;]$/.test(given)) return given;
+  if (!record.listSeparator) return null;
+  const listed =
+    /^[)\]]+;?$/.test(tail) || (tail === "" && /[([]$/.test(before) && /^[)\]]/.test(after));
+  return listed ? record.listSeparator : null;
+}
+
 /** Whether the host writes row files of `path`'s language: its `ROW_FILE_SHAPES` row (#2633). */
 export function rowFileLanguage(path: string): boolean {
   return rowOf(ROW_FILE_SHAPES, detectLanguageFromPath(path)) !== null;
@@ -854,20 +897,33 @@ export function rowFilePlan(
   const last = rowLines[rowLines.length - 1] ?? "";
   // The shape's line end (CRLF) is kept on every written row.
   const eol = (lines[run.rows[0] ?? 0] ?? "").endsWith("\r") ? "\r" : "";
+  const from = run.rows[0] ?? 0;
+  const to = run.rows[run.rows.length - 1] ?? from;
   // One shape row gives the separator between rows only when nothing else follows its close: the
   // `));` after a Java `Stream.of(` list's one row closes the list, it does not separate rows.
-  // An attribute row or a PowerShell list line needs none (`bareRows`).
+  // An attribute row or a PowerShell list line needs none (`bareRows`). Otherwise the one row is
+  // a list's last row, which has none (#2930), and `lastRowSeparator` reads the one between rows.
   const tail = rowTail(first) ?? "";
-  inputs.separated =
+  const bare =
     rows.length === 1 ||
     rowLines.length > 1 ||
     /^[,;]$/.test(tail) ||
     (tail === "" && record.bareRows?.test(head) === true);
+  const code = bare ? [] : stripComments(path, shape.text).split("\n");
+  const around = (at: number, step: number) => {
+    for (let i = at + step; i >= 0 && i < code.length; i += step)
+      if (code[i]?.trim()) return code[i]?.trim() ?? "";
+    return "";
+  };
+  const separator = bare
+    ? null
+    : lastRowSeparator(rows, tail, around(from, -1), around(to, 1), record);
+  inputs.separated = bare || separator !== null;
   if (!inputs.arity || !inputs.separated) return { inputs, content: null };
-  const from = run.rows[0] ?? 0;
-  const to = run.rows[run.rows.length - 1] ?? from;
+  // Before a list's last row: the shape row's indentation and the separator, no close.
+  const before = separator === null ? first : `${/^\s*/.exec(first)?.[0] ?? ""}row${separator}`;
   const written = rows.map(
-    (row, i) => `${restoredLine(i === rows.length - 1 ? last : first, row)}${eol}`,
+    (row, i) => `${restoredLine(i === rows.length - 1 ? last : before, row)}${eol}`,
   );
   const content = [...lines.slice(0, from), ...written, ...lines.slice(to + 1)].join("\n");
   return { inputs, content };
