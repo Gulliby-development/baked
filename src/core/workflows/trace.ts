@@ -272,6 +272,7 @@ import {
   rowVolumePrice,
   runPace,
   type SizingReport,
+  SUPPLIED_PER_LINE,
   suppliedRows,
 } from "./sizing.js";
 import {
@@ -4649,6 +4650,22 @@ export interface TestSplitBoundary {
 }
 
 /**
+ * A `supplied` task's split on its recorded files and supplied lines, as `suppliedTaskPrice`
+ * decides it: several files whose lines need more than one attempt. A report without the lines
+ * keeps its recorded decision.
+ */
+function suppliedSplit(
+  task: SizingReport["tasks"][number],
+  cap: number,
+): TestSplitBoundary["replayed"] {
+  const split =
+    task.suppliedLines === undefined
+      ? task.oversized
+      : task.files > 1 && task.suppliedLines * SUPPLIED_PER_LINE.high > cap;
+  return split ? "split" : "whole";
+}
+
+/**
  * Every planned test task of the run's sizing reports, split or kept whole again by `decide` on
  * the inputs the report recorded: its literal cases, its price, the observed case capacity and one
  * attempt's cap. Slices of a split file are not split again, so they are left out, as are tasks of
@@ -4680,21 +4697,25 @@ export function replayTestSplits(
           taskId: task.taskId,
           cases: task.cases ?? 0,
           recorded: task.oversized ? ("split" as const) : ("whole" as const),
+          // A task priced from the lines the request supplies is decided by `suppliedTaskPrice`
+          // alone, on its recorded files and lines: never by the case capacity or its rows (#2932).
           // A rows task is decided as one from #1930 on; older reports did not mark it.
           // A task split into row slices (#2455) is decided on its rows, as it was recorded.
           replayed:
-            decide(
-              task.cases ?? 0,
-              report.testTaskLimit ?? null,
-              task.estimate,
-              cap,
-              true,
-              task.rowsTask ?? null,
-            ) ||
-            (task.rowVolume?.mode === "on" &&
-              rowVolumePrice(task.rowVolume.chars, task.rowVolume.rows, cap).slices > 1)
-              ? ("split" as const)
-              : ("whole" as const),
+            task.basis === "supplied"
+              ? suppliedSplit(task, cap)
+              : decide(
+                    task.cases ?? 0,
+                    report.testTaskLimit ?? null,
+                    task.estimate,
+                    cap,
+                    true,
+                    task.rowsTask ?? null,
+                  ) ||
+                  (task.rowVolume?.mode === "on" &&
+                    rowVolumePrice(task.rowVolume.chars, task.rowVolume.rows, cap).slices > 1)
+                ? ("split" as const)
+                : ("whole" as const),
         }))
     );
   });
