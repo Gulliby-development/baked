@@ -251,6 +251,12 @@ export const placeRowsInput = z
       .describe(
         "Re-indent rows [first, last] the file already holds (their lines equal the request's rows apart from leading whitespace) to indent, in place; line is not used. For a layout correction in one call.",
       ),
+    move: z
+      .boolean()
+      .optional()
+      .describe(
+        "Move rows [first, last] the file already holds (each must be held) to after the given line (after or line, a line of the file as it is now and not one of the moved rows), in one write: they leave their lines and go there as a fresh placement writes them. For a correction of the rows' order or list; an edit_file that only deletes a held row is put back.",
+      ),
     separator: z
       .enum([",", ";", ""])
       .optional()
@@ -267,6 +273,14 @@ export const placeRowsInput = z
   .strict();
 export type PlaceRowsInput = z.infer<typeof placeRowsInput>;
 
+/**
+ * How a held row changes place (#2955), as the description, the brief's note and the row guard's
+ * answer state it: the guard judges each call alone, so a deletion alone is put back, and a move
+ * is one call that leaves every prescribed row in the file.
+ */
+export const MOVE_NOTE =
+  "To move rows the file already holds (another order, or another list of the file), call place_rows with move: true, rows [first, last] and the line they go after (after, or line): the rows leave their lines and go there in one write. An edit that only deletes a held row is put back.";
+
 /** The tool's description for a task with these targets. */
 export function placeRowsDescription(
   targets: ReadonlyMap<string, readonly string[]>,
@@ -275,7 +289,7 @@ export function placeRowsDescription(
   const files = [...targets]
     .map(([path, rows]) => `${path} (rows ${rowsText(numbersOf(numbers, path, rows))})`)
     .join(", ");
-  return `Insert the request's prescribed rows verbatim into ${files}: rows [first, last] go after the given line of the existing file, one row per line, in the request's order, exactly as the request writes them. Never type a prescribed row with edit_file or multi_edit: write everything else (imports, the row type, the list's opening and close, the harness calls) with edit_file, leaving the rows out, then place them with this tool. Give indent and separator when the defaults do not fit the language or the request's layout: indent by default is ${INDENT_DEFAULT}; the separator that ends each row is by default ${SEPARATOR_DEFAULT}. A file with more than one list, or rows placed in more than one call: give after (the opening line of the list the rows belong in, such as \`static const std::vector<Row> totals = {\`) instead of line, since every insert moves the lines below it, or place the rows of the last list first. The result names the line the rows follow and the list that holds them, and shows the first placed line with its indentation; to fix the indentation of rows already placed, call again with reindent: true and the indent they take.`;
+  return `Insert the request's prescribed rows verbatim into ${files}: rows [first, last] go after the given line of the existing file, one row per line, in the request's order, exactly as the request writes them. Never type a prescribed row with edit_file or multi_edit: write everything else (imports, the row type, the list's opening and close, the harness calls) with edit_file, leaving the rows out, then place them with this tool. Give indent and separator when the defaults do not fit the language or the request's layout: indent by default is ${INDENT_DEFAULT}; the separator that ends each row is by default ${SEPARATOR_DEFAULT}. A file with more than one list, or rows placed in more than one call: give after (the opening line of the list the rows belong in, such as \`static const std::vector<Row> totals = {\`) instead of line, since every insert moves the lines below it, or place the rows of the last list first. The result names the line the rows follow and the list that holds them, and shows the first placed line with its indentation; to fix the indentation of rows already placed, call again with reindent: true and the indent they take. ${MOVE_NOTE}`;
 }
 
 /**
@@ -401,6 +415,8 @@ export function placeRows(
       lines: [number, number];
       first: string;
       reindented?: true;
+      /** The rows were held and moved (`move: true`, #2955). */
+      moved?: true;
       /** The line the rows follow, as the file holds it ("" before the first line, #2956). */
       follows?: string;
       /** The line (from 1) and text of the nearest list opening above the rows (#2956). */
@@ -456,9 +472,10 @@ export function placeRows(
   const at = new Map(placed.map((n) => [label(n), lineOf[n - 1] ?? -1] as const));
   const held = [...at].flatMap(([n, line]) => (line < 0 ? [] : [`row ${n} (line ${line + 1})`]));
   if (input.reindent) return reindented(input, lines, at, indents.get(path));
+  if (input.move) return moved(input, where, lines, at, targets, indents, numbers);
   if (held.length)
     return {
-      refusal: `${path} already holds ${held.join(", ")}. Place only the rows the file does not hold yet; to change only the indentation of placed rows, call place_rows with reindent: true and their indent.`,
+      refusal: `${path} already holds ${held.join(", ")}. Place only the rows the file does not hold yet; to move held rows to another place or list, call place_rows with move: true and the line they go after; to change only the indentation of placed rows, call place_rows with reindent: true and their indent.`,
     };
   const anchor = where > 0 ? (lines[where - 1] ?? "") : "";
   const eol = (anchor || (lines[0] ?? "")).endsWith("\r") ? "\r" : "";
@@ -487,6 +504,48 @@ export function placeRows(
     follows: anchor.replace(/\r$/, ""),
     ...listOf(lines, where),
   };
+}
+
+/**
+ * Rows the file already holds, moved after line `where` (from 1, as `anchorLine` resolved it in the
+ * file as it is) in one write (#2955). R102 tailcut `filters` T003 had to restore the order of
+ * three C++ two-list row files and split their rows between the lists: the row guard (#2558)
+ * judges each edit alone and put back every deletion of a held row, and place_rows refused rows
+ * the file held, so no route could finish the move (4.34M tokens, four `invalid_output` stops).
+ * Each row of the span must be held; its line is taken out, and the rows are placed again after
+ * the same line by the same insertion (indent, separators, the result's `follows` and `list`).
+ */
+function moved(
+  input: PlaceRowsInput,
+  where: number,
+  lines: readonly string[],
+  at: ReadonlyMap<number, number>,
+  targets: ReadonlyMap<string, readonly string[]>,
+  indents: ReadonlyMap<string, string>,
+  numbers: ReadonlyMap<string, readonly number[]>,
+): ReturnType<typeof placeRows> {
+  const { path } = input;
+  const missing = [...at].filter(([, line]) => line < 0).map(([n]) => n);
+  if (missing.length)
+    return {
+      refusal: `${path} does not hold ${missing.length === 1 ? `row ${missing[0]}` : `rows ${missing.join(", ")}`} yet, so there is nothing to move. Place ${missing.length === 1 ? "it" : "them"} with place_rows without move first.`,
+    };
+  const taken = new Set(at.values());
+  if (where > 0 && taken.has(where - 1))
+    return {
+      refusal: `line ${where} of ${path} is one of the rows to move. Give the line the rows go after that is not one of them, such as the opening line of the list they belong in.`,
+    };
+  const rest = lines.filter((_, i) => !taken.has(i));
+  const line = where - [...taken].filter((i) => i < where).length;
+  const { after: _, ...others } = input;
+  const placed = placeRows(
+    { ...others, move: undefined, line },
+    targets,
+    rest.join("\n"),
+    indents,
+    numbers,
+  );
+  return "refusal" in placed ? placed : { ...placed, moved: true };
 }
 
 /**

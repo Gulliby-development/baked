@@ -43,6 +43,7 @@ import { validatePackage, workspacePath } from "../specs/validate.js";
 import { captureEndings, restoreEndings } from "../tools/line-endings.js";
 import {
   INDENT_DEFAULT,
+  MOVE_NOTE,
   placeRowForms,
   placeRowNumbers,
   placeRowTargets,
@@ -12668,7 +12669,7 @@ ${note}`;
       ...notationRows,
       placeRows: {
         files,
-        note: `The request prescribes the rows of ${files.map((f) => `${f.path} (${named(f.path, f.rows)})`).join(", ")}. You must place them with place_rows and never type a row: write everything else in the file with edit_file (imports, the row type, the list's opening and close, the harness calls), leaving the rows out, then call place_rows with the path, the line the rows follow and rows [first, last], by the request's row numbers. Give that line as after, its text (the opening line of the list the rows belong in), when the file has more than one list or you place rows in more than one call, since every insert moves the lines below it; the result names the list that holds the placed rows. The host inserts the request's rows exactly as written, one per line in order. The indent of a placed row is by default ${INDENT_DEFAULT}; the separator that ends each row is by default ${SEPARATOR_DEFAULT}; give indent and separator when they do not fit the language or the request's layout. The result shows the first placed line; place_rows with reindent: true fixes the indentation of rows already placed.`,
+        note: `The request prescribes the rows of ${files.map((f) => `${f.path} (${named(f.path, f.rows)})`).join(", ")}. You must place them with place_rows and never type a row: write everything else in the file with edit_file (imports, the row type, the list's opening and close, the harness calls), leaving the rows out, then call place_rows with the path, the line the rows follow and rows [first, last], by the request's row numbers. Give that line as after, its text (the opening line of the list the rows belong in), when the file has more than one list or you place rows in more than one call, since every insert moves the lines below it; the result names the list that holds the placed rows. The host inserts the request's rows exactly as written, one per line in order. The indent of a placed row is by default ${INDENT_DEFAULT}; the separator that ends each row is by default ${SEPARATOR_DEFAULT}; give indent and separator when they do not fit the language or the request's layout. The result shows the first placed line; place_rows with reindent: true fixes the indentation of rows already placed. ${MOVE_NOTE}`,
       },
     };
   }

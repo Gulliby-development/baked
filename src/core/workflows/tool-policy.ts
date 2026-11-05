@@ -19,7 +19,7 @@ import {
   taskWritesElsewhere,
   uncommittedEdits,
 } from "./rollback.js";
-import { rowEditBreaks, rowEditBreakText } from "./row-restore.js";
+import { asksForMove, rowEditBreaks, rowEditBreakText } from "./row-restore.js";
 import type { AgentProfile, RunPolicy } from "./schemas.js";
 import { suppliedRows } from "./sizing.js";
 import {
@@ -454,7 +454,11 @@ export class WorkflowToolPolicy {
         this.store.finishFileEffect(this.runId, effectId, fileHash(absolute)),
       );
       if (broken)
-        return { success: false, output: rowEditBreakText(broken), error: "prescribed_row" };
+        return {
+          success: false,
+          output: rowEditBreakText(broken, asksForMove(this.task)),
+          error: "prescribed_row",
+        };
       return result;
     } catch (error) {
       if (error instanceof ToolDeadlineError) {
