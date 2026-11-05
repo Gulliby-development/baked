@@ -49,11 +49,13 @@ import {
   PLACE_ROWS_KIND,
   placeRowForms,
   placeRowIndents,
+  placeRowNumbers,
   placeRows,
   placeRowsDescription,
   placeRowsInput,
   placeRowsRecord,
   placeRowTargets,
+  rowsText,
 } from "../tools/place-rows.js";
 import { contentHash, deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
 import { buildCheckEnv, CheckRunner, modelCheckOutput } from "../verification/check-runner.js";
@@ -1309,6 +1311,15 @@ export class NativeAgentExecutor implements AgentExecutor {
             return new Map<string, string>();
           }
         })();
+        // The request's numbers of a feature run's rows, as its prompt names them (#2939 follow-up).
+        const placeNumbers = (() => {
+          try {
+            const state = this.store.state(request.runId);
+            return placeRowNumbers(state.requestText || state.prompt, placeTargets);
+          } catch {
+            return new Map<string, number[]>();
+          }
+        })();
         const recordPath = `${PLACE_ROWS_DIR}${placeTask.id}.json`;
         try {
           if (!this.store.latestArtifact(request.runId, recordPath))
@@ -1325,10 +1336,10 @@ export class NativeAgentExecutor implements AgentExecutor {
         }
         // Only rows written as the file language's code are placed (#2583): a task whose rows are
         // all in the request's notation translates them itself, and is not offered the tool.
-        const placeCode = placeRowForms(placeTargets).code;
+        const placeCode = placeRowForms(placeTargets, placeNumbers).code;
         if (on && placeCode.size)
           available[PLACE_ROWS] = tool({
-            description: placeRowsDescription(placeCode),
+            description: placeRowsDescription(placeCode, placeNumbers),
             inputSchema: placeRowsInput,
             execute: async (input) =>
               track(PLACE_ROWS, async () => {
@@ -1343,19 +1354,30 @@ export class NativeAgentExecutor implements AgentExecutor {
                   }
                 };
                 // A refused call writes nothing and leaves no edit in the journal.
-                const refused = placeRows(asked, placeTargets, current(), placeIndents);
+                const refused = placeRows(
+                  asked,
+                  placeTargets,
+                  current(),
+                  placeIndents,
+                  placeNumbers,
+                );
                 if ("refusal" in refused) return { success: false, output: refused.refusal };
                 await noteSyntaxBaseline("edit_file", { path });
                 const result = await hostEdit(path, async () => {
-                  const planned = placeRows(asked, placeTargets, current(), placeIndents);
+                  const planned = placeRows(
+                    asked,
+                    placeTargets,
+                    current(),
+                    placeIndents,
+                    placeNumbers,
+                  );
                   if ("refusal" in planned) return { success: false, output: planned.refusal };
                   writeFileSync(absolute, planned.content);
                   const [from, to] = planned.lines;
                   const [first] = planned.placed;
-                  const last = planned.placed.at(-1);
                   return {
                     success: true,
-                    output: `${planned.reindented ? "Re-indented" : "Placed"} ${planned.placed.length === 1 ? `row ${first}` : `rows ${first} to ${last}`} of the request's rows for ${path} at lines ${from} to ${to}, as the request writes them. Line ${from} now reads ${JSON.stringify(planned.first)}; if its indentation does not fit the file, call place_rows with reindent: true and the indent.`,
+                    output: `${planned.reindented ? "Re-indented" : "Placed"} ${planned.placed.length === 1 ? `row ${first}` : `rows ${rowsText(planned.placed)}`} of the request's rows for ${path} at lines ${from} to ${to}, as the request writes them. Line ${from} now reads ${JSON.stringify(planned.first)}; if its indentation does not fit the file, call place_rows with reindent: true and the indent.`,
                   };
                 });
                 return withSyntaxNote(result, async () => {

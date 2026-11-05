@@ -44,6 +44,7 @@ import { captureEndings, restoreEndings } from "../tools/line-endings.js";
 import {
   INDENT_DEFAULT,
   placeRowForms,
+  placeRowNumbers,
   placeRowTargets,
   SEPARATOR_DEFAULT,
 } from "../tools/place-rows.js";
@@ -489,6 +490,7 @@ import {
   reportRequestEvidence,
 } from "./evidence-decisions.js";
 import { ExecutionBudgetClock, executionClock, executionTimeout } from "./execution-clock.js";
+import { formatRowList } from "./feature-rows.js";
 import {
   BATTERY_CASE_CLAIM,
   BATTERY_CASES,
@@ -12637,10 +12639,13 @@ ${note}`;
     notationRows?: { files: { path: string; rows: number[] }[]; note: string };
   } {
     if (policy.rowFileWrite !== "on") return {};
-    const targets = placeRowTargets(state.requestText || state.prompt, task);
+    const request = state.requestText || state.prompt;
+    const targets = placeRowTargets(request, task);
     if (!targets.size) return {};
+    // A feature run's rows keep the request's numbers, as its prompt names them (#2939 follow-up).
+    const numbers = placeRowNumbers(request, targets);
     // Rows in the request's own notation are the session's to translate, never placed (#2583).
-    const { code, notation } = placeRowForms(targets);
+    const { code, notation } = placeRowForms(targets, numbers);
     const translated = [...notation].map(([path, rows]) => ({ path, rows }));
     const notationRows = translated.length
       ? {
@@ -12652,11 +12657,17 @@ ${note}`;
       : {};
     if (!code.size) return notationRows;
     const files = [...code].map(([path, rows]) => ({ path, rows: rows.length }));
+    const named = (path: string, count: number) => {
+      const list = numbers.get(path);
+      return list
+        ? `${count} rows: rows ${formatRowList(list)} of the request's block`
+        : `${count} rows`;
+    };
     return {
       ...notationRows,
       placeRows: {
         files,
-        note: `The request prescribes the rows of ${files.map((f) => `${f.path} (${f.rows} rows)`).join(", ")}. You must place them with place_rows and never type a row: write everything else in the file with edit_file (imports, the row type, the list's opening and close, the harness calls), leaving the rows out, then call place_rows with the path, the line the rows follow and rows [first, last]. The host inserts the request's rows exactly as written, one per line in order. The indent of a placed row is by default ${INDENT_DEFAULT}; the separator that ends each row is by default ${SEPARATOR_DEFAULT}; give indent and separator when they do not fit the language or the request's layout. The result shows the first placed line; place_rows with reindent: true fixes the indentation of rows already placed.`,
+        note: `The request prescribes the rows of ${files.map((f) => `${f.path} (${named(f.path, f.rows)})`).join(", ")}. You must place them with place_rows and never type a row: write everything else in the file with edit_file (imports, the row type, the list's opening and close, the harness calls), leaving the rows out, then call place_rows with the path, the line the rows follow and rows [first, last], by the request's row numbers. The host inserts the request's rows exactly as written, one per line in order. The indent of a placed row is by default ${INDENT_DEFAULT}; the separator that ends each row is by default ${SEPARATOR_DEFAULT}; give indent and separator when they do not fit the language or the request's layout. The result shows the first placed line; place_rows with reindent: true fixes the indentation of rows already placed.`,
       },
     };
   }

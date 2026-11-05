@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { type LanguageRecord, none, rowOf } from "../intelligence/language-records.js";
 import { detectLanguageFromPath } from "../intelligence/types.js";
+import { formatRowList, framedFeatureRows } from "../workflows/feature-rows.js";
 import { rowNotation } from "../workflows/row-block-drift.js";
 import { ROW_FILE_SHAPES } from "../workflows/row-file.js";
 import { restoredLine } from "../workflows/row-restore.js";
@@ -48,6 +49,44 @@ export function placeRowTargets(
       return block ? [[path, block.lines] as [string, readonly string[]]] : [];
     }),
   );
+}
+
+/**
+ * The request's number (from 1, in its block) of each target row, for the files whose rows a
+ * feature's run holds only some of (#2939 follow-up): `suppliedRows` keeps the rows the feature
+ * prompt states under `FEATURE_ROWS_HEADING`, in block order, and the prompt names them by the
+ * block's numbers (`rows 5, 8 of 8`), so the tool takes and names those numbers too. A file the
+ * framing does not name holds the whole block, rows 1 to n, and is absent.
+ */
+export function placeRowNumbers(
+  request: string,
+  targets: ReadonlyMap<string, readonly string[]>,
+): Map<string, number[]> {
+  const framed = framedFeatureRows(request);
+  const out = new Map<string, number[]>();
+  for (const [path, rows] of targets) {
+    const numbers = [...(framed?.get(path) ?? [])].sort((a, b) => a - b);
+    if (numbers.length === rows.length && numbers.some((n, i) => n !== i + 1))
+      out.set(path, numbers);
+  }
+  return out;
+}
+
+/** The request's numbers of a target's rows: `placeRowNumbers`', else 1 to n. */
+function numbersOf(
+  numbers: ReadonlyMap<string, readonly number[]>,
+  path: string,
+  rows: readonly string[],
+): readonly number[] {
+  const given = numbers.get(path);
+  return given?.length === rows.length ? given : rows.map((_, i) => i + 1);
+}
+
+/** A list of row numbers as the tool names it: `1 to 9`, or `5, 8` when it has gaps. */
+export function rowsText(numbers: readonly number[]): string {
+  const first = numbers[0] ?? 1;
+  const last = numbers.at(-1) ?? first;
+  return last - first + 1 === numbers.length ? `${first} to ${last}` : formatRowList(numbers);
 }
 
 /**
@@ -105,17 +144,22 @@ export const ROW_INDENT: LanguageRecord<string> = {
 
 /**
  * The targets by the form of their rows (#2583): `code`, the files with a row place_rows can insert
- * (written in the file language's code); `notation`, each file's rows (from 1) in the request's own
- * notation, which only the session can write, as the test framework's call.
+ * (written in the file language's code); `notation`, each file's rows (by the request's numbers,
+ * `placeRowNumbers`) in the request's own notation, which only the session can write, as the test
+ * framework's call.
  */
-export function placeRowForms(targets: ReadonlyMap<string, readonly string[]>): {
+export function placeRowForms(
+  targets: ReadonlyMap<string, readonly string[]>,
+  numbers: ReadonlyMap<string, readonly number[]> = new Map(),
+): {
   code: Map<string, readonly string[]>;
   notation: Map<string, number[]>;
 } {
   const code = new Map<string, readonly string[]>();
   const notation = new Map<string, number[]>();
   for (const [path, rows] of targets) {
-    const own = rows.flatMap((row, i) => (rowNotation(row) ? [i + 1] : []));
+    const named = numbersOf(numbers, path, rows);
+    const own = rows.flatMap((row, i) => (rowNotation(row) ? [named[i] ?? i + 1] : []));
     if (own.length) notation.set(path, own);
     if (own.length < rows.length) code.set(path, rows);
   }
@@ -213,8 +257,13 @@ export const placeRowsInput = z
 export type PlaceRowsInput = z.infer<typeof placeRowsInput>;
 
 /** The tool's description for a task with these targets. */
-export function placeRowsDescription(targets: ReadonlyMap<string, readonly string[]>): string {
-  const files = [...targets].map(([path, rows]) => `${path} (rows 1 to ${rows.length})`).join(", ");
+export function placeRowsDescription(
+  targets: ReadonlyMap<string, readonly string[]>,
+  numbers: ReadonlyMap<string, readonly number[]> = new Map(),
+): string {
+  const files = [...targets]
+    .map(([path, rows]) => `${path} (rows ${rowsText(numbersOf(numbers, path, rows))})`)
+    .join(", ");
   return `Insert the request's prescribed rows verbatim into ${files}: rows [first, last] go after the given line of the existing file, one row per line, in the request's order, exactly as the request writes them. Never type a prescribed row with edit_file or multi_edit: write everything else (imports, the row type, the list's opening and close, the harness calls) with edit_file, leaving the rows out, then place them with this tool. Give indent and separator when the defaults do not fit the language or the request's layout: indent by default is ${INDENT_DEFAULT}; the separator that ends each row is by default ${SEPARATOR_DEFAULT}. The result shows the first placed line with its indentation; to fix the indentation of rows already placed, call again with reindent: true and the indent they take.`;
 }
 
@@ -281,12 +330,15 @@ function heldLines(rows: readonly string[], lines: readonly string[]): number[] 
  * change the worker can make. `text` is the file's content, null when it does not exist. `indents`
  * holds the indentation the request writes each target's rows with (`placeRowIndents`). `first` is
  * the first placed (or re-indented) line as written, so the result can show its indentation.
+ * `numbers` gives a target's rows the request's numbers (`placeRowNumbers`): `input.rows`, the
+ * refusals and `placed` use them, and [first, last] spans the target's rows between the two.
  */
 export function placeRows(
   input: PlaceRowsInput,
   targets: ReadonlyMap<string, readonly string[]>,
   text: string | null,
   indents: ReadonlyMap<string, string> = new Map(),
+  numbers: ReadonlyMap<string, readonly number[]> = new Map(),
 ):
   | { content: string; placed: number[]; lines: [number, number]; first: string; reindented?: true }
   | { refusal: string } {
@@ -296,20 +348,31 @@ export function placeRows(
     return {
       refusal: `${path} is not a file this task's prescribed rows go in; place_rows writes the request's rows only into ${[...targets.keys()].join(", ")}. Change ${path} with edit_file.`,
     };
+  const named = numbersOf(numbers, path, rows);
+  // A row's request number, from its place (from 1) in `rows`.
+  const label = (n: number) => named[n - 1] ?? n;
   const [first = 0, last = first] = input.rows;
-  const outside = [first, last].find((n) => n < 1 || n > rows.length);
-  if (outside !== undefined)
+  const outside = [first, last].find((n) => !named.includes(n));
+  if (outside !== undefined) {
+    const listed = rowsText(named);
+    const between = listed.includes(" to ")
+      ? `between ${listed.replace(" to ", " and ")}`
+      : `from ${listed}`;
     return {
-      refusal: `The request prescribes rows 1 to ${rows.length} for ${path}; row ${outside} is not one of them. Call place_rows with rows [first, last] between 1 and ${rows.length}.`,
+      refusal: `The request prescribes rows ${listed} for ${path}; row ${outside} is not one of them. Call place_rows with rows [first, last] ${between}.`,
     };
+  }
   if (last < first)
     return {
       refusal: `rows [${first}, ${last}] end before they start. Call place_rows with rows [first, last], first not after last.`,
     };
-  const span = Array.from({ length: last - first + 1 }, (_, i) => first + i);
+  const from = named.indexOf(first) + 1;
+  const span = Array.from({ length: named.indexOf(last) + 1 - from + 1 }, (_, i) => from + i);
   const notation = span.filter((n) => rowNotation(rows[n - 1] ?? ""));
   if (notation.length)
-    return { refusal: notationRefusal(path, notation, rows[(notation[0] ?? 1) - 1] ?? "") };
+    return {
+      refusal: notationRefusal(path, notation.map(label), rows[(notation[0] ?? 1) - 1] ?? ""),
+    };
   if (text === null)
     return {
       refusal: `${path} does not exist yet. Create it with edit_file holding everything but the rows (imports, the row type, the list's opening and close, the harness calls), then call place_rows with the line the rows follow.`,
@@ -322,11 +385,9 @@ export function placeRows(
     };
   const placed = span;
   const lineOf = heldLines(rows, lines);
-  const at = new Map(placed.map((n) => [n, lineOf[n - 1] ?? -1] as const));
-  const held = placed.flatMap((n) => {
-    const line = at.get(n) ?? -1;
-    return line < 0 ? [] : [`row ${n} (line ${line + 1})`];
-  });
+  // Keyed by the request's number, as the result and the refusals name a row.
+  const at = new Map(placed.map((n) => [label(n), lineOf[n - 1] ?? -1] as const));
+  const held = [...at].flatMap(([n, line]) => (line < 0 ? [] : [`row ${n} (line ${line + 1})`]));
   if (input.reindent) return reindented(input, lines, at, indents.get(path));
   if (held.length)
     return {
@@ -353,7 +414,7 @@ export function placeRows(
   lines.splice(input.line, 0, ...written);
   return {
     content: lines.join("\n"),
-    placed,
+    placed: placed.map(label),
     lines: [input.line + 1, input.line + written.length],
     first: (written[0] ?? "").replace(/\r$/, ""),
   };
