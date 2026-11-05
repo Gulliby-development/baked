@@ -3268,8 +3268,10 @@ export class WorkflowScheduler {
                 // The approved boundary includes paths supplied by the host's sibling merge.
                 const proposed =
                   settings && !settings.keepFeatures
-                    ? mergeSmallSiblings(plan, { byDependents: policy.criticalPath === "split" })
-                        .plan
+                    ? mergeSmallSiblings(plan, {
+                        byDependents: policy.criticalPath === "split",
+                        request: state.requestText || state.prompt,
+                      }).plan
                     : plan;
                 // A row file with a later feature's row goes back only when enforced (#2487).
                 return testOwnershipProblems(proposed, {

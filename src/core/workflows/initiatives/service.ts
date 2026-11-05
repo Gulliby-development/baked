@@ -1622,7 +1622,7 @@ export class InitiativeService {
             : `The split cannot be edited while the initiative is ${row.status}`,
         );
       const latest = this.store.plan(this.store.revision(id, row.plan_revision));
-      const edited = applySplitEdit(latest, parsed);
+      const edited = applySplitEdit(latest, parsed, row.prompt);
       // Features the edit left as they were keep their settings, also those of a plan stored
       // before features had workflows, so their runs are not superseded; the others are fitted.
       const before = new Map(latest.features.map((f) => [f.id, featureDigest(f)] as const));
@@ -2341,6 +2341,7 @@ export class InitiativeService {
       throw new WorkflowFault("ARTIFACT_MISSING", "The decompose run has no initiative plan");
     const written = InitiativePlanSchema.parse(JSON.parse(state.initiativePlan));
     const settings = this.store.settings(row);
+    const request = state.requestText || state.prompt;
     // Skeleton lines the project's formatter would sort get a blank line before them, so the
     // host-written content stays a fixed point of the format check (#2222); in shadow (absent)
     // the layout is only recorded.
@@ -2354,11 +2355,12 @@ export class InitiativeService {
     // A feature that is only skeleton runs inside a dependent instead of a run of its own (#1662).
     const folded = settings.keepFeatures
       ? { plan: decomposed, merged: [] }
-      : foldSkeletonFeatures(decomposed);
+      : foldSkeletonFeatures(decomposed, request);
     const siblings = settings.keepFeatures
       ? { plan: folded.plan, merged: [] }
       : mergeSmallSiblings(folded.plan, {
           byDependents: settings.splitCriticalPath || settings.basePolicy.criticalPath === "split",
+          request,
         });
     const floored = { plan: siblings.plan, merged: [...folded.merged, ...siblings.merged] };
     const proposed = floored.plan;
@@ -2369,7 +2371,7 @@ export class InitiativeService {
     let unavailable: string[] = [];
     try {
       const ownership = testOwnershipProblems(proposed, {
-        request: state.requestText || state.prompt,
+        request,
         mode: rowOwnerMode,
       });
       if (ownership.length) throw new WorkflowFault("OUTPUT_INVALID", ownership.join("\n"));
@@ -2417,8 +2419,7 @@ export class InitiativeService {
           ...(unavailable.length ? { unavailable } : {}),
         });
       // Enforced, testOwnershipProblems refused the split above; in shadow it is recorded (#2487).
-      if (rowOwnerMode !== "enforce")
-        this.noteRowOwnerWouldStop(id, plan, state.requestText || state.prompt, rowOwnerMode);
+      if (rowOwnerMode !== "enforce") this.noteRowOwnerWouldStop(id, plan, request, rowOwnerMode);
     });
   }
 

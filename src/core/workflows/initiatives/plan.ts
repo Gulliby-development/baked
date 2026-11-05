@@ -349,6 +349,8 @@ export interface RowFileSplit {
   own: Map<string, number[]>;
   /** Rows that two sharers claim or that no sharer claims, as `rowOwnerProblems` entries. */
   problems: RowOwnerProblem[];
+  /** The sharers that state no rows of the file, typed or in words: they take `free`'s rows. */
+  silent: string[];
 }
 
 /**
@@ -420,7 +422,7 @@ export function featureRowSplit(
         problem: `${path}: no feature claims row${free.length === 1 ? "" : "s"} ${formatRowList(free)} of ${total}: give each row of the file to the feature whose code makes it pass, in its rows.`,
       });
     }
-    out.set(path, { total, own, problems });
+    out.set(path, { total, own, problems, silent: silent.map((f) => f.id) });
   }
   return out;
 }
@@ -1004,15 +1006,45 @@ export function stubFates(
 }
 
 /**
+ * The rows of each shared row file the parts of a merge own (`featureRowSplit` of the plan before
+ * the merge), as typed entries, for every file one part states rows of, typed or in words. The
+ * merged feature has one `rows` entry per path, and a typed entry hides its scope's words, so a
+ * part whose rows were only words, or the rows no sharer states, would lose them to a typed part:
+ * no feature owned them (#2939 follow-up). A silent part's rows stay untyped while a sharer
+ * outside the merge is silent too, since that sharer takes them.
+ */
+function mergedPartRows(
+  plan: InitiativePlan,
+  parts: readonly InitiativeFeature[],
+  request: string,
+): RowEntry[] {
+  const ids = new Set(parts.map((f) => f.id));
+  const entries: RowEntry[] = [];
+  for (const [path, split] of featureRowSplit(plan, request)) {
+    const mine = parts.filter((f) => split.own.has(f.id));
+    if (!mine.some((f) => !split.silent.includes(f.id))) continue;
+    const silentOutside = split.silent.some((id) => !ids.has(id));
+    for (const part of mine) {
+      if (split.silent.includes(part.id) && silentOutside) continue;
+      const rows = split.own.get(part.id) ?? [];
+      if (rows.length) entries.push({ path, rows });
+    }
+  }
+  return entries;
+}
+
+/**
  * The features of `plan` with `featureIds` combined into one, placed where the first of them was:
  * its boundary, contract and dependencies are the parts' together, and dependents of a part
- * depend on it. The result is not validated.
+ * depend on it. With the request, the merged feature's typed `rows` are every row its parts owned
+ * of each shared row file (`mergedPartRows`). The result is not validated.
  */
 function mergeFeatures(
   plan: InitiativePlan,
   featureIds: string[],
   mergedId?: string,
   title?: string,
+  request?: string,
 ): InitiativeFeature[] {
   const merged = unique(featureIds).map((featureId) => {
     const feature = plan.features.find((f) => f.id === featureId);
@@ -1054,8 +1086,11 @@ function mergeFeatures(
       ? skeletonTexts(f)
       : { scope: f.boundary.scope, contract: f.contract },
   );
-  // Typed rows of every part, one entry per path (#2939).
-  const typedRows = joinedRows(merged.flatMap((f) => f.rows ?? []));
+  // Typed rows of every part, one entry per path (#2939), and the rows parts owned in words.
+  const typedRows = joinedRows([
+    ...merged.flatMap((f) => f.rows ?? []),
+    ...(request === undefined ? [] : mergedPartRows(plan, merged, request)),
+  ]);
   const combined: InitiativeFeature = {
     id,
     title: title ?? merged.map((f) => f.title).join(" + "),
@@ -1097,7 +1132,10 @@ function mergeFeatures(
  * other dependents then depend on that feature. A skeleton feature without such a dependent, or one
  * a fold would take below `MIN_FEATURES`, stays as it is.
  */
-export function foldSkeletonFeatures(plan: InitiativePlan): {
+export function foldSkeletonFeatures(
+  plan: InitiativePlan,
+  request?: string,
+): {
   plan: InitiativePlan;
   merged: { featureId: string; from: string[] }[];
 } {
@@ -1120,7 +1158,7 @@ export function foldSkeletonFeatures(plan: InitiativePlan): {
     if (!host) continue;
     current = {
       ...current,
-      features: mergeFeatures(current, [skeleton.id, host.id], host.id, host.title),
+      features: mergeFeatures(current, [skeleton.id, host.id], host.id, host.title, request),
     };
     merged.push({ featureId: host.id, from: [skeleton.id, host.id] });
   }
@@ -1143,7 +1181,7 @@ export const MAX_MERGED_PATHS = 8;
  */
 export function mergeSmallSiblings(
   plan: InitiativePlan,
-  options: { byDependents?: boolean } = {},
+  options: { byDependents?: boolean; request?: string } = {},
 ): {
   plan: InitiativePlan;
   merged: { featureId: string; from: string[] }[];
@@ -1195,7 +1233,7 @@ export function mergeSmallSiblings(
         joined.length <= 200 ? joined : `${parts[0]?.title} and ${parts.length - 1} more`;
       current = {
         ...current,
-        features: mergeFeatures(current, ids, undefined, title.slice(0, 200)),
+        features: mergeFeatures(current, ids, undefined, title.slice(0, 200), options.request),
       };
       merged.push({ featureId: ids[0] ?? "", from: ids });
     }
@@ -1205,9 +1243,14 @@ export function mergeSmallSiblings(
 
 /**
  * Applies one edit and returns the new plan. The result is validated as a whole: an edit that
- * leaves fewer than three features, an unknown ID or a cycle is refused.
+ * leaves fewer than three features, an unknown ID or a cycle is refused. `request` is the
+ * initiative's, which says the rows a merge's parts own in words (`mergedPartRows`).
  */
-export function applySplitEdit(plan: InitiativePlan, edit: SplitEdit): InitiativePlan {
+export function applySplitEdit(
+  plan: InitiativePlan,
+  edit: SplitEdit,
+  request?: string,
+): InitiativePlan {
   const find = (id: string): InitiativeFeature => {
     const feature = plan.features.find((f) => f.id === id);
     if (!feature) throw new WorkflowFault("NOT_FOUND", `Unknown feature ${id}`);
@@ -1238,7 +1281,7 @@ export function applySplitEdit(plan: InitiativePlan, edit: SplitEdit): Initiativ
       break;
     }
     case "merge": {
-      features = mergeFeatures(plan, edit.featureIds, edit.id, edit.title);
+      features = mergeFeatures(plan, edit.featureIds, edit.id, edit.title, request);
       break;
     }
     case "split": {
