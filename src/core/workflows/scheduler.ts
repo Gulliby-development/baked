@@ -780,6 +780,7 @@ import { recordReleasedCreates, staleReleasedCreates } from "./release-writes.js
 import { type RecoveryAdvice, recoveryAdvice } from "./remedies.js";
 import { RepairBlockSchema } from "./repairable-schema.js";
 import {
+  failureHash,
   REPEAT_KIND,
   REPEAT_TASKS_DIR,
   type RepeatCheck,
@@ -16399,7 +16400,94 @@ ${note}`;
     const timedOut = /timed out after|did not finish within/.test(checked.output ?? "");
     if (last && !regression && timedOut && check.minCases !== undefined)
       last.suggestedFix += ` Keep at least ${String(check.minCases)} generated inputs, as ${task.id} requires: make each case cheap so ${check.id} finishes within ${String(check.timeoutMs)} ms rather than generating fewer.`;
+    if (policy && owner?.kind === "finished")
+      this.recordCascadeRepeat(runId, state, policy, task, check, checked, owner);
     return undefined;
+  }
+  /**
+   * The `repeated_failure` would-stop of a corrective cascade (#2948): a planned task's whole-unit
+   * check (lint, type check, build; not a test check) fails only on files finished tasks wrote,
+   * exactly as an earlier planned task's check failed before a corrective of this run, now
+   * finished, corrected it. The fix did not hold, and each later task opens one more corrective
+   * for the one defect. R101 turntrim c1633b0b: `lintr` red on `R/input.R` after the host's styler
+   * fixer, 16 correctives with the same edit set (3.79M tokens), no record, since the chain
+   * comparison of `recordRepeatedFailures` sees only correctives of correctives and each of these
+   * was opened for another planned task. Recorded once per defect (key: the check and the failure
+   * hash), naming the files' writers (`failureOwner`) as the one owner. Shadow only: the
+   * correction is opened as before, since parking the task is a stop (`stop-reasons.ts`). A
+   * corrective that is still open needs no record: it runs before the later tasks that depend on
+   * the file's writer (`readyTasks`), so one defect opens a second corrective only after the first
+   * one's fix did not hold.
+   */
+  private recordCascadeRepeat(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    check: Check,
+    checked: { evidenceId: string; output?: string; signatureOutput?: string },
+    owner: FailureOwner,
+  ): void {
+    const graph = state.graph;
+    if (!graph || task.origin !== "planned" || isTestCheck(check)) return;
+    const round = (evidenceIds: readonly string[]): RepeatCheck | null => {
+      const output = this.commandOutput(runId, evidenceIds, true);
+      return output
+        ? repeatCheck(check.id, output, failingFilesInOutput(output, graph.tasks))
+        : null;
+    };
+    const current =
+      round([checked.evidenceId]) ??
+      repeatCheck(
+        check.id,
+        signedOutput(checked),
+        failingFilesInOutput(signedOutput(checked), graph.tasks),
+      );
+    if (!current.files.length || current.files.some((p) => task.writes.some((w) => w.path === p)))
+      return;
+    const hash = failureHash([current]);
+    const status = new Map(this.store.tasks(runId).map((r) => [r.id, r.status]));
+    const findings = new Map(this.store.findings(runId).map((row) => [row.id, row]));
+    const earlier = graph.tasks.flatMap((corrective) => {
+      if (
+        corrective.origin === "planned" ||
+        !["implemented", "verified"].includes(status.get(corrective.id) ?? "pending")
+      )
+        return [];
+      const opened = corrective.findingIds.find((id) => {
+        const predecessor = graph.tasks.find((t) => t.id === state.repairPredecessors[id]);
+        const row = findings.get(id);
+        if (!row || !predecessor || predecessor.id === task.id || predecessor.origin !== "planned")
+          return false;
+        const finding = JSON.parse(row.body_json) as Review["findings"][number];
+        if (taskCheckOfClaim(finding.claim) !== check.id) return false;
+        const before = round(finding.evidenceIds);
+        return before !== null && failureHash([before]) === hash;
+      });
+      return opened
+        ? [{ corrective: corrective.id, failed: state.repairPredecessors[opened] }]
+        : [];
+    });
+    const first = earlier[0];
+    if (!first) return;
+    const mode = stopMode(policy, "repeated_failure");
+    if (mode === "enforce") return;
+    recordWouldStop(this.store, runId, {
+      reason: "repeated_failure",
+      mode,
+      key: `defect-${check.id}-${hash.slice(0, 16)}`,
+      summary: `${task.id} failed ${check.id} on ${owner.files.slice(0, 5).join(", ")}, written by ${owner.owners.join(", ")}, exactly as ${first.failed} did before ${first.corrective} corrected it: a correction of ${task.id} would not start another model session`,
+      inputs: {
+        rounds: [first.corrective, task.id],
+        correctives: earlier.map((e) => e.corrective),
+        failed: [...earlier.map((e) => e.failed), task.id],
+        failureOwner: owner.owners,
+        checks: [check.id],
+        files: current.files,
+        hash,
+        firstDifference: null,
+      },
+    });
   }
   /**
    * A failed task check is repaired first, and the repaired task reruns all its checks; an
