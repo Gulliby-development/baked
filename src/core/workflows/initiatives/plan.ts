@@ -136,6 +136,7 @@ export const InitiativePlanSchema = z
 export type InitiativePlan = z.infer<typeof InitiativePlanSchema>;
 
 export type FeatureSize = NonNullable<InitiativeFeature["size"]>;
+export type RowEntry = NonNullable<InitiativeFeature["rows"]>[number];
 export const FEATURE_SIZES: readonly FeatureSize[] = ["small", "medium", "large"];
 /** Budget weight of a feature size: a medium feature takes the policy's per-run limits. */
 const SIZE_WEIGHTS: Record<FeatureSize, number> = { small: 1, medium: 2, large: 4 };
@@ -374,9 +375,11 @@ export function featureRowSplit(
     ];
     const stated = new Map(
       sharers.flatMap((f): [string, number[]][] => {
-        const typed = f.rows?.find((r) => normalizePath(r.path) === normalizePath(path));
+        const typed = joinedRows(f.rows ?? []).find(
+          (r) => normalizePath(r.path) === normalizePath(path),
+        );
         const rows = typed
-          ? [...new Set(typed.rows.filter((n) => n <= total))].sort((a, b) => a - b)
+          ? typed.rows.filter((n) => n <= total)
           : scopeRowRanges(f.boundary.scope, names, total);
         return rows ? [[f.id, rows]] : [];
       }),
@@ -420,6 +423,29 @@ export function featureRowSplit(
     out.set(path, { total, own, problems });
   }
   return out;
+}
+
+/**
+ * A feature's typed `rows` with one entry per path: the union of every entry the path has, in row
+ * order (#2939). The decomposer writes one entry per run of rows, so a feature whose rows another
+ * sharer's rows interrupt lists the path more than once. Bench round 100 retrylane: tally held
+ * `edges_test.go` rows `[5]` and `[8]` (breaker owned 6-7); the split read only `[5]`, the run's
+ * block stopped at row 7, and `place_rows` refused row 8 until a spec conflict (1.54M tokens).
+ */
+export function joinedRows(entries: readonly RowEntry[]): RowEntry[] {
+  const byPath = new Map<string, RowEntry>();
+  for (const entry of entries) {
+    const key = normalizePath(entry.path);
+    const seen = byPath.get(key);
+    byPath.set(key, {
+      path: seen?.path ?? entry.path,
+      rows: [...(seen?.rows ?? []), ...entry.rows],
+    });
+  }
+  return [...byPath.values()].map((entry) => ({
+    path: entry.path,
+    rows: [...new Set(entry.rows)].sort((a, b) => a - b),
+  }));
 }
 
 /**
@@ -1028,6 +1054,8 @@ function mergeFeatures(
       ? skeletonTexts(f)
       : { scope: f.boundary.scope, contract: f.contract },
   );
+  // Typed rows of every part, one entry per path (#2939).
+  const typedRows = joinedRows(merged.flatMap((f) => f.rows ?? []));
   const combined: InitiativeFeature = {
     id,
     title: title ?? merged.map((f) => f.title).join(" + "),
@@ -1044,6 +1072,7 @@ function mergeFeatures(
       ? { skeleton: merged.flatMap((f) => f.skeleton ?? []) }
       : {}),
     ...(implemented.length ? { implements: implemented } : {}),
+    ...(typedRows.length ? { rows: typedRows } : {}),
   };
   const position = plan.features.findIndex((f) => ids.has(f.id));
   const features: InitiativeFeature[] = [];
