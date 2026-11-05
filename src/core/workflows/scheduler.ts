@@ -16660,6 +16660,8 @@ ${note}`;
    * The `doc_finding_unrepaired` would-stops (#2835): documentation findings marked `noRepro` that
    * the review or converge gate kept notes for their kind, where a `partial` one repairs (R91
    * stopcut's README escapes with doubled backslashes). Shadow: the gate's decision is unchanged.
+   * A repeat the round's severity floor keeps out also records a `doc_finding_repeat` would-stop
+   * in every mode (#2931).
    */
   private docFindingWouldStops(
     runId: string,
@@ -16670,6 +16672,29 @@ ${note}`;
     carried: ReadonlySet<string>,
     repeats: readonly string[],
   ): void {
+    // A repeat below the round's floor is its own rule (#2931): the enforced first-round repair
+    // does not reach it, so it is recorded whatever the first rule's mode.
+    const repeatMode = stopMode(policy, "doc_finding_repeat");
+    // The reason takes no enforce (`NOT_ENFORCED`), so it only records.
+    for (const findingId of repeatMode === "enforce" ? [] : repeats) {
+      const finding = findings.find((f) => f.id === findingId);
+      if (!finding || repeatMode === "enforce") continue;
+      const repeatOf = finding.repeatOf ?? null;
+      recordWouldStop(this.store, runId, {
+        reason: "doc_finding_repeat",
+        mode: repeatMode,
+        key: `${gatePath}#${findingId}`,
+        summary: `Documentation finding ${findingId} (${finding.kind}, noRepro) on ${finding.file ?? "its file"} repeats ${repeatOf ?? "an earlier finding"} and is kept a note by the round's severity floor (${finding.severity}): it would open one more correction`,
+        inputs: {
+          findingId,
+          kind: finding.kind,
+          severity: finding.severity,
+          file: finding.file ?? null,
+          repeatOf,
+          carried: carried.has(findingId),
+        },
+      });
+    }
     const mode = stopMode(policy, "doc_finding_unrepaired");
     if (mode === "enforce") return;
     for (const findingId of [...keeps, ...repeats]) {

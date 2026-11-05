@@ -326,6 +326,17 @@ export const STOP_REASONS = {
     modes: STOP_MODES,
     defaultMode: "enforce",
   },
+  doc_finding_repeat: {
+    label:
+      "A reviewer's documentation finding raised again after a correction stays a note because the round's severity floor leaves it out",
+    // Shadow only until two bench rounds show no false would-stop (#2931, R92 tailclose's second
+    // review raised F1 and F2 again; R99 cronwhen guide's README shipped two unclosed code spans
+    // after its review 2 repeated F1 and F2). Recorded in every mode of `doc_finding_unrepaired`,
+    // whose enforced first-round repair left this repeat with no record; its promotion opens one
+    // more correction for the repeat.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   row_block_drift: {
     label:
       "A test file the run delivered lacks a quoted literal of a row the request prescribes for it, or holds a row beyond them",
