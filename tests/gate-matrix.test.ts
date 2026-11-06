@@ -6663,6 +6663,22 @@ describe("row_block_drift gate: a base row is matched without its list separator
     });
 });
 
+describe("place_rows twin gate: a repeated row's twin in another list is not the row (#2980)", () => {
+  // R106 tokenpare bars T003: row 12 repeats row 4; list 2 placed first, then row 4 was refused.
+  const path = "tests/twin_test.cpp";
+  const targets = new Map([[path, ['{"a", 1}', '{"b", 2}', '{"c", 3}', '{"t", 0}', '{"b", 2}', '{"u", 9}']]]);
+  const frame = 'rows = {\n  {"a", 1},\n  {"c", 3},\n};\ntotals = {\n  {"t", 0},\n  {"b", 2},\n  {"u", 9},\n};\n';
+  const cases: [string, { move?: true }, string][] = [
+    ["plain: row 2 is placed", {}, "placed"],
+    ["move: row 2 is not held, nothing moves", { move: true }, "does not hold row 2 yet"],
+  ];
+  for (const [name, extra, want] of cases)
+    test(name, () => {
+      const got = placeRows({ path, after: '{"a", 1},', rows: [2], ...extra }, targets, frame);
+      expect("refusal" in got ? got.refusal : "placed").toContain(want);
+    });
+});
+
 describe("refused-edit gate: accept-workspace only for a refusal in the run root (#2928)", () => {
   // R99 skillseek T004: three refusals in the batch worker `.baked/worktrees/fb6cd52c/T004`.
   const state = { worktree: { path: ".baked/worktrees/fb6cd52c/main" } } as Parameters<typeof refusalInRunRoot>[0];
