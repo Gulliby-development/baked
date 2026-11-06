@@ -102,6 +102,13 @@ export function windowsBatchInvocation(
   return { executable: comspec, args: ["/d", "/s", "/c", `"${line}"`] };
 }
 
+/** How long `execute` waits for a killed command to exit before it returns without it (#2858). */
+export const KILL_EXIT_GRACE_MS = 2000;
+
+/** The note a command's result carries when it was killed and the OS never reported its exit. */
+export const KILLED_NO_EXIT_NOTE =
+  "[baked] The command was killed but did not report its exit; its result is returned without waiting for it.";
+
 export class ProcessScope {
   private children = new Map<ChildProcess, string>();
   async execute(
@@ -174,12 +181,20 @@ export class ProcessScope {
       let cancelled = false;
       let truncated = false;
       let hardKill: ReturnType<typeof setTimeout> | undefined;
+      let abandon: ReturnType<typeof setTimeout> | undefined;
       let cancelOutputHeld: (() => void) | undefined;
       const stop = (): void => {
         stopTree(child, scope);
         hardKill ??= setTimeout(() => {
           stopTree(child, scope, true);
           child.kill("SIGKILL");
+          // A killed command whose exit the OS does not report (a process held in exec by a
+          // policy scan, a lost event) still settles, so a timeout bounds the wait (#2858).
+          abandon ??= setTimeout(() => {
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            finish(null, "SIGKILL", `\n${KILLED_NO_EXIT_NOTE}`);
+          }, KILL_EXIT_GRACE_MS);
         }, 500);
       };
       const abort = (): void => {
@@ -216,6 +231,7 @@ export class ProcessScope {
       const cleanup = (): void => {
         timer?.();
         if (hardKill) clearTimeout(hardKill);
+        if (abandon) clearTimeout(abandon);
         cancelOutputHeld?.();
         this.children.delete(child);
         options.signal.removeEventListener("abort", abort);
