@@ -30,10 +30,13 @@ const ruff = IS_WIN ? "" : tool("ruff", '[ -n "${FORCE_COLOR+x}" ]');
 // picocolors: NO_COLOR wins; otherwise FORCE_COLOR or CI turns colour on.
 const pico = IS_WIN ? "" : tool("pico", '[ -z "${NO_COLOR+x}" ] && { [ -n "${FORCE_COLOR+x}" ] || [ -n "${CI+x}" ]; }');
 
-const check = (id: string, executable: string): Check => ({
+// The stand-ins run as `/bin/sh <script>`, not exec'd: on macOS the first exec of a freshly
+// written unsigned file can wait on the system policy scan, and five macOS queue runs lost 30 s
+// here (#2858).
+const check = (id: string, script: string): Check => ({
   id,
-  executable,
-  args: ["check", "."],
+  executable: "/bin/sh",
+  args: [script, "check", "."],
   cwd: ".",
   timeoutMs: 10_000,
   required: true,
