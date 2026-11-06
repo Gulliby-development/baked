@@ -28,6 +28,7 @@ import { callsPerToken, finishedRunCallRate } from "./calls-pool.js";
 import { planWidth } from "./critical-path.js";
 import { type DocumentedSurfaceRate, documentedSurfacePrice } from "./documented-surface.js";
 import { type DurationForecast, durationText, msPerToken, scheduledMinutes } from "./duration.js";
+import { type FewPathShareRecord, fewPathShareRecord } from "./few-path-record.js";
 import type { FeatureSize } from "./plan.js";
 
 /** The margin added on top of the high end, for the token figure to plan the budget with. */
@@ -74,6 +75,14 @@ export const MIN_PATH_FIT_SAMPLES = 4;
  * middle, where they cost 1.4 to 2.5 times their forecast.
  */
 export const MIN_PATH_FIT_CORRELATION = 0.5;
+
+/**
+ * What a feature's boundary holds, where that prices it apart from its path count (#2640, with
+ * `sizing.fewPathPrice`): `documentation` documents the program (`documentsProgram`), which its
+ * documented surface prices and never its few files (#2569); `legal` is legal files alone (a
+ * `LICENSE`, `legalOnly`), which no session reads code for.
+ */
+export type BoundaryKind = "documentation" | "legal";
 
 /** Initiatives the `MIN_HIGH_RATIO_SAMPLES` measured ratios must come from. */
 export const MIN_HIGH_RATIO_INITIATIVES = 2;
@@ -155,6 +164,8 @@ export interface FeatureToEstimate {
    * (`documentsProgram`, #2569); absent for any other feature or a request that lists none.
    */
   documentedCommands?: number;
+  /** What its boundary holds, where that prices it apart from its paths; absent for code. */
+  boundaryKind?: BoundaryKind;
 }
 
 export type FeatureEstimateBasis =
@@ -193,6 +204,13 @@ export interface FeatureEstimate {
   testCases?: number;
   /** The commands the request lists, when it documents the program (#2569). */
   documentedCommands?: number;
+  /** What its boundary holds, where that prices it apart from its paths (#2640). */
+  boundaryKind?: BoundaryKind;
+  /**
+   * Whether `sizing.fewPathPrice` priced it, why, and its range before and after (#2640); absent
+   * with the knob off. Record only.
+   */
+  fewPathShare?: FewPathShareRecord;
   /**
    * What its documented surface prices it at (#2569): its commands times the per-command rate plus
    * one README correction round, the high end at the measured actual-to-low spread when there is
@@ -396,6 +414,7 @@ const ratioRound = (r: number): number => Math.round(r * 100) / 100;
 export function highCalibrationOf(
   samples: FeatureRunSample[],
   accepted: { low: number; spent: number }[] = [],
+  fewPaths = false,
 ): HighCalibration | null {
   const ratios: number[] = [];
   const initiatives = new Set<string>();
@@ -404,7 +423,7 @@ export function highCalibrationOf(
   const totals: number[] = [];
   for (const [id, own] of initiativeGroups(samples)) {
     const others = samples.filter((o) => o.initiativeId && o.initiativeId !== id);
-    const measured = lowRatios(own, others);
+    const measured = lowRatios(own, others, fewPaths);
     if (!measured) continue;
     ratios.push(...measured.ratios);
     initiatives.add(id);
@@ -429,7 +448,10 @@ export function highCalibrationOf(
  * initiative) went above their high end, at 2.6 to 6.7 times their low end, and 7 of the 12 of R74
  * ladlemath (the first PHP one), at 2.2 to 4.5 times.
  */
-export function firstLanguageCalibrationOf(samples: FeatureRunSample[]): HighCalibration | null {
+export function firstLanguageCalibrationOf(
+  samples: FeatureRunSample[],
+  fewPaths = false,
+): HighCalibration | null {
   const groups = initiativeGroups(samples);
   const firstStart = (own: FeatureRunSample[]) =>
     Math.min(...own.map((s) => s.startedAt ?? Number.POSITIVE_INFINITY));
@@ -448,7 +470,7 @@ export function firstLanguageCalibrationOf(samples: FeatureRunSample[]): HighCal
     const others = samples.filter(
       (o) => o.initiativeId && o.initiativeId !== id && o.language && o.language !== language,
     );
-    const measured = lowRatios(own, others);
+    const measured = lowRatios(own, others, fewPaths);
     if (!measured) continue;
     ratios.push(...measured.ratios);
     totals.push(measured.total);
@@ -472,6 +494,7 @@ const initiativeGroups = (samples: FeatureRunSample[]) =>
 function lowRatios(
   own: FeatureRunSample[],
   others: FeatureRunSample[],
+  fewPaths = false,
 ): { ratios: number[]; total: number } | null {
   if (!others.length) return null;
   const rate = (s: FeatureRunSample) => s.tokens / pathWeight(s);
@@ -495,6 +518,8 @@ function lowRatios(
       },
       [],
       others,
+      null,
+      fewPaths,
     );
     const low = Math.max(priced.tokens.low, lowest * pathWeight(s));
     if (low <= 0) continue;
@@ -574,11 +599,32 @@ function pathFitOf(
   };
 }
 
+/**
+ * The least a size pool's path fit places a feature of path weight `weight` at (#2895): the pool's
+ * cheapest sample that names paths, times the square root of the feature's share of that sample's
+ * paths when it has fewer. The cheapest whole sample alone floored few-path features at a
+ * many-path feature's cost: R91 stopcut's one-path medium features at the medium pool's 774k
+ * (used 0.57M and 0.69M), its two- and three-path large ones at the large pool's 0.94M-1.04M
+ * (used 0.66M and 0.91M). The square root, as the few-path share without a fit (`fewPathDetail`):
+ * the lowest per-path rate times the paths put R85 cellspan's one-path large `graph` at
+ * 174k-525k (used 1.38M), and five more large features above their high end.
+ */
+function fitFloor(
+  pool: FeatureRunSample[],
+  value: (s: FeatureRunSample) => number,
+  weight: number,
+): number {
+  const named = pool.filter((s) => pathWeight(s) > 0);
+  const cheapest = named.reduce((a, s) => (value(s) < value(a) ? s : a));
+  return value(cheapest) * Math.min(1, Math.sqrt(weight / pathWeight(cheapest)));
+}
+
 function estimateFeature(
   feature: FeatureToEstimate,
   history: PastRun[],
   samples: FeatureRunSample[],
   weights: ReadonlyMap<FeatureRunSample, number> | null = null,
+  fewPaths = false,
 ): FeatureEstimate {
   const head = {
     featureId: feature.id,
@@ -591,6 +637,7 @@ function estimateFeature(
     ...(feature.skeleton ? { skeleton: feature.skeleton } : {}),
     ...(feature.testCases ? { testCases: feature.testCases } : {}),
     ...(feature.documentedCommands ? { documentedCommands: feature.documentedCommands } : {}),
+    ...(feature.boundaryKind ? { boundaryKind: feature.boundaryKind } : {}),
   };
   const hasTasks = feature.stages.some((s) => s.type === "tasks");
   // Finished feature runs of the same size measure the whole feature, split and all; those of the
@@ -619,26 +666,41 @@ function estimateFeature(
       : rangeOf(pool.map(value));
   const measured = ownRuns ? null : poolRange((s) => s.tokens);
   // A feature that names paths sits where its paths put it among them, with their spread around
-  // the fit; never below the cheapest of them.
+  // the fit; never below `fitFloor`.
   const placeBy = (value: (s: FeatureRunSample) => number) => {
-    const f = pathWeight(feature) > 0 ? pathFitOf(pool, value) : null;
-    const cheapest = Math.min(...pool.map(value));
+    const weight = pathWeight(feature);
+    const f = weight > 0 ? pathFitOf(pool, value) : null;
+    const floor = f && fitFloor(pool, value, weight);
     const range =
-      f &&
-      rangeOf(
-        f.residuals.map((r) => Math.max(cheapest, f.base + f.perPath * pathWeight(feature) + r)),
-      );
+      f && rangeOf(f.residuals.map((r) => Math.max(floor ?? 0, f.base + f.perPath * weight + r)));
     return range ? { fit: f, range } : null;
   };
   const byTokens = measured ? placeBy((s) => s.tokens) : null;
   const fit = byTokens?.fit;
   const placed = byTokens?.range;
+  const few = fewPaths && measured && !placed ? fewPathDetail(feature, pool) : null;
+  const share = few?.share ?? null;
   if (measured) {
-    const tokens = placed ?? measured;
+    // The share sets the low end and the point, not the high end (#2941): few paths say how cheap
+    // a feature can be, not how dear, and the pool's high end, or the measured ratios' bound below
+    // it, stays its ceiling.
+    const shared = share ? scaled(measured, share) : null;
+    const point = placed ?? shared ?? measured;
+    const tokens = placed ?? (shared ? { low: shared.low, high: measured.high } : measured);
     return {
       ...head,
+      ...(fewPaths
+        ? {
+            fewPathShare: fewPathShareRecord({
+              ...(few ?? { reason: "path-fit" as const }),
+              before: placed ?? measured,
+              after: tokens,
+              ...(pathWeight(feature) > 0 ? { paths: pathWeight(feature) } : {}),
+            }),
+          }
+        : {}),
       tokens,
-      expectedTokens: middle(tokens),
+      expectedTokens: middle(point),
       // Its tasks follow its paths the same way, so a two-path module does not plan six-path counts.
       tasks: hasTasks
         ? (placeBy((s) => s.taskCount)?.range ??
@@ -668,6 +730,16 @@ function estimateFeature(
   const basis: FeatureEstimateBasis = run.basis;
   return {
     ...head,
+    ...(fewPaths
+      ? {
+          fewPathShare: fewPathShareRecord({
+            reason: feature.boundaryKind === "documentation" ? "documentation" : "no-pool",
+            before: tokens,
+            after: tokens,
+            ...(pathWeight(feature) > 0 ? { paths: pathWeight(feature) } : {}),
+          }),
+        }
+      : {}),
     tokens,
     expectedTokens: middle(tokens),
     tasks,
@@ -675,6 +747,54 @@ function estimateFeature(
     samples: basis === "defaults" ? 0 : run.samples,
   };
 }
+
+/**
+ * The share of its size pool's middle half a feature with few paths is priced at, when the pool
+ * gives no path fit (`sizing.fewPathPrice`, #2640): the square root of its path weight over the
+ * median path weight of the pool's features that name paths, for a feature below that median;
+ * null otherwise, and for a documentation feature, which its documented surface prices (#2569).
+ * `reason` and `medianPaths` say why, for the feature's `fewPathShare` record (#2869).
+ * Without a fit the pool's middle half priced a one-file feature like a feature of the pool's
+ * usual paths, and a host-written row file (#2640) or skeleton file it no longer counts could not
+ * move its low end: bench round 89 loopwatch's `license` (one `LICENSE`) had the small pool's
+ * 0.65M low end and used 0.16M, R86 binlayer's one-path medium features 1.11M and 0.78M-0.93M.
+ * The square root, not the ratio: over the median the ratio put rounds 45 to 80 at 58 features
+ * below their range and 85 above, past a quarter each way, and over the first quartile it put
+ * three of those binlayer features above their high end. The path floor still holds the low end.
+ * The share scales the low end alone (#2941): scaling the pool's upper quartile with it put the
+ * high end at about twice the low end, under the measured ratios' bound, which only narrows a
+ * range, and 12 of the 22 share-priced features of rounds 95 to 100 above it: R99 cronwhen's
+ * `expansion` at 0.68M-1.68M used 2.07M, R100 retrylane's one-path `breaker` at 374k-675k used
+ * 735k. On the pool's high end four of those are in range, and 17 on the whole corpus.
+ */
+function fewPathDetail(
+  feature: FeatureToEstimate,
+  pool: FeatureRunSample[],
+): {
+  share: number | null;
+  reason: "fewer-paths" | "documentation" | "not-fewer" | "no-paths";
+  medianPaths?: number;
+} {
+  const weight = pathWeight(feature);
+  const named = pool.map(pathWeight).filter((w) => w > 0);
+  if (feature.boundaryKind === "documentation") return { share: null, reason: "documentation" };
+  if (weight <= 0 || !named.length) return { share: null, reason: "no-paths" };
+  const typical = median(named);
+  return weight < typical
+    ? { share: Math.sqrt(weight / typical), reason: "fewer-paths", medianPaths: typical }
+    : { share: null, reason: "not-fewer", medianPaths: typical };
+}
+
+/**
+ * Whether an initiative's policy prices its few-path features at a share of their size pool
+ * (`fewPathDetail`) and its legal-file features at the path rate: on unless `sizing.fewPathPrice`
+ * is `false` (#2893). Off, a no-fit pool priced every feature of its size at its middle half, and
+ * the last six rounds with the R87, R90 and R91 traces (R83 to R91) put 23 of 62 finished
+ * features below their range (37.1%, above the 36.0% bound of #2150), 11 of them medium features
+ * with one to three paths at the medium pool's 1.11M-1.25M low end; on, 15 of 62.
+ */
+export const fewPathPriceOn = (sizing: { fewPathPrice?: boolean } | undefined): boolean =>
+  sizing?.fewPathPrice !== false;
 
 /** The expected value and measured spread the budget text words its warning by (#1982). */
 export const budgetDetail = (
@@ -778,6 +898,7 @@ function reforecast(
   perTestCase: TokenRange | null,
   newLanguage: InitiativeEstimate["newLanguage"] | null,
   documented: DocumentedSurface | null = null,
+  fewPaths = false,
 ): {
   features: FeatureEstimate[];
   ratio: number | null;
@@ -795,7 +916,8 @@ function reforecast(
   // Host-written skeletons have a different cost from delivering a feature, regardless of size.
   const representative = accepted.filter((f) => !f.skeleton);
   const ratioOf = (features: FeatureEstimate[]): number | null => {
-    const forecast = features.reduce((total, f) => total + middle(f.tokens), 0);
+    // The point each was forecast at: the middle of its range, or a few-path feature's share (#2941).
+    const forecast = features.reduce((total, f) => total + f.expectedTokens, 0);
     const measured = features.reduce((total, f) => total + used(f).spent, 0);
     // Cheap accepted features must calibrate the remaining work below 25% of the prior too.
     // A lower bound inflated the dollar forecast despite a spend rate that fit the cap (#1607).
@@ -808,7 +930,7 @@ function reforecast(
       ? null
       : calibrationRatio(
           representative.reduce((total, f) => total + used(f).spent, 0),
-          representative.reduce((total, f) => total + middle(f.tokens), 0),
+          representative.reduce((total, f) => total + f.expectedTokens, 0),
           Number.MAX_SAFE_INTEGER,
         );
   // Accepted features against what their own plans expected: the ratio that scales the plan of a
@@ -875,6 +997,7 @@ function reforecast(
       low: Math.max(f.tokens.low, sampleLowest * pathWeight(f)),
       spent: used(f).spent,
     })),
+    fewPaths,
   );
   const features = prior.map((f): FeatureEstimate => {
     const { spent, accepted: done, criteria, planned } = used(f);
@@ -889,7 +1012,19 @@ function reforecast(
         spent,
       };
     const scale = bySize[f.size] ?? ratio;
-    const base = scale === null ? f.tokens : scaled(f.tokens, scale);
+    // A feature of legal files alone (a `LICENSE`) is priced at the path rate, not its size class
+    // (#2640): no session reads code for it, and R89 loopwatch's `license` used 0.16M against the
+    // small class's 0.65M low end, on the lowest path rate (158k) itself.
+    const legal =
+      fewPaths && f.boundaryKind === "legal" && perPath && pathWeight(f)
+        ? scaled(perPath, pathWeight(f))
+        : null;
+    const sized = scale === null ? f.tokens : scaled(f.tokens, scale);
+    const base = legal ?? sized;
+    // A few-path feature's point is the middle of its share of the pool, below its range's middle,
+    // whose high end is the pool's (#2941): scaled as its range is, so the point stays where it was.
+    const shareRange = { low: f.tokens.low, high: 2 * f.expectedTokens - f.tokens.low };
+    const pointBase = legal ?? (scale === null ? shareRange : scaled(shareRange, scale));
     // Floors from what is known of the feature itself: its spec's criteria, its boundary's paths,
     // and the run its plan sized, its tasks and what is spent around them (language's plan priced
     // 4.55 to 8.08 dollars of tasks while its estimate still said 2.65M tokens at most). Once the spec is written its criteria
@@ -928,7 +1063,7 @@ function reforecast(
     // The plan's own range sets its point forecast, as before #2043, which raised only the need:
     // the dollar forecast priced R66 nodepluck at $28.41 of a $28.45 actual.
     let expectedTokens = Math.max(
-      middle(base),
+      middle(pointBase),
       ...floors.map(([kind, r]) => (kind === "plan" && planned ? middle(planned) : middle(r))),
       tokens.low,
       spent,
@@ -955,6 +1090,13 @@ function reforecast(
         ),
       );
     }
+    // The measured bound is a high end on outcomes; the range's own high end, a size pool's upper
+    // quartile, is a typical cost, so where that sits under the bound the bound sets it too (#2950).
+    // R96 to R101 put 18 of 42 finished features above their range, whose high end sat at 1.8 to
+    // 3.4 times the low end, under the 2.6 to 3.6 the ratios measured; with it, 14. Only the bound
+    // moves, not the expectation, as for a new language below.
+    const raised = bound !== null && !ratios && bound > tokens.high;
+    if (raised) tokens.high = bound;
     // A language new to the pool overruns what other languages' features price it at: its high end
     // covers the measured first-language ratios (#2398). Only the bound moves, not the expectation.
     const firstLanguageHigh = newLanguage
@@ -969,8 +1111,19 @@ function reforecast(
       expectedTokens,
       basis: scale === null && !floor ? f.basis : "calibrated",
       ...(floor ? { floor } : {}),
-      ...(ratios ? { highBasis: "ratios" as const } : {}),
+      ...(ratios || raised ? { highBasis: "ratios" as const } : {}),
       ...(widened ? { newLanguage: true as const } : {}),
+      // The legal rule replaces what the size class, or the share rule, gave it (#2640).
+      ...(legal
+        ? {
+            fewPathShare: fewPathShareRecord({
+              reason: "legal",
+              before: sized,
+              after: legal,
+              paths: pathWeight(f),
+            }),
+          }
+        : {}),
       ...(byDocs && documented
         ? {
             documentedSurface: {
@@ -1069,11 +1222,12 @@ export function newLanguageOf(
   language: string | undefined,
   samples: FeatureRunSample[],
   accepted: number,
+  fewPaths = false,
 ): InitiativeEstimate["newLanguage"] | null {
   if (!language) return null;
   const features = samples.filter((s) => s.language === language).length + accepted;
   if (features >= NEW_LANGUAGE_FEATURES) return null;
-  const calibration = firstLanguageCalibrationOf(samples);
+  const calibration = firstLanguageCalibrationOf(samples, fewPaths);
   return calibration && { language, features, calibration };
 }
 
@@ -1095,13 +1249,22 @@ export function estimateInitiative(input: {
   language?: string;
   /** Prices features with `documentedCommands` (#2569); absent prices and records none. */
   documentedSurface?: DocumentedSurface;
+  /**
+   * `sizing.fewPathPrice` (#2640): a feature with fewer paths than its size pool's median, in a
+   * pool with no path fit, at a share of the pool (`fewPathDetail`), and a feature of legal files
+   * alone at the path rate. Absent, the size pool prices them as before; the initiative service
+   * passes it on unless the policy turns it off (`fewPathPriceOn`, #2893).
+   */
+  fewPathPrice?: boolean;
 }): InitiativeEstimate {
+  const fewPaths = input.fewPathPrice === true;
   const margin = input.margin ?? ESTIMATE_MARGIN;
   const progress = input.progress ?? { features: {}, overhead: 0 };
   const newLanguage = newLanguageOf(
     input.language,
     input.samples,
     Object.values(progress.features).filter((f) => f.accepted).length,
+    fewPaths,
   );
   const {
     features,
@@ -1120,6 +1283,7 @@ export function estimateInitiative(input: {
         input.history,
         input.samples,
         input.recencyHalfLife ? recencyWeights(input.samples, input.recencyHalfLife) : null,
+        fewPaths,
       ),
     ),
     progress,
@@ -1127,6 +1291,7 @@ export function estimateInitiative(input: {
     input.testCaseRate?.perCase ?? null,
     newLanguage,
     input.documentedSurface ?? null,
+    fewPaths,
   );
   const overhead = { low: progress.overhead, high: progress.overhead };
   const summed = sum([overhead, ...features.map((f) => f.tokens)]);

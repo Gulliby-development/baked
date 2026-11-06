@@ -5,6 +5,7 @@ import { getCwd } from "../core/cwd.js";
 import { gitInitSummary, initWorkspaceGit } from "../core/git/init.js";
 import { loadModelCatalog } from "../core/llm/model-catalog.js";
 import { parseRouteOverrides, type RoutingEntry } from "../core/llm/model-routing.js";
+import { type AccountChoice, parseAccountChoice } from "../core/llm/provider-accounts.js";
 import { clarificationAnswers, clarificationKeys } from "../core/workflows/answers.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
 import { withModelReview } from "../core/workflows/auto-approval.js";
@@ -160,6 +161,17 @@ export function quickRunArgs(service: NativeWorkflowService, args: WorkflowArgs)
     },
   };
 }
+/** `--account codex=work,claude-code=client`, refused as a bad request when malformed. */
+const accountFlag = (value: string): AccountChoice => {
+  try {
+    return parseAccountChoice(value);
+  } catch (error) {
+    throw new WorkflowFault(
+      "INVALID_REFERENCE",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+};
 /** `--worktree-root PATH` (#2461) in place of `workflows.worktreeRoot` for this command. */
 function withWorktreeRoot(config: AppConfig, flag: unknown): AppConfig {
   if (typeof flag !== "string") return config;
@@ -319,10 +331,10 @@ export async function executeWorkflowCommand(
   const runId = args.positional[0] ?? "";
   const artifacts = new WorkflowArtifacts(service);
   /**
-   * Records a decision; with `--resume` the run continues from it when nothing else is pending.
-   * On a feature run of an initiative the answer also carries the initiative's next step, since
-   * only a drive advances it (#2024).
+   * The answer of a command that decides on or drives the run: on a feature run of an initiative
+   * it carries the initiative's next step, since only a drive advances it (#2024, #2880).
    */
+  const finish = <T extends object>(result: T): T => withInitiativeStep(service, runId, result);
   /**
    * Drives the run after a change the command applied. At the workspace's parallel run cap the
    * change stays and the run waits for a slot: the answer is the run with `queued` (exit 0),
@@ -331,12 +343,12 @@ export async function executeWorkflowCommand(
   const driveAfter = async (change: string): Promise<RunSnapshot & { queued?: QueuedResume }> => {
     onDrive?.(runId);
     try {
-      return await service.drive(runId, signal);
+      return finish(await service.drive(runId, signal));
     } catch (error) {
       const queued = queuedResume(error, service.store, runId, change);
       if (!queued) throw error;
       process.stderr.write(`${queued.message}\n`);
-      return { ...service.store.snapshot(runId), queued };
+      return finish({ ...service.store.snapshot(runId), queued });
     }
   };
   /** Resumes the run after a change the command applied, then drives it (`driveAfter`). */
@@ -344,15 +356,12 @@ export async function executeWorkflowCommand(
     await service.resume(runId, { commandId: newId(), expectedRevision: revision });
     return driveAfter(change);
   };
+  /** Records a decision; with `--resume` the run continues from it when nothing else is pending. */
   const decideThenResume = async (decision: Decision): Promise<unknown> => {
     const decided = await service.decide(runId, identity(), decision);
     if (args.flags.resume !== true || !service.canResumeAfterDecision(runId))
-      return withInitiativeStep(service, runId, decided);
-    return withInitiativeStep(
-      service,
-      runId,
-      await resumeAfter(decided.revision, "The decision is recorded"),
-    );
+      return finish(decided);
+    return resumeAfter(decided.revision, "The decision is recorded");
   };
   const identity = () => {
     const revision = Number(stringFlag(args, "expected-revision"));
@@ -436,6 +445,9 @@ export async function executeWorkflowCommand(
           : {}),
         ...(args.flags.worktree === true ? { executionMode: "worktree" as const } : {}),
         ...(args.flags["model-strict"] === true ? { modelStrict: true } : {}),
+        ...(typeof args.flags.account === "string"
+          ? { accounts: accountFlag(args.flags.account) }
+          : {}),
         ...(typeof args.flags.route === "string"
           ? { routes: parseRouteOverrides(args.flags.route) }
           : {}),
@@ -535,7 +547,7 @@ export async function executeWorkflowCommand(
       if (args.flags["accept-workspace"] === true)
         return driveAfter("The workspace changes are accepted");
       onDrive?.(runId);
-      return service.drive(runId, signal);
+      return finish(await service.drive(runId, signal));
     case "pause":
       return service.pause(runId, identity());
     case "cancel":
@@ -579,6 +591,9 @@ export async function executeWorkflowCommand(
           ? { routes: parseRouteOverrides(args.flags.route) }
           : {}),
       });
+      // Configured routes the reroute left on another model, as the start prints them (#2960).
+      for (const warning of readRoutingSummary(service.store, runId)?.warnings ?? [])
+        process.stderr.write(`warning: ${warning}\n`);
       if (args.flags.resume !== true) return rerouted;
       return resumeAfter(rerouted.revision, "The new routes are applied");
     }

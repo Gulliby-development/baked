@@ -116,6 +116,11 @@ if (cliArgs[0] === "limits") {
   process.exit(await runLimitsCli(cliArgs.slice(1)));
 }
 
+if (cliArgs[0] === "accounts") {
+  const { runAccountsCli } = await import("./headless/accounts.js");
+  process.exit(await runAccountsCli(cliArgs.slice(1)));
+}
+
 if (cliArgs[0] === "login" || cliArgs[0] === "logout") {
   const { runLoginCli } = await import("./headless/login.js");
   process.exit(await runLoginCli(cliArgs[0], cliArgs.slice(1)));
@@ -170,14 +175,16 @@ import { getCwd } from "./core/cwd.js";
 import { applyTheme, getThemeTokens } from "./core/theme/index.js";
 import { supportsTruecolor } from "./core/utils/bake-art.js";
 import { BOOT_SPLASH_PAINTER, bootSplashFrames } from "./core/utils/boot-splash.js";
+import { parseConfigJson } from "./core/utils/config-json.js";
 import { reducedMotion, setMotion } from "./core/utils/motion.js";
 import { resolveCwdFromArgv } from "./core/utils/resolve-cwd.js";
 import { logBackgroundError } from "./stores/errors.js";
+import type { AppConfig } from "./types/index.js";
 
 // Sync-load theme name from config before React mounts
 try {
   const raw = readFileSync(join(configDir(), "config.json"), "utf-8");
-  const cfg = JSON.parse(raw);
+  const cfg = parseConfigJson(raw) as Partial<AppConfig>;
   setMotion(cfg.motion);
   if (cfg.theme?.name)
     applyTheme(cfg.theme.name, cfg.theme?.transparent, {

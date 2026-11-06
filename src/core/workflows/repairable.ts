@@ -11,6 +11,18 @@ export interface RepairBlock {
   required: number;
   taskIds: string[];
   transitionId?: string | undefined;
+  /**
+   * The review or convergence findings the refused correction was for (#2878). A grant hands
+   * them to the next pass of that kind, which retires those it does not raise again: they were
+   * recorded and never got a repair task.
+   */
+  stranded?: StrandedFindings | undefined;
+}
+
+/** Findings a refused correction left without a repair task, and the pass that raised them. */
+export interface StrandedFindings {
+  pass: "review" | "convergence";
+  findingIds: string[];
 }
 
 /** Shared by the service, run controls and initiative feature controls. */

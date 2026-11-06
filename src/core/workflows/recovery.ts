@@ -1,12 +1,14 @@
 import { canonical } from "../specs/hash.js";
 import { type EffectJournal, effectFile, fileHash } from "./effects.js";
-import { commandProcessMayRun } from "./leases.js";
+import { commandLiveness, commandProcessMayRun } from "./leases.js";
 import type { Decision, RunPolicy } from "./schemas.js";
 import { stopMode } from "./stop-reasons.js";
 import type { EffectRow, WorkflowStore } from "./store.js";
 
 export function recoverRun(store: WorkflowStore, journal: EffectJournal, runId: string): boolean {
   const unknown = journal.reconcile(runId);
+  // The recovery notes check command processes: read them before the write lock is taken.
+  using _liveness = commandLiveness(store, unknown.length ? [runId] : []);
   store.transaction(() => {
     for (const attempt of store.attempts(runId).filter((a) => a.status === "running")) {
       store.finishAttempt(runId, attempt.id, "interrupted", null);
@@ -102,7 +104,7 @@ export function checkRecoveryNote(
  * Records, in shadow, the interrupted checks the host would settle itself (#2415): one
  * `decision.would_resume` event per effect (`effect-<id>`) under `host-settle-interrupted-check`,
  * with the decision's inputs. The recovery request stays with the person. Call inside a store
- * transaction. Returns the decisions it recorded.
+ * transaction that holds a `commandLiveness` read of the run. Returns the decisions it recorded.
  */
 export function noteInterruptedChecks(
   store: WorkflowStore,

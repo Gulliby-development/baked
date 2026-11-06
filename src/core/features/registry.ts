@@ -487,6 +487,35 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/providers"],
   },
   {
+    id: "provider-accounts",
+    group: "Models and providers",
+    title: "Several accounts of one provider, chosen per project (Codex, Claude Code)",
+    tui: [
+      "/accounts",
+      "/accounts add",
+      "/accounts login",
+      "/accounts use",
+      "/accounts logout",
+      "/accounts remove",
+      "/limits",
+      "/workflow: new run, Codex and Claude account fields",
+    ],
+    cli: [
+      "baked accounts",
+      "baked login --account",
+      "baked logout --account",
+      "baked workflow run --account",
+      "baked limits",
+    ],
+    api: [
+      "/v1/providers/:id/accounts",
+      "/v1/providers/:id/account",
+      "/v1/workflow/runs: accounts",
+      "/v1/providers/limits: account",
+    ],
+    desktop: ["settings/providers", "project/overview: New run"],
+  },
+  {
     id: "model-picker",
     group: "Models and providers",
     title: "Pick a model from the list",
@@ -1404,6 +1433,17 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["settings/chat: Code quality page"],
   },
   {
+    id: "conflict-row-reply",
+    group: "Workflow runs",
+    title: "Answer a spec conflict about a prescribed-row test file with the row diff",
+    tui: ["/code-quality"],
+    cli: notNeeded(
+      "quality.conflictRowReply in config.json; the reply shows as the task's settled conflict",
+    ),
+    api: ["/v1/settings: code-quality page"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
     id: "row-file-write",
     group: "Workflow runs",
     title:
@@ -1411,6 +1451,18 @@ export const FEATURES: readonly Feature[] = [
     tui: ["/code-quality"],
     cli: notNeeded(
       "quality.rowFileWrite in config.json; the write shows as the task's host-apply record and a host edit of the test file, a placed row as the session's place_rows call",
+    ),
+    api: ["/v1/settings: code-quality page"],
+    desktop: ["settings/chat: Code quality page"],
+  },
+  {
+    id: "host-apply-partial",
+    group: "Workflow runs",
+    title:
+      "Write the other files of a task on the host when one of its host-applied or host-written row files declines, and give the session only the declined files",
+    tui: ["/code-quality"],
+    cli: notNeeded(
+      "quality.hostApplyPartial in config.json; the split shows as the task's host-apply record (partial) in baked workflow status and as host edits of the written files",
     ),
     api: ["/v1/settings: code-quality page"],
     desktop: ["settings/chat: Code quality page"],
@@ -1881,6 +1933,22 @@ export const FEATURES: readonly Feature[] = [
     cli: ["baked workflow extend: --resume", "baked workflow reroute: --resume"],
     api: ["/v1/workflow/runs/:id/resume: queued", "/v1/workflow/runs/:id: queued"],
     desktop: ["project/runs: Waiting for a free slot in the run header"],
+  },
+  {
+    id: "reroute-shadowed-routes",
+    group: "Workflow runs",
+    title:
+      "A reroute warns about configured routes it left on another model and names the stage routes that move them",
+    tui: ["/workflow: reroute warnings in the run overview"],
+    cli: [
+      "baked workflow reroute: warning lines",
+      "baked workflow initiative reroute: warning lines",
+    ],
+    api: [
+      "/v1/workflow/runs/:id: routing.warnings",
+      "/v1/initiatives/:id/reroute: runs[].warnings",
+    ],
+    desktop: ["project/runs: routing warnings in the Model panel"],
   },
   {
     id: "initiative-upstream-amendments",

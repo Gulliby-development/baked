@@ -16,9 +16,13 @@ import {
   dominantLineEnding,
   type LineEnding,
   minorityLineCount,
+  splitBom,
   toLf,
+  withBom,
   withLineEnding,
+  withoutCopiedBom,
 } from "./line-endings.js";
+import { oldStringRange, rangeText, replaceRange } from "./line-range.js";
 import {
   appendAutoFormatResult,
   appendCloneHints,
@@ -203,10 +207,14 @@ function correctIndentation(
     .join("\n");
 }
 
-/** The file as read from disk (`raw`) and the ending its edited text is written back with. */
+/**
+ * The file as read from disk (`raw`), and the ending and UTF-8 byte-order mark its edited text
+ * is written back with.
+ */
 interface DiskState {
   raw: string;
   eol: LineEnding;
+  bom: boolean;
 }
 
 async function applyEdit(
@@ -222,7 +230,7 @@ async function applyEdit(
   toolPhase("analyze");
   const beforeMetrics = analyzeFile(content);
   const afterMetrics = analyzeFile(updatedLf);
-  const updated = withLineEnding(updatedLf, disk.eol);
+  const updated = withBom(withLineEnding(updatedLf, disk.eol), disk.bom);
   const normalized = minorityLineCount(disk.raw);
 
   toolPhase("pre_diagnostics");
@@ -289,17 +297,14 @@ async function applyEdit(
   return { success: true, output };
 }
 
-function resolveLineRange(
-  content: string,
-  oldStr: string,
-  lineStart: number,
-): { start: number; end: number } | null {
-  const lines = content.split("\n");
-  const oldLineCount = oldStr.split("\n").length;
-  const start = lineStart - 1;
-  const end = start + oldLineCount;
-  if (start < 0 || start >= lines.length || end > lines.length || start >= end) return null;
-  return { start, end };
+/** The file's text when it exists, else null. */
+async function readExisting(filePath: string): Promise<string | null> {
+  try {
+    return await readFile(filePath, "utf-8");
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
 }
 
 export const editFileTool = {
@@ -322,10 +327,10 @@ export const editFileTool = {
         return { success: false, output: msg, error: msg };
       }
 
-      const oldStr = toLf(args.oldString);
-      const newStr = toLf(args.newString);
+      const oldStr = toLf(withoutCopiedBom(args.oldString));
+      const newStr = toLf(withoutCopiedBom(args.newString));
 
-      // Create new file
+      // Create a new file, or replace an existing one whole (the only whole-file write a model has)
       if (oldStr === "") {
         const dir = dirname(filePath);
         let dirCreated = false;
@@ -335,14 +340,26 @@ export const editFileTool = {
           dirCreated = true;
         }
         await mkdir(dir, { recursive: true });
+        const previous = await readExisting(filePath);
+        if (previous !== null && args.ifHash && contentHash(previous) !== args.ifHash) {
+          const msg =
+            "ifHash mismatch — file changed since your last read. Re-read and retry with the new hash.";
+          return { success: false, output: msg, error: "concurrent modification" };
+        }
         const newEol = detectNewFileLineEnding(dir, filePath);
-        const fileText = newEol ? withLineEnding(newStr, newEol) : args.newString;
+        const fileText = newEol ? withLineEnding(args.newString, newEol) : args.newString;
         assertEditActive();
+        // Replacing existing content is undoable like any other edit (#2793).
+        if (previous !== null) pushEdit(filePath, previous, fileText, args.tabId);
         toolPhase("write");
         await atomicWriteFile(filePath, fileText);
         emitFileEdited(filePath, fileText);
         const metrics = analyzeFile(newStr);
-        let out = `Created ${displayPath(filePath)} (lines: ${String(metrics.lineCount)}, imports: ${String(metrics.importCount)})`;
+        const counts = `lines: ${String(metrics.lineCount)}, imports: ${String(metrics.importCount)}`;
+        let out =
+          previous === null
+            ? `Created ${displayPath(filePath)} (${counts})`
+            : `Overwrote ${displayPath(filePath)} (${counts}; replaced ${String(analyzeFile(toLf(previous)).lineCount)} existing lines — undo_edit restores them)`;
         if (dirCreated) out += ` [directory created: ${dir}]`;
         out = await appendCloneHints(filePath, out);
         out += memoryHintComposite({
@@ -365,8 +382,9 @@ export const editFileTool = {
       }
 
       const raw = await readFile(filePath, "utf-8");
-      const disk: DiskState = { raw, eol: dominantLineEnding(raw) };
-      const content = toLf(raw);
+      const body = splitBom(raw);
+      const disk: DiskState = { raw, eol: dominantLineEnding(raw), bom: body.bom };
+      const content = toLf(body.text);
       const lines = content.split("\n");
 
       // ═══════════════════════════════════════════════════════════════
@@ -377,10 +395,9 @@ export const editFileTool = {
       // ═══════════════════════════════════════════════════════════════
       toolPhase("match");
       if (args.lineStart != null) {
-        const range = resolveLineRange(content, oldStr, args.lineStart);
+        const range = oldStringRange(lines, oldStr, args.lineStart);
         if (range) {
           const replacedLines = lines.slice(range.start, range.end);
-          const newLines = newStr.split("\n");
 
           // Safety: don't delete large blocks with empty/whitespace-only replacement
           if (replacedLines.length > 10 && newStr.trim() === "") {
@@ -392,18 +409,15 @@ export const editFileTool = {
           }
 
           // Verify oldString matches the line range content (warn if mismatch)
-          const rangeContent = replacedLines.join("\n");
+          const rangeContent = rangeText(lines, range);
           const label = ` (lines ${String(args.lineStart)}-${String(range.end)})`;
 
           // If oldString exactly matches the range, great — high confidence edit
           if (rangeContent === oldStr) {
-            const before = lines.slice(0, range.start);
-            const after = lines.slice(range.end);
-            const updated = [...before, ...newLines, ...after].join("\n");
             return applyEdit(
               filePath,
               content,
-              updated,
+              replaceRange(lines, range, newStr),
               args.lineStart,
               label,
               disk,
@@ -415,13 +429,10 @@ export const editFileTool = {
           // Try fuzzy match against the range content
           const rangeFixed = await fuzzyWhitespaceMatchAsync(rangeContent, oldStr, newStr);
           if (rangeFixed) {
-            const before = lines.slice(0, range.start);
-            const after = lines.slice(range.end);
-            const updated = [...before, ...rangeFixed.newStr.split("\n"), ...after].join("\n");
             return applyEdit(
               filePath,
               content,
-              updated,
+              replaceRange(lines, range, rangeFixed.newStr),
               args.lineStart,
               label,
               disk,

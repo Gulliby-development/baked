@@ -51,9 +51,37 @@ export function planShards(
   return shards.map((shard) => shard.files.sort());
 }
 
+/**
+ * The shards (from 1) that `planShards` gives at least one of `files`. A pull request's picked tests
+ * often fill one or two shards; the rest would only start a Windows or macOS runner to exit (#2915).
+ */
+export function busyShards(files: readonly string[], count: number, weights: ShardWeights): number[] {
+  return planShards(files, count, weights).flatMap((shard, index) => (shard.length ? [index + 1] : []));
+}
+
 if (import.meta.main) await main();
 
 async function main() {
+  // `--busy <windows|macos> <count>` prints, between spaces, the shards that get one of TEST_FILES,
+  // so the workflow starts a runner only for those: ` 1 3 `.
+  if (process.argv[2] === "--busy") {
+    const [table, shards] = process.argv.slice(3);
+    const files = process.env.TEST_FILES?.trim().split(/\s+/).filter(Boolean) ?? [];
+    const all = JSON.parse(readFileSync(join(import.meta.dir, "test-shard-weights.json"), "utf8"));
+    const weights = all[table ?? ""] as ShardWeights | undefined;
+    const count = Number(shards);
+    if (!weights || !Number.isInteger(count) || count < 1) {
+      console.error("usage: bun scripts/test-shard.ts --busy <windows|macos> <count>");
+      process.exit(2);
+    }
+    console.log(` ${busyShards(files, count, weights).join(" ")} `);
+    return;
+  }
+  // TEST_FILES lists the test files to run, separated by spaces, instead of all of them: a pull
+  // request runs the ones scripts/pr-targeted-tests.ts picks, spread over the same shards by
+  // measured time. In one shard, a pull request that changed the three replay-corpus files (about
+  // 25 minutes on Windows) plus the tests naming its sources passed the job's 30 minutes (#2907).
+  const list = process.env.TEST_FILES?.trim();
   const [index, count] = process.argv.slice(2).map(Number);
   const valid = Number.isInteger(index) && Number.isInteger(count) && index >= 1 && index <= count;
   if (!valid) {
@@ -61,7 +89,7 @@ async function main() {
     process.exit(2);
   }
 
-  const files = testFiles();
+  const files = list ? list.split(/\s+/) : testFiles();
   const table = JSON.parse(readFileSync(join(import.meta.dir, "test-shard-weights.json"), "utf8"));
   const weights = weightsFor(process.platform, table);
   const shard = planShards(files, count, weights)[index - 1].map((file) => `./${file}`);

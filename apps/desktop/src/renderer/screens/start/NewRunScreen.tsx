@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { type ProviderAccounts, setup } from "../../client/setup.js";
 import {
   type DefinitionSummary,
   MAX_WRITERS,
+  type StartBody,
   start,
   type WorkflowProposal,
 } from "../../client/start.js";
@@ -56,6 +58,20 @@ import {
   useRoute,
 } from "./panels.js";
 import { routeModels, routeRows } from "./route-logic.js";
+
+type RunAccounts = NonNullable<StartBody["accounts"]>;
+
+/**
+ * The providers whose labelled accounts this project may use (#2303), for a run to pick one
+ * instead of the project's. A backend without accounts offers none.
+ */
+async function loadRunAccounts(key: string): Promise<ProviderAccounts[]> {
+  if (!(await setup.canUseAccounts(key))) return [];
+  const views = await Promise.all(
+    (["codex", "claude-code"] as const).map((p) => setup.accounts(key, p).catch(() => null)),
+  );
+  return views.filter((v): v is ProviderAccounts => !!v && v.accounts.some((a) => a.allowed));
+}
 
 /** The workflows offered first, with the line each card gives. */
 const MAIN_WORKFLOWS: [string, string][] = [
@@ -202,6 +218,8 @@ export function NewRunScreen({ project }: SectionProps) {
   // Empty keeps the cap of the policy or the Cost cap setting; a number caps this run.
   const [costText, setCostText] = useState("");
   const [model, setModel] = useState("");
+  // Providers left out keep the project's account; a pick holds for this run only.
+  const [accountPick, setAccountPick] = useState<RunAccounts>({});
   const [showReadiness, setShowReadiness] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // The proposal from the request picks the recipe and budget until the person picks one.
@@ -211,6 +229,7 @@ export function NewRunScreen({ project }: SectionProps) {
 
   const definitions = useLoad(key, "definitions", start.definitions);
   const models = useLoad(key, "profile-models", loadModels);
+  const runAccounts = useLoad(key, "run-accounts", loadRunAccounts);
   const policy = usePolicy(key);
   const costCap = costCapInput(costText);
   const preRun = usePreRun(key, {
@@ -320,8 +339,20 @@ export function NewRunScreen({ project }: SectionProps) {
       ...(proposal ? { autoPreset: true } : {}),
       ...(strict ? { modelStrict: true } : {}),
       ...(typeof costCap === "number" ? { maxCostUsd: costCap } : {}),
+      ...(Object.keys(accountPick).length ? { accounts: accountPick } : {}),
     });
   };
+  const pickAccount = (provider: keyof RunAccounts, id: string): void =>
+    setAccountPick((current) => {
+      const next = { ...current };
+      if (id) next[provider] = id;
+      else delete next[provider];
+      return next;
+    });
+  const pickedAccounts = (runAccounts.value ?? []).flatMap((view) => {
+    const picked = view.accounts.find((a) => a.id === accountPick[view.provider]);
+    return picked ? [`${view.name}: ${picked.label}`] : [];
+  });
 
   const ready = preRun.doctor?.ready;
   const fit = preRun.estimate ? fitOf(preRun.estimate.tokens, limits.cap) : null;
@@ -335,6 +366,7 @@ export function NewRunScreen({ project }: SectionProps) {
     model || "default model",
     ...(strict ? ["run model overrides routes"] : []),
     ...(typeof costCap === "number" ? [`cost cap $${costCap}`] : []),
+    ...pickedAccounts,
   ].join(" · ");
   const capEstimate = preRun.estimate ?? preRun.doctor?.estimate ?? null;
   const capFit = capEstimate?.cost
@@ -663,6 +695,36 @@ export function NewRunScreen({ project }: SectionProps) {
                   : "Roles and stages with a configured route keep it."}
               </span>
             </div>
+            {(runAccounts.value ?? []).map((view) => {
+              const own = view.accounts.find((a) => a.id === view.active);
+              const id = `new-run-account-${view.provider}`;
+              return (
+                <div key={view.provider} className={FIELD}>
+                  <label htmlFor={id} className={LEGEND}>
+                    {view.name} account
+                  </label>
+                  <select
+                    id={id}
+                    value={accountPick[view.provider] ?? ""}
+                    aria-describedby={`${id}-hint`}
+                    onChange={(e) => pickAccount(view.provider, e.target.value)}
+                  >
+                    <option value="">Project's: {own ? own.label : "the CLI's own sign-in"}</option>
+                    {view.accounts
+                      .filter((a) => a.allowed)
+                      .map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.label}
+                          {a.signIn.loggedIn ? "" : " (not signed in)"}
+                        </option>
+                      ))}
+                  </select>
+                  <span id={`${id}-hint`} className={HINT}>
+                    Every {view.name} turn of this run, and of its resumes, uses this account.
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </details>
       </section>

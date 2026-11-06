@@ -3,7 +3,11 @@ import { resolve } from "node:path";
 import { defaultWorkflowPolicy } from "../core/workflows/defaults.js";
 import { WorkflowFault } from "../core/workflows/errors.js";
 import { InitiativePlanSchema, SplitEditSchema } from "../core/workflows/initiatives/plan.js";
-import { InitiativeService, type InitiativeView } from "../core/workflows/initiatives/service.js";
+import {
+  InitiativeService,
+  type InitiativeView,
+  type RerouteResult,
+} from "../core/workflows/initiatives/service.js";
 import {
   type BudgetLimitsValue,
   CostToleranceSchema,
@@ -386,9 +390,28 @@ export async function executeInitiativeCommand(
         model: stringFlag(args, "model"),
         resume,
       });
+      // Configured routes each run's reroute left on another model (#2960).
+      for (const line of rerouteWarnings(initiatives, id))
+        process.stderr.write(`warning: ${line}\n`);
       return resume ? initiatives.drive(id, signal) : view;
     }
   }
+}
+
+/** The warnings of the initiative's latest reroute, one line per run warning, prefixed by the feature. */
+export function rerouteWarnings(initiatives: InitiativeService, id: string): string[] {
+  let latest: RerouteResult[] = [];
+  for (let after = 0; ; ) {
+    const page = initiatives.events(id, after, 200);
+    if (!page.length) break;
+    for (const event of page)
+      if (event.type === "initiative.rerouted")
+        latest = (event.payload as { runs?: RerouteResult[] }).runs ?? [];
+    after = page[page.length - 1]?.seq ?? after;
+  }
+  return latest.flatMap((run) =>
+    (run.warnings ?? []).map((line) => `${run.featureId ?? run.runId}: ${line}`),
+  );
 }
 
 /** Exit code of a driving command, after the same scheme as `baked workflow run`. */

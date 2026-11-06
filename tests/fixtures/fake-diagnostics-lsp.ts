@@ -2,7 +2,18 @@
  * A minimal language server for tests. A document that contains `use(NAME)` has an error unless an
  * open document contains `export function NAME`. After every open or change it publishes the
  * diagnostics of all open documents, as real servers do for files that import a changed one.
+ *
+ * With `--workspace` it also publishes for the `.ts` files on disk in the root that are not open,
+ * as workspace-wide servers (gopls, rust-analyzer, pyright in workspace mode) do, 200 ms after each
+ * open or change.
  */
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { filePathToUri, uriToFilePath } from "../../src/core/intelligence/backends/lsp/protocol.js";
+
+const workspace = process.argv.includes("--workspace");
+const publishDelayMs = workspace ? 200 : 20;
+let root = "";
 const docs = new Map<string, string>();
 let buffer = Buffer.alloc(0);
 
@@ -11,11 +22,23 @@ function send(message: Record<string, unknown>): void {
   process.stdout.write(`Content-Length: ${String(Buffer.byteLength(body))}\r\n\r\n${body}`);
 }
 
+function workspaceDocs(): Map<string, string> {
+  const all = new Map(docs);
+  if (!workspace || !root) return all;
+  for (const name of readdirSync(root)) {
+    if (!name.endsWith(".ts")) continue;
+    const uri = filePathToUri(join(root, name));
+    if (!all.has(uri)) all.set(uri, readFileSync(join(root, name), "utf-8"));
+  }
+  return all;
+}
+
 function publishAll(): void {
+  const all = workspaceDocs();
   const exported = new Set<string>();
-  for (const text of docs.values())
+  for (const text of all.values())
     for (const m of text.matchAll(/export function (\w+)/g)) exported.add(m[1] as string);
-  for (const [uri, text] of docs) {
+  for (const [uri, text] of all) {
     const diagnostics = text
       .split("\n")
       .flatMap((line, i) =>
@@ -39,12 +62,14 @@ function handle(msg: {
   id?: number;
   method?: string;
   params?: {
+    rootUri?: string;
     textDocument?: { uri: string; text?: string };
     contentChanges?: { text: string }[];
   };
 }): void {
   switch (msg.method) {
     case "initialize":
+      root = msg.params?.rootUri ? uriToFilePath(msg.params.rootUri) : "";
       send({ id: msg.id, result: { capabilities: {} } });
       return;
     case "shutdown":
@@ -55,11 +80,11 @@ function handle(msg: {
       return;
     case "textDocument/didOpen":
       docs.set(msg.params?.textDocument?.uri ?? "", msg.params?.textDocument?.text ?? "");
-      setTimeout(publishAll, 20);
+      setTimeout(publishAll, publishDelayMs);
       return;
     case "textDocument/didChange":
       docs.set(msg.params?.textDocument?.uri ?? "", msg.params?.contentChanges?.[0]?.text ?? "");
-      setTimeout(publishAll, 20);
+      setTimeout(publishAll, publishDelayMs);
       return;
     default:
       if (msg.id !== undefined) send({ id: msg.id, result: null });

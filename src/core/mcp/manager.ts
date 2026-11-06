@@ -55,6 +55,11 @@ export class MCPManager {
   private pendingSync: MCPServerConfig[] | null = null;
   private syncing = false;
   private connecting = new Map<string, Promise<void>>();
+  /**
+   * Stdio transports whose handshake has not finished. Disposing closes these too: a server still
+   * starting was nobody's to stop and outlived the manager (#2268 for language servers).
+   */
+  private startingTransports = new Set<{ close(): Promise<void> }>();
   private synced = false;
 
   /** Whether servers were connected from the config yet (connectAll, or one server on demand). */
@@ -136,11 +141,18 @@ export class MCPManager {
     useMCPStore.getState().setServerStatus(name, "connecting");
 
     let client: MCPClient | null = null;
+    let pendingClient: Promise<MCPClient> | null = null;
+    let transport: ReturnType<MCPManager["createTransport"]> | null = null;
     // stdio = custom MCPTransport with start/send/close. HTTP/SSE = plain config object.
     let isCustomTransport = false;
+    let starting: StdioClientTransport | null = null;
     try {
-      const transport = this.createTransport(config);
+      transport = this.createTransport(config);
       isCustomTransport = typeof transport === "object" && "start" in transport;
+      if (transport instanceof StdioClientTransport) {
+        starting = transport;
+        this.startingTransports.add(transport);
+      }
       if (isCustomTransport && "onclose" in transport) {
         const originalOnclose = transport.onclose;
         transport.onclose = () => {
@@ -155,22 +167,23 @@ export class MCPManager {
 
       // Timeout the entire connect+tools handshake — a broken server shouldn't block the queue
       const connectTimeout = config.timeout ?? 30_000;
+      pendingClient = createMCPClient({
+        transport,
+        name: `baked-${name}`,
+        // For stdio: onUncaughtError triggers restart (process crashed).
+        // For http/sse: only log — transport errors are non-fatal (SSE probe 404, etc.)
+        onUncaughtError: isCustomTransport
+          ? (err) => {
+              if (this.disposed) return;
+              const msg = err instanceof Error ? err.message : String(err);
+              useMCPStore.getState().setServerStatus(name, "error", msg);
+              this.connections.delete(name);
+              this.scheduleRestart(config);
+            }
+          : undefined,
+      });
       client = await withTimeout(
-        createMCPClient({
-          transport,
-          name: `baked-${name}`,
-          // For stdio: onUncaughtError triggers restart (process crashed).
-          // For http/sse: only log — transport errors are non-fatal (SSE probe 404, etc.)
-          onUncaughtError: isCustomTransport
-            ? (err) => {
-                if (this.disposed) return;
-                const msg = err instanceof Error ? err.message : String(err);
-                useMCPStore.getState().setServerStatus(name, "error", msg);
-                this.connections.delete(name);
-                this.scheduleRestart(config);
-              }
-            : undefined,
-        }),
+        pendingClient,
         connectTimeout,
         `MCP server "${name}": connection timed out`,
       );
@@ -189,6 +202,8 @@ export class MCPManager {
         inputSchema: {} as Record<string, unknown>,
       }));
 
+      // Disposed during the handshake: the manager no longer owns anything, so close it here.
+      if (this.disposed) throw new Error(`MCP server "${name}": manager disposed while connecting`);
       this.connections.set(name, { client, config, toolSet: toolSet as Record<string, Tool> });
       client = null; // Ownership transferred — don't close in finally
 
@@ -216,12 +231,29 @@ export class MCPManager {
         try {
           await client.close();
         } catch {}
+      } else if (pendingClient) {
+        // The handshake failed or timed out but keeps running: stop the server it started, and
+        // close a client that still answers late, so a slow server (npx fetching a package) is
+        // not left running next to each restart.
+        pendingClient.then(
+          (late) => late.close().catch(() => {}),
+          () => {},
+        );
+        // Awaited: a second close of a closing stdio transport returns before its child exits, so
+        // only this close waits for the server to stop (#2751, #2805).
+        if (transport && typeof transport === "object" && "close" in transport)
+          await transport.close().catch(() => {});
+      } else {
+        // A handshake that failed before any client existed: its transport's child still runs.
+        await starting?.close().catch(() => {});
       }
       const msg = err instanceof Error ? err.message : String(err);
       useMCPStore.getState().setServerStatus(name, "error", msg);
       // Only auto-restart stdio transports (local subprocesses that may have crashed).
       // HTTP/SSE are remote — if they fail, the user should retry manually.
       if (isCustomTransport) this.scheduleRestart(config);
+    } finally {
+      if (starting) this.startingTransports.delete(starting);
     }
   }
 
@@ -422,7 +454,10 @@ export class MCPManager {
   async dispose(): Promise<void> {
     this.disposed = true;
     const names = [...this.connections.keys()];
-    await Promise.allSettled(names.map((n) => this.disconnect(n)));
+    await Promise.allSettled([
+      ...names.map((n) => this.disconnect(n)),
+      ...[...this.startingTransports].map((transport) => transport.close()),
+    ]);
   }
 }
 

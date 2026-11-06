@@ -127,12 +127,37 @@ export const test = base.extend<Fixtures>({
         });
       expect(await app.evaluate(({ app }) => app.getPath("userData"))).toBe(userData);
       // The main process's quit steps, for the log of an app that does not quit.
-      await app.evaluate(({ app }) => {
-        const log = (line: string) => console.log(`[main ${new Date().toISOString()}] ${line}`);
-        for (const event of ["before-quit", "window-all-closed", "will-quit", "quit"] as const)
-          app.on(event as "quit", () => log(event));
-        process.on("uncaughtExceptionMonitor", (error) => log(`uncaught ${error.stack ?? error}`));
-      });
+      await app.evaluate(
+        ({ app, BrowserWindow }, { tick, stall }) => {
+          const log = (line: string) => console.log(`[main ${new Date().toISOString()}] ${line}`);
+          for (const event of ["before-quit", "window-all-closed", "will-quit", "quit"] as const)
+            app.on(event as "quit", () => log(event));
+          process.on("uncaughtExceptionMonitor", (error) =>
+            log(`uncaught ${error.stack ?? error}`),
+          );
+          // Why a window stops answering every locator (#2712): a renderer that crashed or hung,
+          // or a busy main process, whose UI thread also carries the test's CDP traffic.
+          app.on("render-process-gone", (_e, _contents, details) =>
+            log(`renderer gone: ${details.reason} (exit ${details.exitCode})`),
+          );
+          app.on("child-process-gone", (_e, details) =>
+            log(`${details.type} process gone: ${details.reason} (exit ${details.exitCode})`),
+          );
+          const watch = (window: InstanceType<typeof BrowserWindow>) => {
+            window.on("unresponsive", () => log("window unresponsive"));
+            window.on("responsive", () => log("window responsive again"));
+          };
+          for (const window of BrowserWindow.getAllWindows()) watch(window);
+          app.on("browser-window-created", (_e, window) => watch(window));
+          let last = Date.now();
+          setInterval(() => {
+            const late = Date.now() - last - tick;
+            if (late > stall) log(`event loop stalled ${late}ms`);
+            last = Date.now();
+          }, tick).unref();
+        },
+        { tick: STALL_TICK_MS, stall: STALL_MS },
+      );
       const page = await app.firstWindow();
       page.on("console", (entry) => {
         output = (output + `[renderer ${entry.type()}] ${entry.text()}\n`).slice(-6000);
@@ -142,28 +167,43 @@ export const test = base.extend<Fixtures>({
       });
       await expect(page.getByRole("heading", { name: "All projects", level: 1 })).toBeVisible();
       // Backend state changes and navigations, for the log of a failed test.
-      await page.evaluate(() => {
-        const log = (line: string) => console.debug(`[${Math.round(performance.now())}ms] ${line}`);
-        const bridge = (window as unknown as {
-          baked: { onProjects(listener: (list: DesktopProjectLike[]) => void): void };
-        }).baked;
-        type DesktopProjectLike = { name: string; backend: { kind: string } };
-        bridge.onProjects((list) =>
-          log(`projects ${list.map((p) => `${p.name}:${p.backend.kind}`).join(" ")}`),
-        );
-        window.addEventListener("hashchange", () => log(`hash ${window.location.hash}`));
-        let prompt: Element | null = null;
-        new MutationObserver(() => {
-          const now = document.getElementById("chat-prompt");
-          if (now !== prompt) log(now ? "composer mounted" : "composer removed");
-          prompt = now;
-        }).observe(document.body, { childList: true, subtree: true });
-      });
+      await page.evaluate(
+        ({ tick, stall }) => {
+          const log = (line: string) =>
+            console.debug(`[${Math.round(performance.now())}ms] ${line}`);
+          // A renderer that was busy says so once it runs again (#2712).
+          let last = performance.now();
+          setInterval(() => {
+            const late = Math.round(performance.now() - last - tick);
+            if (late > stall) log(`event loop stalled ${late}ms`);
+            last = performance.now();
+          }, tick);
+          const bridge = (
+            window as unknown as {
+              baked: { onProjects(listener: (list: DesktopProjectLike[]) => void): void };
+            }
+          ).baked;
+          type DesktopProjectLike = { name: string; backend: { kind: string } };
+          bridge.onProjects((list) =>
+            log(`projects ${list.map((p) => `${p.name}:${p.backend.kind}`).join(" ")}`),
+          );
+          window.addEventListener("hashchange", () => log(`hash ${window.location.hash}`));
+          let prompt: Element | null = null;
+          new MutationObserver(() => {
+            const now = document.getElementById("chat-prompt");
+            if (now !== prompt) log(now ? "composer mounted" : "composer removed");
+            prompt = now;
+          }).observe(document.body, { childList: true, subtree: true });
+        },
+        { tick: STALL_TICK_MS, stall: STALL_MS },
+      );
       return { app, page };
     });
     if (testInfo.status !== testInfo.expectedStatus) {
       // CI artifacts are not always at hand: the window and the process output go to the log.
       for (const app of apps) {
+        // A main process that does not answer is itself the finding: CDP waits on it too.
+        console.log(`--- main process at failure ---\n${await mainState(app)}`);
         const snapshot = await app
           .windows()[0]
           ?.locator("main")
@@ -182,12 +222,48 @@ export const test = base.extend<Fixtures>({
       console.log(
         `--- app did not quit within ${CLOSE_TIMEOUT_MS}ms, killed (${testInfo.title}) ---\n${output}`,
       );
-      testInfo.annotations.push({ type: "app-close-timeout", description: `${CLOSE_TIMEOUT_MS}ms` });
+      testInfo.annotations.push({
+        type: "app-close-timeout",
+        description: `${CLOSE_TIMEOUT_MS}ms`,
+      });
       app.process().kill("SIGKILL");
       await closeWithin(app, 5000);
     }
   },
 });
+
+/** How often the event-loop probes tick, and how late a tick must be to be logged (#2712). */
+const STALL_TICK_MS = 250;
+const STALL_MS = 1000;
+
+/** The window's state and each process's CPU, or that the main process did not answer in 2 s. */
+async function mainState(app: ElectronApplication): Promise<string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const silent = new Promise<string>((resolve) => {
+    timer = setTimeout(() => resolve("the main process did not answer within 2000ms"), 2000);
+  });
+  const state = app
+    .evaluate(({ app, BrowserWindow }) =>
+      JSON.stringify({
+        windows: BrowserWindow.getAllWindows().map((window) => ({
+          url: window.webContents.getURL(),
+          crashed: window.webContents.isCrashed(),
+          loading: window.webContents.isLoading(),
+        })),
+        cpu: app
+          .getAppMetrics()
+          .map(
+            (metric) => `${metric.type} ${metric.pid}: ${metric.cpu.percentCPUUsage.toFixed(0)}%`,
+          ),
+      }),
+    )
+    .catch((error: unknown) => String(error));
+  try {
+    return await Promise.race([state, silent]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** Long enough for the app to stop its backends (5 s grace each) and quit. */
 const CLOSE_TIMEOUT_MS = 20_000;

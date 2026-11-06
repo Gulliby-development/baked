@@ -2,11 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { type SizingReport, type SizingSample, samplesFrom, testCaseRate } from "../src/core/workflows/sizing.js";
-import { openTrace, replayInitiativeStarts } from "../src/core/workflows/trace.js";
+import { openTrace } from "../src/core/workflows/trace.js";
 import { ROOT } from "./helpers/replay-corpus.js";
 
 // Part of the bench-trace replay corpus (tests/forecast-replay-corpus.test.ts), in a file of its own
-// because it replays every initiative start of the corpus and takes minutes on a CI runner.
+// because it reads the sizing reports of every trace. It needs no start replay: a trace without an
+// initiative has no feature runs, so `featureTestTasks` gives it no feature (#2753).
 
 /** Finished test tasks of a trace's initiative feature runs, with the cases their sizing reports recorded. */
 function featureTestTasks(path: string): Map<string, SizingSample[]> {
@@ -53,7 +54,6 @@ describe("a brief's test volume replays on recorded test tasks (#2055)", () => {
     for (const path of readdirSync(ROOT, { recursive: true, encoding: "utf8" })
       .filter((p) => p.endsWith(".sqlite.gz"))
       .map((p) => join(ROOT, p))) {
-      if (!replayInitiativeStarts(path).length) continue;
       const tasks = featureTestTasks(path);
       for (const [featureId, own] of tasks) {
         const rate = testCaseRate([...tasks].filter(([id]) => id !== featureId).flatMap(([, s]) => s));

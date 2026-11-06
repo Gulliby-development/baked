@@ -73,8 +73,9 @@ describe("scenario: R86 evalgrid scoring, row files the host writes priced as se
   });
 
   test("a row file of a language the host writes no rows for keeps the session price", () => {
-    // Rust has no `ROW_FILE_SHAPES` row: the host refuses it and a session writes it.
-    const report = size(true, "rs");
+    // bash has no `ROW_FILE_SHAPES` row (a bats row is a `@test` block, #2553): the host refuses it
+    // and a session writes it.
+    const report = size(true, "bats");
     expect(report.hostRows).toBeUndefined();
     expect(report.decision).toBe("split-feature");
   });

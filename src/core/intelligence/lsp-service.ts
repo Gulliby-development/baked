@@ -7,6 +7,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { configDir } from "../platform/index.js";
+import { parseConfigJson } from "../utils/config-json.js";
 import type { LspServerError } from "./backends/lsp/index.js";
 import {
   checkPackageStatus,
@@ -169,7 +170,7 @@ function context(options: LspServiceOptions): Context {
 function readConfigObject(file: string): Record<string, unknown> {
   if (!existsSync(file)) return {};
   try {
-    const parsed = JSON.parse(readFileSync(file, "utf-8")) as unknown;
+    const parsed = parseConfigJson(readFileSync(file, "utf-8")) as unknown;
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : {};

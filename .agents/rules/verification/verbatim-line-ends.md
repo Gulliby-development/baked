@@ -1,0 +1,1 @@
+A host check that compares a brief's verbatim content with a base file allows for the base's line ends: an LF block from the request is checked against a CRLF base in CRLF form too, and the record says which form matched (`eol: "crlf"` in host apply, #2158).

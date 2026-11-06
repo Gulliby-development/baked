@@ -8,8 +8,9 @@ import {
   type PrescribedRows,
   writtenTestPaths,
 } from "../verification/criteria-cases.js";
+import { rowTupleHeld } from "./row-block-drift.js";
 import type { Analysis, Spec, TaskGraph } from "./schemas.js";
-import { exactTextSections, suppliedBlocks, suppliedRows } from "./sizing.js";
+import { exactTextSections, rowBlockFiles, suppliedBlocks, suppliedRows } from "./sizing.js";
 import type { Task } from "./types.js";
 
 /**
@@ -166,6 +167,7 @@ function prescribedCases(
   const rows = prescribedRowFiles(request, graph);
   if (!rows.size) return [];
   const suppliedFiles = suppliedFileContents(request, graph);
+  const rowFiles = rowBlockFiles(request);
   return graph.tasks.flatMap((task) => {
     const paths = writtenTestPaths(task);
     // The rows give `citedKind` their counts: a criterion's "`12` rows" is no row's text (#2524).
@@ -174,35 +176,73 @@ function prescribedCases(
       tasks: graph.tasks,
       prescribedRows: rows,
       suppliedFiles,
+      rowFiles,
     });
     return cases.map((c) => ({
       task,
       paths,
       c,
       prescribed: casePrescribed(c, paths, rows),
-      ...(perRow ? { perRow: casePrescribed(c, paths, rows, true) } : {}),
+      ...(perRow ? { perRow: casePrescribed(c, paths, rows, rowTupleHeld) } : {}),
     }));
   });
 }
 
 /**
- * The cases `notPrescribedFindings` does not note because the prescribed rows hold them only
- * spread over several rows (#2544, shadow): read row by row (`casePrescribed` with `perRow`), no
- * row holds them. Recorded as `case_not_prescribed` with `kind: "per-row"` until a bench round
- * compares both answers; nothing is noted or refused on them.
+ * The per-row reader's answer to a `NOT-PRESCRIBED-` note (#2544, shadow): `held` when one row
+ * holds each of its literals, `none` when no row holds any, `partial` otherwise.
  */
+export type PerRowVerdict = "held" | "none" | "partial";
+
+/**
+ * The prescribed rows read row by row (#2544, shadow; `casePrescribed` with `rowTupleHeld`), beside
+ * the joined reader `notPrescribedFindings` decides on. `notPrescribed`: the cases it does not
+ * note because the rows hold them only spread over several rows, which no single row holds
+ * (recorded `case_not_prescribed` with `kind: "per-row"`). `noted`: for each criterion it notes,
+ * whether one row holds its literals after all, such as a row the criterion restates as a tuple
+ * (recorded as `perRow` on its `kind: "literal"` record). Nothing is noted or refused on either
+ * until a bench round compares both answers.
+ */
+export function perRowReading(
+  spec: Spec,
+  graph: Pick<TaskGraph, "tasks">,
+  request: string,
+  context: Pick<CaseContext, "checks">,
+): {
+  notPrescribed: { taskId: string; criterionId: string; literal: string }[];
+  noted: Map<string, PerRowVerdict>;
+} {
+  const notPrescribed: { taskId: string; criterionId: string; literal: string }[] = [];
+  const counts = new Map<string, { held: number; all: number }>();
+  for (const { task, c, prescribed, perRow } of prescribedCases(
+    spec,
+    graph,
+    request,
+    context,
+    true,
+  )) {
+    if (perRow === "none" && prescribed !== "none")
+      notPrescribed.push({ taskId: task.id, criterionId: c.criterionId, literal: c.literal });
+    if (prescribed !== "none") continue;
+    const count = counts.get(c.criterionId) ?? { held: 0, all: 0 };
+    count.all++;
+    if (perRow !== "none") count.held++;
+    counts.set(c.criterionId, count);
+  }
+  const noted = new Map<string, PerRowVerdict>();
+  for (const [id, { held, all }] of counts)
+    noted.set(id, held === all ? "held" : held === 0 ? "none" : "partial");
+  return { notPrescribed, noted };
+}
+
+/** The cases only the joined rows hold (`perRowReading`'s `notPrescribed`). */
 export function perRowNotPrescribed(
   spec: Spec,
   graph: Pick<TaskGraph, "tasks">,
   request: string,
   context: Pick<CaseContext, "checks">,
 ): { taskId: string; criterionId: string; literal: string }[] {
-  return prescribedCases(spec, graph, request, context, true).flatMap(
-    ({ task, c, prescribed, perRow }) =>
-      perRow === "none" && prescribed !== "none"
-        ? [{ taskId: task.id, criterionId: c.criterionId, literal: c.literal }]
-        : [],
-  );
+  return perRowReading(spec, graph, request, context).notPrescribed;
 }
 
 /**

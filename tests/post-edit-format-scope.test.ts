@@ -11,6 +11,7 @@ import { clearEditStacks, undoEditTool } from "../src/core/tools/edit-stack.js";
 import { multiEditTool } from "../src/core/tools/multi-edit.js";
 import { moveSymbolTool } from "../src/core/tools/move-symbol.js";
 import { autoFixFiles } from "../src/core/tools/post-edit-fix.js";
+import { formatFile } from "../src/core/tools/project.js";
 import { renameFileTool } from "../src/core/tools/rename-file.js";
 import { renameSymbolTool } from "../src/core/tools/rename-symbol.js";
 import { installRuffFormatter, pythonFormatProject } from "./helpers/post-edit-formatter.js";
@@ -161,6 +162,10 @@ describe("post-edit format scope (#1582)", () => {
     expect(existsSync(formatter.log)).toBe(false);
   });
 
+  // Biome's first start through `bunx` on a loaded Windows runner took over the 30 s a probe gets
+  // after an edit (#1177, #2265): the ast_edit probe and the clean-edit probe each timed out, and
+  // the clean edit read as not formatted (#2896). This test is about which probes format, so a
+  // warm-up format with the room of a cold start runs first and the probes below start warm.
   test("real Biome probes preserve dirty AST files, format clean edits and format new files", async () => {
     const root = mkdtempSync(join(tmpdir(), "baked-biome-scope-"));
     cleanups.push(() => removeTempDir(root));
@@ -171,6 +176,9 @@ describe("post-edit format scope (#1582)", () => {
     writeFileSync(join(root, "bun.lock"), "");
     writeFileSync(join(root, "biome.json"), "{}");
     symlinkSync(join(import.meta.dir, "../node_modules"), join(root, "node_modules"), "junction");
+    const warm = join(root, "warm.ts");
+    writeFileSync(warm, "export const warm={a:0}\n");
+    expect(await formatFile(warm, root, 80_000)).toBe(true);
     const file = join(root, "dirty.ts");
     const before = 'export const legacy={a:1}\nexport function greet() { return "hi"; }\n';
     writeFileSync(file, before);
@@ -186,7 +194,7 @@ describe("post-edit format scope (#1582)", () => {
     const fresh = join(root, "new.ts");
     expect((await runWithCwd(root, () => astEditTool.execute({ path: fresh, action: "create_file", newCode: "export const value={a:2}\n" }))).success).toBe(true);
     expect(readFileSync(fresh, "utf8")).toBe("export const value = { a: 2 };\n");
-  }, 90_000);
+  }, 180_000);
 
   for (const linkedRoot of [false, true]) {
     test(`rename_symbol carries separate baselines for the definition and its references${linkedRoot ? " through a linked root" : ""}`, async () => {

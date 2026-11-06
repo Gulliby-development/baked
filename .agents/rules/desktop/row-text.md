@@ -1,0 +1,1 @@
+The text cell of a desktop list row with actions takes `ROW_TEXT` from `screens/setup/shared.tsx` (a 240px basis in a wrapping row), never a zero-basis `flex-1`, so the actions wrap below before a command or path breaks into a narrow column (#2682).
