@@ -1,0 +1,39 @@
+name: PR shepherd
+
+# Lists stuck pull requests (conflicts, failing or hung checks, ready but outside the merge queue)
+# and open issues nobody has claimed, and rewrites one tracking issue with the list. The project's
+# shepherd loop reads that issue to fix the pull requests or hand them and the issues to a line.
+# It never enqueues: a queue entry made with the workflow token would never get its checks run.
+
+on:
+  schedule:
+    - cron: "41 */2 * * *"
+  workflow_dispatch:
+
+permissions:
+  checks: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: pr-shepherd
+  cancel-in-progress: true
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.4.3"
+
+      - name: Report stuck pull requests and unclaimed issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bun scripts/pr-shepherd.ts --publish
