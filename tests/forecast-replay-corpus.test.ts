@@ -751,13 +751,15 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
         dispose();
       }
     }
-    // Only README and LICENSE tasks change, from split to whole (eight documentation features). callmend's files then cost 268,807;
+    // Only README and LICENSE tasks change, from split to whole (ten documentation features). callmend's files then cost 268,807;
     // verhop's 614,482 over three tasks; manlens's 262,605.
     expect(changed).toEqual([
       "R61/manlens.sqlite.gz 25d4802d sizing/plan-0.json T001 README.md,LICENSE",
       "R74/callmend.sqlite.gz 1770c254 sizing/plan-0.json T001 README.md,LICENSE",
       "R75/latcell.sqlite.gz f4a5066f sizing/plan-0.json T001 README.md,LICENSE",
       "R75/maskback.sqlite.gz 13bb147b sizing/plan-0.json T001 README.md,LICENSE",
+      "R76/hintsieve.sqlite.gz 1068bc52 sizing/plan-0.json T001 README.md,LICENSE",
+      "R76/schemamask.sqlite.gz c2e8a97a sizing/plan-0.json T001 README.md,LICENSE",
       "R77/trailspin.sqlite.gz ae89f897 sizing/plan-0.json T001 README.md,LICENSE",
       "R79/verhop.sqlite.gz f0a2962f sizing/plan-0.json T001 README.md,LICENSE",
       "R81/ratdec.sqlite.gz 54d4c00f sizing/plan-0.json T001 README.md,LICENSE",
