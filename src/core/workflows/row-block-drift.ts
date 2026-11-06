@@ -159,6 +159,12 @@ export interface FileRowMeasure {
   matches: number[];
   /** The prescribed row nothing matches whose place it takes (a changed row), or null. */
   replaces: number | null;
+  /**
+   * True when the row matches no prescribed row and the file held it, byte for byte, before the
+   * run wrote it (#2969): a scaffold's placeholder row another feature replaces is not a row the
+   * run added. Absent otherwise, and in records before it.
+   */
+  base?: true;
 }
 
 /** File rows (their lines, from 1) beyond the block: the would-stop kinds `added`, `duplicated`. */
@@ -217,7 +223,10 @@ export function rowPlaces(fileRows: readonly FileRowMeasure[]): Map<number, numb
   return places;
 }
 
-/** Places each file row: unmatched (added unless it replaces a row), repeated, or out of order. */
+/**
+ * Places each file row: unmatched (added unless it replaces a row or the file held it before the
+ * run, #2969), repeated, or out of order.
+ */
 export type RowMoveRule = (fileRows: readonly FileRowMeasure[]) => RowMoves;
 export function rowMoveDecision(fileRows: readonly FileRowMeasure[]): RowMoves {
   const moves: RowMoves = { added: [], duplicated: [], reordered: [] };
@@ -225,7 +234,7 @@ export function rowMoveDecision(fileRows: readonly FileRowMeasure[]): RowMoves {
   let last = 0;
   for (const fileRow of fileRows) {
     if (!fileRow.matches.length) {
-      if (fileRow.replaces === null) moves.added.push(fileRow.line);
+      if (fileRow.replaces === null && !fileRow.base) moves.added.push(fileRow.line);
       continue;
     }
     const row = fileRow.matches.find((n) => !held.has(n));
@@ -718,7 +727,11 @@ function rowMatch(
  * prescribed rows it matches (exact matches first, else loose ones). A file row that matches none
  * takes the place of a prescribed row nothing holds when it shares the most literals with it.
  */
-export function measureFileRows(rows: readonly string[], file: string): FileRowMeasure[] {
+export function measureFileRows(
+  rows: readonly string[],
+  file: string,
+  base: string | null = null,
+): FileRowMeasure[] {
   const all = fileRowsOf(file).map((fileRow) => {
     const literals = meaningfulLiterals(fileRow.text);
     const exact: number[] = [];
@@ -734,12 +747,22 @@ export function measureFileRows(rows: readonly string[], file: string): FileRowM
     all.filter((r) => r.matches.length && r.literals.length >= 2).map((r) => r.fileRow.head),
   );
   const kept = all.filter((r) => heads.has(r.fileRow.head) && r.literals.length);
-  const measures: FileRowMeasure[] = kept.map((r) => ({
-    line: r.fileRow.line,
-    literals: r.literals.length,
-    matches: r.matches,
-    replaces: null,
-  }));
+  // The rows the file held before the run, by text, each held as often as the base holds it.
+  const before = new Map<string, number>();
+  for (const row of base === null ? [] : fileRowsOf(base))
+    before.set(row.text.trim(), (before.get(row.text.trim()) ?? 0) + 1);
+  const measures: FileRowMeasure[] = kept.map((r) => {
+    const text = r.fileRow.text.trim();
+    const held = !r.matches.length && (before.get(text) ?? 0) > 0;
+    if (held) before.set(text, (before.get(text) ?? 0) - 1);
+    return {
+      line: r.fileRow.line,
+      literals: r.literals.length,
+      matches: r.matches,
+      replaces: null,
+      ...(held ? { base: true as const } : {}),
+    };
+  });
   // The prescribed rows no file row holds, each paired with the unmatched file row that shares the
   // most of its literals (a row changed in place, which `missing` names).
   const held = new Set<number>();
@@ -753,7 +776,8 @@ export function measureFileRows(rows: readonly string[], file: string): FileRowM
     let best: { at: number; shared: number } | null = null;
     for (const [at, r] of kept.entries()) {
       const measure = measures[at];
-      if (!measure || measure.matches.length || measure.replaces !== null) continue;
+      // A row the file held before the run is no row the run changed in place (#2969).
+      if (!measure || measure.matches.length || measure.replaces !== null || measure.base) continue;
       const shared = r.literals.filter((l) => own.some((o) => sameLiteral(l, o))).length;
       if (shared && (!best || shared > best.shared)) best = { at, shared };
     }
@@ -767,7 +791,9 @@ const plainPath = (path: string) => path.trim().replace(/^(?:\.\/)+/, "");
 
 /**
  * For each test file the graph writes and the request prescribes rows for, its record and the
- * drifting rows, the file read through `read` (null: not there, which records no rows).
+ * drifting rows, the file read through `read` (null: not there, which records no rows). `base`
+ * reads the file as it was before the run wrote it (null: the run created it, or unknown), so a
+ * row the run left as it found it is never `added` (#2969).
  */
 export function rowBlockDrifts(
   request: string,
@@ -776,6 +802,7 @@ export function rowBlockDrifts(
   mode: RowBlockRecord["mode"] = "shadow",
   decide: RowBlockRule = rowBlockDecision,
   move: RowMoveRule = rowMoveDecision,
+  base: (path: string) => string | null = () => null,
 ): { record: RowBlockRecord; drifts: RowBlockDrift[]; extras: RowBlockExtra[] }[] {
   const writers = new Map<string, string[]>();
   for (const task of graph.tasks)
@@ -790,7 +817,7 @@ export function rowBlockDrifts(
   for (const [path, block] of suppliedRows(request, [...writers.keys()])) {
     const tasks = writers.get(path) ?? [];
     const file = read(path);
-    const fileRows = file === null ? [] : measureFileRows(block.lines, file);
+    const fileRows = file === null ? [] : measureFileRows(block.lines, file, base(path));
     const rows = file === null ? [] : measureRows(block.lines, file, fileRows);
     const drifting = decide(rows);
     const moves = move(fileRows);
