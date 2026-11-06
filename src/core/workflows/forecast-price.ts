@@ -28,17 +28,21 @@ export function runForecastStages(
   });
 }
 
-/** Sum stage costs. Unknown future prices leave the forecast unavailable rather than understated. */
+/**
+ * Sum stage costs. Unknown future prices leave the forecast unavailable rather than understated.
+ * `perProvider` prices each model at its own provider family's mix (`forecastRate`, #2963).
+ */
 export function forecastStageCost(
   samples: AttemptUsageRow[],
   stages: { id: string; models: string[]; tokens: number }[],
+  perProvider = false,
 ): number | null {
   let usd = 0;
   for (const stage of stages) {
     if (stage.tokens <= 0) continue;
     if (!stage.models.length) return null;
     for (const model of stage.models) {
-      const rate = forecastRate(samples, stage.id, model);
+      const rate = forecastRate(samples, stage.id, model, perProvider);
       if (rate === null) return null;
       usd += (stage.tokens / stage.models.length) * rate;
     }

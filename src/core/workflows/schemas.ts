@@ -579,6 +579,13 @@ export const PolicySchema = z
      */
     costForecast: z.enum(["ask", "advise", "off"]).optional(),
     /**
+     * Which token mix the cost forecast prices a stage without paid samples of its model at
+     * (#2963): `off` the blended mixes, `shadow` the same and records the forecast at each
+     * model's own provider family mix (with Claude's cache writes) beside it as `providerMix`,
+     * `on` shows that forecast. Absent means `shadow`, so stored policies keep their hash.
+     */
+    providerTokenMix: z.enum(["off", "shadow", "on"]).optional(),
+    /**
      * The mode of each registered stop reason (stop-reasons.ts): `shadow` and `advisory` record a
      * `decision.would_stop` event instead of stopping the run or declining the approval (#1714).
      * Hard limits on money, tokens, time and storage take only `enforce`. Absent keeps every

@@ -16,6 +16,66 @@ export const TASK_MIX: TokenMix = { input: 0.15, cacheRead: 0.8, output: 0.05 };
 export const stageMix = (stage: string): TokenMix =>
   stage === "implement" ? TASK_MIX : DEFAULT_MIX;
 
+/** A provider family's token mix: `TokenMix` plus the share written to the prompt cache. */
+export interface ProviderTokenMix extends TokenMix {
+  cacheWrite: number;
+}
+
+/**
+ * Which provider family a model ID belongs to, by its provider prefix: Claude Code and the Claude
+ * API pay for cache writes, Codex and OpenAI charge none and report none (#2963). Any other
+ * prefix is its own family.
+ */
+export function providerFamily(model: string): string {
+  const slash = model.indexOf("/");
+  const prefix = slash < 0 ? "" : model.slice(0, slash).toLowerCase();
+  const name = (slash < 0 ? model : model.slice(slash + 1)).toLowerCase();
+  if (prefix === "claude-code" || prefix === "anthropic" || (!prefix && name.startsWith("claude")))
+    return "claude";
+  if (prefix === "codex" || prefix === "openai" || (!prefix && /^(gpt|o\d)/.test(name)))
+    return "openai";
+  return prefix || name;
+}
+
+/**
+ * Claude task and other-stage mixes, measured from the Claude Code attempts of bench rounds R99
+ * to R102 (`claude-code` prefix): every input token is a cache read or a cache write. Task
+ * attempts read 68% and wrote 30% of their tokens, output 1.4%; single-call stages (research,
+ * specify, plan, review, converge) wrote 69%, read 23%, output 8%. `TASK_MIX` at a Claude price
+ * card left out the writes and priced R103's Claude tasks at about 35% under what they paid.
+ */
+const CLAUDE_TASK_MIX: ProviderTokenMix = {
+  input: 0,
+  cacheRead: 0.685,
+  cacheWrite: 0.3,
+  output: 0.015,
+};
+const CLAUDE_DEFAULT_MIX: ProviderTokenMix = {
+  input: 0,
+  cacheRead: 0.23,
+  cacheWrite: 0.69,
+  output: 0.08,
+};
+
+/**
+ * The mix a stage without samples of the model's own provider family is priced at (#2963): the
+ * Claude family's measured mixes with their cache-write share; every other family keeps
+ * `stageMix` with no cache writes. No provider's mix stands in for another's.
+ */
+export function providerTaskMix(model: string, stage: string): ProviderTokenMix {
+  if (providerFamily(model) === "claude")
+    return stage === "implement" ? CLAUDE_TASK_MIX : CLAUDE_DEFAULT_MIX;
+  return { ...stageMix(stage), cacheWrite: 0 };
+}
+
+/**
+ * `providerTokenMix` (#2963): `off` prices with the blended mixes, `shadow` (the default) keeps
+ * them and records the per-provider forecast beside the shown one, `on` shows the per-provider
+ * forecast.
+ */
+export type ProviderTokenMixMode = "off" | "shadow" | "on";
+export const DEFAULT_PROVIDER_TOKEN_MIX: ProviderTokenMixMode = "shadow";
+
 type StepTree = Map<string, { stage_id: string; parent_step_id: string | null }>;
 
 /** The run's steps by ID, for `costStageOf` calls that share one read. */
@@ -105,12 +165,14 @@ export function forecastSamples(
  * A new model uses the same stage's measured token mix at its own prices. Without stage samples,
  * use the stage's default mix (`stageMix`) rather than another stage's price: single-step planning
  * calls never read the cache, so their mix priced a task loop as uncached input (#1712). No
- * estimate margin belongs in this rate.
+ * estimate margin belongs in this rate. `perProvider` (#2963) measures the mix from the model's
+ * own provider family only and falls back to `providerTaskMix`, which counts cache writes.
  */
 export function forecastRate(
   samples: AttemptUsageRow[],
   stage: string,
   model: string,
+  perProvider = false,
 ): number | null {
   const priced = samples.filter(
     (a) => a.status !== "running" && a.costUsd !== null && (a.usedTokens ?? 0) > 0,
@@ -121,12 +183,15 @@ export function forecastRate(
   if (tokens > 0) return paid.reduce((sum, a) => sum + (a.costUsd ?? 0), 0) / tokens;
   const pricing = findPricing(model)?.pricing;
   if (!pricing) return null;
+  // Per provider (#2963), only the model's own provider family measures the mix.
+  const family = perProvider ? providerFamily(model) : null;
   let input = 0;
   let output = 0;
   let read = 0;
   let write = 0;
   for (const a of sameStage) {
     if (a.inputTokens === null || a.outputTokens === null) continue;
+    if (family !== null && (a.model === null || providerFamily(a.model) !== family)) continue;
     input += a.inputTokens;
     output += a.outputTokens;
     const cached = Math.min(a.inputTokens, a.cacheReadTokens ?? 0);
@@ -142,9 +207,14 @@ export function forecastRate(
       (input + output) /
       1e6
     );
-  const mix = stageMix(stage);
+  const mix: ProviderTokenMix = perProvider
+    ? providerTaskMix(model, stage)
+    : { ...stageMix(stage), cacheWrite: 0 };
   return (
-    (mix.input * pricing.input + mix.cacheRead * pricing.cacheRead + mix.output * pricing.output) /
+    (mix.input * pricing.input +
+      mix.cacheRead * pricing.cacheRead +
+      mix.cacheWrite * pricing.cacheWrite +
+      mix.output * pricing.output) /
     1e6
   );
 }
