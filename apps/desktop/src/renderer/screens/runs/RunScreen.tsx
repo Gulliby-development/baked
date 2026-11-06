@@ -38,7 +38,7 @@ import { Conveyor } from "./Conveyor.js";
 import { DecisionCard, FIELD_LABEL, STACK_FORM, TEXT_INPUT } from "./Decision.js";
 import { GateView } from "./GateView.js";
 import {
-  describe,
+  describeStation,
   focusStation,
   GATE_KIND,
   gatePlace,
@@ -787,7 +787,7 @@ function StationCard({
           {station.round > 1 ? ` · round ${station.round}` : ""}
         </span>
         <h3 className="m-0 text-[17px] font-bold">{station.label}</h3>
-        <p className="m-0 text-[13px] text-muted-foreground">{describe(station, loops)}</p>
+        <p className="m-0 text-[13px] text-muted-foreground">{describeStation(station, loops)}</p>
         <div className="flex flex-wrap items-center gap-2 text-[12px]">
           {takes.length > 0 && <span className="font-semibold">Takes</span>}
           {takes.map((name) =>

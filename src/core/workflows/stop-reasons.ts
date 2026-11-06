@@ -117,8 +117,9 @@ export const STOP_REASONS = {
     // Shadow only until two bench rounds show no false would-stop (#2280, R73 flatelens'
     // commands grew to 12.9M with 5.7M left). A bound derived from a plan charge is capped at
     // what the pool and the ceiling hold (`chargeHold`), and the run's own token growth
-    // (auto-growth, planning growth, auto-extend) is held at the pool less the other runs' use,
-    // enforced since the pool is a limit the person set (`WorkflowStore.tokenHold`, #2468: R79
+    // (auto-growth, planning growth, auto-extend) is held at the pool less the other runs'
+    // granted limits or use (#2481), enforced since the pool is a limit the person set
+    // (`WorkflowStore.tokenHold`, #2468: R79
     // deltaglue's chunks auto-extended past it, which this reason had recorded, a true record).
     // This still records a bound above them (a start's sizing ceilings, a dollar bound, an
     // auto-extend hard ceiling the other runs' later use passed). Its promotion stops or caps
@@ -192,9 +193,10 @@ export const STOP_REASONS = {
   repro_blind: {
     label:
       "A corrective's repro prints the same output after the attempt changed the finding's file, and reads a path outside its root",
-    // Shadow only until a bench round shows no false would-stop (#2287); its promotion makes such
-    // a repro inconclusive for the attempt instead of reproduced, so it no longer sends it back.
-    modes: NOT_ENFORCED,
+    // Shadow by default until a bench round shows a true would-stop and none false (#2287; R75
+    // recorded none at all). `stopModes: { repro_blind: "enforce" }` makes such a repro
+    // inconclusive for the attempt instead of reproduced, so it no longer sends it back.
+    modes: STOP_MODES,
     defaultMode: "shadow",
   },
   generated_case: {

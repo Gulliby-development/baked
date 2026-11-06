@@ -9,6 +9,7 @@ import {
   sweepProcessTempDirs,
 } from "../src/core/platform/process-temp.js";
 import { tmpDir } from "../src/core/platform/index.js";
+import { exitOnInput, pinPid, release } from "./helpers/pin-pid.js";
 import { removeTempDir } from "./helpers/temp-dir.js";
 
 const modulePath = join(import.meta.dir, "..", "src", "core", "platform", "process-temp.ts");
@@ -37,6 +38,8 @@ describe("process temp dirs (#2967)", () => {
     }
     const leaked = text.trim();
     expect(leaked.startsWith(join(tmpDir(), `${prefix}${child.pid}-`))).toBe(true);
+    // Windows could hand the killed child's PID to a new process, which the sweep reads as the owner.
+    const unpin = pinPid(child.pid);
     // SIGKILL: the child's exit hook never runs, as with a test timeout or a cancelled CI job.
     child.kill("SIGKILL");
     await child.exited;
@@ -47,6 +50,7 @@ describe("process temp dirs (#2967)", () => {
       expect(existsSync(leaked)).toBe(false);
       expect(existsSync(mine)).toBe(true);
     } finally {
+      unpin();
       await removeTempDir(mine);
     }
   });
@@ -83,8 +87,14 @@ describe("process temp dirs (#2967)", () => {
 
   test("processAlive tells this process from one that has exited", async () => {
     expect(processAlive(process.pid)).toBe(true);
-    const child = Bun.spawn([process.execPath, "-e", "0"]);
-    await child.exited;
-    expect(processAlive(child.pid)).toBe(false);
+    const child = Bun.spawn([process.execPath, "-e", exitOnInput("")], { stdin: "pipe" });
+    const unpin = pinPid(child.pid);
+    try {
+      release(child);
+      await child.exited;
+      expect(processAlive(child.pid)).toBe(false);
+    } finally {
+      unpin();
+    }
   });
 });
