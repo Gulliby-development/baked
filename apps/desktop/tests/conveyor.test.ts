@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { WorkflowLine } from "../src/renderer/client/start.ts";
 import {
-  describe as describeStation,
+  describeStation,
   FINISH,
   focusStation,
   gateMarks,

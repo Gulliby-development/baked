@@ -279,7 +279,7 @@ const OUTCOME: Record<string, string> = {
 };
 
 /** One plain sentence on what the station does. */
-export function describe(station: Station, loops: readonly LineLoop[]): string {
+export function describeStation(station: Station, loops: readonly LineLoop[]): string {
   const back = loops.find((l) => l.from === station.id && l.to !== station.id);
   const sendsBack = back
     ? ` When it ${OUTCOME[back.on] ?? back.on.replaceAll("_", " ")}, its ${back.carries} contract goes back to ${stageLabel(back.to)}.`
