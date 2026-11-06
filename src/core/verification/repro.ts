@@ -5,6 +5,7 @@ import { z } from "zod";
 import { commentOnlyChange } from "../intelligence/comments.js";
 import type { SandboxRequest } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
+import { isDocumentationPath } from "../workflows/affected-tests.js";
 import { BATTERY_CASES } from "../workflows/finding-chain.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
 import { ProbeSchema, type Repro, ReproSchema, type Review } from "../workflows/schemas.js";
@@ -12,7 +13,8 @@ import type { HostTool } from "../workflows/types.js";
 import { fileArgs, recordCommandTimeout } from "./command-timeouts.js";
 import { caseCrash } from "./edge-inputs.js";
 import { entryPointCommand } from "./entry-points.js";
-import { confidenceOnlyNote } from "./findings.js";
+import { confidenceOnlyNote, type FindingLabels } from "./findings.js";
+import { inRunWorktrees, pathPattern, type RunRoots, runWorktreePattern } from "./run-roots.js";
 import { changedPaths, sourceManifest } from "./snapshot.js";
 
 /** Time a repro may run; it shows one input, not a test suite. */
@@ -194,7 +196,23 @@ function throughEntryPoint(
 /** The `.baked/worktrees/<run>/<name>` tail of a run worktree's root, anchored at its separator. */
 const WORKTREE_TAIL = /[\\/]\.baked[\\/]worktrees[\\/][^\\/"'`\s]+[\\/][^\\/"'`\s]+/g;
 const slashes = (path: string) => path.replace(/\\/g, "/");
-const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The workspace a run root belongs to, forward slashes: `run`'s workspace when the root is one of
+ * its worktrees (under `workflows.worktreeRoot` too, #2697), else the part before
+ * `.baked/worktrees`, which is the root itself when it is no run worktree.
+ */
+function workspaceOf(root: string, run: RunRoots | undefined): string {
+  if (inRunWorktrees(root, run)) return slashes(run?.workspace ?? root).replace(/\/$/, "");
+  return slashes(root).split("/.baked/worktrees/")[0] ?? slashes(root);
+}
+
+/** `path` relative to `base`, forward slashes, when it is strictly inside it; else null. */
+function relativeInside(base: string, path: string): string | null {
+  const from = `${slashes(base).replace(/\/$/, "")}/`;
+  const to = slashes(path);
+  return to.toLowerCase().startsWith(from.toLowerCase()) ? to.slice(from.length) : null;
+}
 
 /**
  * The repro's text with `{root}` and every other root of the run replaced by `root`, the root the
@@ -203,12 +221,15 @@ const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&
  * while the corrective ran in `.../worktrees/<run>/T003`, so the probe built the unchanged code and
  * reproduced after every fix (2.45M tokens). Another run worktree's root, and the workspace a
  * worktree belongs to, are rewritten; the spelling keeps the text's slashes, and `{root}` in file
- * content takes forward slashes, which every toolchain reads on Windows too.
+ * content takes forward slashes, which every toolchain reads on Windows too. `run` names the run's
+ * worktree directory, which under `workflows.worktreeRoot` has no `.baked/worktrees` spelling
+ * (#2697); without it only that spelling is found.
  */
 export function rerootRepro(
   text: string,
   root: string,
   forContent: boolean,
+  run?: RunRoots,
 ): { text: string; rewritten: string[] } {
   const rewritten: string[] = [];
   const own = slashes(root).toLowerCase();
@@ -219,7 +240,7 @@ export function rerootRepro(
   };
   let out = text.replaceAll("{root}", forContent ? slashes(root) : root);
   // The workspace the root belongs to (the root itself when it is no run worktree).
-  const workspace = slashes(root).split("/.baked/worktrees/")[0] ?? slashes(root);
+  const workspace = workspaceOf(root, run);
   // Each worktree of that workspace: a worktree tail right after the workspace's own spelling.
   let joined = "";
   let last = 0;
@@ -233,10 +254,19 @@ export function rerootRepro(
     last = end;
   }
   out = joined + out.slice(last);
+  // Each worktree of the run in its own directory, under `workflows.worktreeRoot` too (#2697).
+  const others = runWorktreePattern(run);
+  if (others) out = out.replace(others, swap);
   // The workspace itself, when the repro runs in one of its worktrees.
   if (workspace !== slashes(root)) {
+    // A worktree directory inside the workspace starts a run root, which is already rewritten.
+    const inside = run?.worktrees ? relativeInside(workspace, run.worktrees) : null;
+    const worktreeDirs = [
+      "[\\\\/]\\.baked[\\\\/]worktrees",
+      ...(inside ? [`[\\\\/]${pathPattern(inside)}`] : []),
+    ].join("|");
     const spelled = new RegExp(
-      `${escapeRegExp(workspace).replace(/\//g, "[\\\\/]")}(?![\\\\/]\\.baked[\\\\/]worktrees)(?=$|[\\\\/"'\`\\s])`,
+      `${pathPattern(workspace)}(?!${worktreeDirs})(?=$|[\\\\/"'\`\\s])`,
       "gi",
     );
     out = out.replace(spelled, swap);
@@ -258,16 +288,21 @@ const NEUTRAL = /^(?:\/dev\/|\/proc\/|\{files\})/;
  * reads code there, which no correction in `root` changes. `{root}` and `{files}` are the host's
  * own placeholders and never count.
  */
-export function reproOutsidePaths(repro: Pick<Repro, "args" | "files">, root: string): string[] {
+export function reproOutsidePaths(
+  repro: Pick<Repro, "args" | "files">,
+  root: string,
+  run?: RunRoots,
+): string[] {
   // The run's workspace holds every root of the run, its worktrees too (a spelling `rerootRepro`
-  // cannot rewrite, such as one a string literal escapes, still names the run's own code).
-  const own = (slashes(root).split("/.baked/worktrees/")[0] ?? slashes(root))
-    .replace(/\/$/, "")
-    .toLowerCase();
+  // cannot rewrite, such as one a string literal escapes, still names the run's own code), and
+  // under `workflows.worktreeRoot` the run's worktree directory holds them (#2697).
+  const owns = [workspaceOf(root, run), ...(run?.worktrees ? [slashes(run.worktrees)] : [])].map(
+    (path) => path.replace(/\/$/, "").toLowerCase(),
+  );
   // What the repro runs: another root of the run is rewritten to `root` first (#2279).
   const texts = [
-    ...repro.args.map((arg) => rerootRepro(arg, root, false).text),
-    ...(repro.files ?? []).map((f) => rerootRepro(f.content, root, true).text),
+    ...repro.args.map((arg) => rerootRepro(arg, root, false, run).text),
+    ...(repro.files ?? []).map((f) => rerootRepro(f.content, root, true, run).text),
   ];
   const found = new Set<string>();
   for (const text of texts)
@@ -275,7 +310,8 @@ export function reproOutsidePaths(repro: Pick<Repro, "args" | "files">, root: st
       // A string literal in the probe's code spells a Windows separator `\\`.
       const path = (match[1] ?? "").replace(/\\\\/g, "\\");
       const spelled = slashes(path).toLowerCase();
-      if (NEUTRAL.test(path) || spelled === own || spelled.startsWith(`${own}/`)) continue;
+      const inOwn = owns.some((own) => spelled === own || spelled.startsWith(`${own}/`));
+      if (NEUTRAL.test(path) || inOwn) continue;
       found.add(path);
     }
   return [...found].sort();
@@ -320,11 +356,13 @@ export async function runRepro(
      * file that is a copy of one of them makes the repro inconclusive without running it.
      */
     shadows?: readonly string[];
+    /** The run's workspace and worktree directory (`runRoots`), so another root of it is found. */
+    run?: RunRoots;
   },
 ): Promise<ReproOutcome> {
   const rewritten = new Set<string>();
   const reroot = (text: string, forContent: boolean) => {
-    const result = rerootRepro(text, options.root, forContent);
+    const result = rerootRepro(text, options.root, forContent, options.run);
     for (const path of result.rewritten) rewritten.add(path);
     return result.text;
   };
@@ -450,6 +488,32 @@ export function reproAllows(
   const exempt = finding.kind === "security" || finding.severity === "critical";
   if (outcome === "inconclusive") return exempt;
   return exempt || finding.kind !== "correctness";
+}
+
+/** Whether a finding's file is documentation (README, Markdown, reStructuredText, AsciiDoc, a changelog). */
+export const documentationFinding = (file: string | null | undefined): boolean =>
+  !!file && isDocumentationPath(file);
+
+/**
+ * Whether a documentation finding repairs as a `partial` one would, whatever kind the reviewer
+ * gave it (#2835): based on the spec, at or above the minimum confidence, marked `noRepro` and on a
+ * documentation file. A README claim has no command that shows it, so `reproAllows` keeps a
+ * `correctness` one a note while the same defect called `partial` repairs; R91 stopcut shipped its
+ * escape reference with doubled backslashes that way. A repro the host refuted still keeps it a
+ * note. The review and converge gates decide it in shadow (`doc_finding_unrepaired`).
+ */
+export function docFindingRepairs(
+  finding: FindingLabels & { noRepro?: boolean; doc?: boolean },
+  outcome: ReproOutcome["status"] | undefined,
+  minConfidence: number,
+): boolean {
+  return (
+    finding.doc === true &&
+    finding.noRepro === true &&
+    (finding.basis ?? "spec") === "spec" &&
+    (finding.confidence ?? 1) >= minConfidence &&
+    outcome !== "refuted"
+  );
 }
 
 /**

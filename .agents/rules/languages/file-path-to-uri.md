@@ -1,0 +1,1 @@
+A language-server document URI is built only by `filePathToUri` and read back only by `uriToFilePath` (`src/core/intelligence/backends/lsp/protocol.ts`), never by string concatenation or `replace("file://", "")`: a Windows drive path needs the empty authority of `file:///C:/x`, and a URI's percent-escapes must be decoded.

@@ -184,6 +184,11 @@ const StartInput = z
     autoPreset: z.boolean().optional(),
     modelStrict: z.boolean().optional(),
     maxCostUsd: z.number().positive().finite().optional(),
+    /** The labelled provider accounts the run uses instead of the project's (#2303). */
+    accounts: z
+      .object({ codex: z.string().optional(), "claude-code": z.string().optional() })
+      .strict()
+      .optional(),
   })
   .strict();
 const ctx = createWorkerHandler(
@@ -308,6 +313,7 @@ const ctx = createWorkerHandler(
         ...(request.rowsAsData ? { rowsAsData: request.rowsAsData } : {}),
         ...(request.modelStrict ? { modelStrict: true } : {}),
         ...(request.maxCostUsd !== undefined ? { maxCostUsd: request.maxCostUsd } : {}),
+        ...(request.accounts ? { accounts: request.accounts } : {}),
       });
       const controller = new AbortController();
       controllers.set(id, controller);

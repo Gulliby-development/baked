@@ -190,7 +190,9 @@ export function errorRecovery(error: unknown): RecoveryAdvice | undefined {
 /**
  * A blocked `invalid_output` stop whose advice offers no plain resume: the repeat guard would
  * refuse one (`repeatsInvalidOutput`), so the run views offer a switch of the model instead of a
- * retry (#2201).
+ * retry (#2201). Only advice that offers that switch (`reroute`) is such a stop: a refusal of
+ * acceptance offers its own remedies and no resume, and a model switch changes no host predicate
+ * (#2879).
  */
 export function retryRefused(
   run: { status: string; reason?: string | null },
@@ -199,7 +201,7 @@ export function retryRefused(
   return (
     run.status === "blocked" &&
     run.reason === "invalid_output" &&
-    !!advice?.remedies.length &&
+    !!advice?.remedies.some((remedy) => remedy.action === "reroute") &&
     !advice.remedies.some((remedy) => remedy.action === "resume")
   );
 }

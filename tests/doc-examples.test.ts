@@ -22,6 +22,7 @@ import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import { ReproSchema } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, workflowFixture } from "./helpers/workflow-fixture.js";
+import { newId } from "../src/core/workflows/store.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -417,4 +418,55 @@ describe("review stage", () => {
     ]);
     expect(fixture.executor.reviews.filter((r) => r.text)).toHaveLength(1);
   });
+
+  // Bench round 97 holefill (#2921). The docs feature's README kept `NAME xN default \"DEFAULT\"`,
+  // the escaped form the upstream reports spec quotes; the run's own spec holds no such literal,
+  // so the correctness reviewer got no documentedText for it. The request and the upstream specs
+  // its worktree holds (`baseFiles`) are sources too.
+  const literal = '"NAME xN default \\"DEFAULT\\""';
+  const readme = ["# holefill", "", "Defaults show between quote marks, without escaping: `NAME xN default \\\"DEFAULT\\\"`."].join("\n");
+  const cases: [string, string, { path: string; content: string }[]][] = [
+    ["an upstream feature's spec", "Create ready value", [{ path: "specs/reports/spec.md", content: `# Reports\n\n- Then it prints ${literal} for a hole with a default.\n` }]],
+    ["the request", `Create ready value. A hole with a default prints ${literal}.`, []],
+  ];
+  for (const [source, prompt, baseFiles] of cases)
+    test(`the correctness reviewer gets a README span that keeps an escape of ${source} (#2921)`, async () => {
+      class ReadmeRun extends FixtureExecutor {
+        service: ReturnType<typeof workflowFixture>["service"] | null = null;
+        reviews: { dimension: string; text?: DocTextProblem[] }[] = [];
+        constructor(private dir: string) {
+          super(dir);
+        }
+        override async execute(request: ExecutionRequest) {
+          if (request.profile.output === "implementation" && this.service) {
+            const service = this.service;
+            const before = service.store.transaction(() => capturePreImage(service.store, request.runId, join(this.dir, "README.md")));
+            service.scheduler.journal.publish(request.runId, request.attemptId, "README.md", readme, before, "file_patch");
+          }
+          if (request.profile.output === "review") {
+            const data = JSON.parse(request.prompt.split("\n").at(-1) ?? "{}") as {
+              extra: { dimension: string; documentedText?: DocTextProblem[] };
+            };
+            this.reviews.push({ dimension: data.extra.dimension, ...(data.extra.documentedText ? { text: data.extra.documentedText } : {}) });
+          }
+          const result = await super.execute(request);
+          if (request.profile.output === "plan")
+            (result.output as { taskGraph: { tasks: { writes: { path: string; action: string }[] }[] } }).taskGraph.tasks[0]?.writes.push({ path: "README.md", action: "create" });
+          return result;
+        }
+      }
+      const fixture = workflowFixture({ executor: (root) => new ReadmeRun(root) });
+      cleanups.push(fixture.dispose);
+      fixture.executor.service = fixture.service;
+      const run = await fixture.service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt, ownerLabel: "test", policy: fixture.policy });
+      // An initiative feature's run gets its upstream specs at start (`baseFiles`, #2046).
+      if (baseFiles.length) fixture.service.store.saveState(run.runId, { ...fixture.service.store.state(run.runId), baseFiles });
+      await fixture.service.drive(run.runId, new AbortController().signal);
+      await fixture.approve(run.runId);
+      await fixture.service.drive(run.runId, new AbortController().signal);
+      const correctness = fixture.executor.reviews.find((r) => r.dimension === "correctness");
+      expect(correctness?.text).toEqual([
+        { file: "README.md", line: 3, kind: "escaped_literal", span: 'NAME xN default \\"DEFAULT\\"', suggested: 'NAME xN default "DEFAULT"' },
+      ]);
+    });
 });

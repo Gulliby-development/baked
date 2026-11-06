@@ -65,6 +65,11 @@ export type SettingDefinition = SettingBase &
      * each with an optional `maxChars`; null means none. The whole source is one value.
      */
     | { type: "library-docs"; default: null }
+    /**
+     * A folder on the machine: absolute, starting with `~`, or relative to the project; null means
+     * unset. `placeholder` is an example value for the editors.
+     */
+    | { type: "path"; default: null; placeholder: string }
   );
 
 export type SettingType = SettingDefinition["type"];
@@ -145,7 +150,7 @@ export const SETTING_PAGES: readonly SettingPage[] = [
     id: "code-quality",
     title: "Code quality",
     description:
-      "Quality gates of workflow runs. New runs take these defaults and keep them until they finish.",
+      "Quality gates and worktrees of workflow runs. New runs take these defaults and keep them until they finish.",
     command: "/code-quality",
   },
   {
@@ -1163,6 +1168,33 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.hostApplyPartial",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Partial host apply of a task",
+    help: "When one file of a task the host would write from the request (verbatim content under host apply, prescribed rows under the host-written row file) declines, the host writes the task's other files and a session gets only the declined files to write; the host-written files are the session's read hints.",
+    scopes: BOTH,
+    type: "enum",
+    default: "shadow",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "A session writes every file of the task, and nothing is recorded.",
+      },
+      {
+        value: "shadow",
+        label: "shadow",
+        help: "A session writes every file of the task; the host records which files it would write and which the session would get.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Write the files the host can and give the session only the declined ones.",
+      },
+    ],
+  },
+  {
     id: "quality.defectClasses",
     page: "code-quality",
     section: "Workflow runs",
@@ -1371,6 +1403,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.conflictRowReply",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Answer a conflict about prescribed test rows with the row diff",
+    help: "When a task reports that a test file whose rows the request prescribes contradicts the program, the host compares the file with the request's rows. With this on, a file that does not keep a row as given gets a reply naming the row and the literal it lacks, and the request's rows win, instead of a model settle. Off records the reply it would send.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "The conflict takes the other settles; the host records the row diff it would reply with.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Reply with the row diff and keep the request's rows.",
+      },
+    ],
+  },
+  {
     id: "quality.rowRunRestore",
     page: "code-quality",
     section: "Workflow runs",
@@ -1464,6 +1518,17 @@ export const SETTINGS: readonly SettingDefinition[] = [
     scopes: BOTH,
     type: "library-docs",
     default: null,
+  },
+  {
+    id: "workflows.worktreeRoot",
+    page: "code-quality",
+    section: "Worktrees",
+    label: "Worktree folder",
+    help: "Where new worktree runs keep their worktrees: <folder>/<8 hex digits>/main, beside the project on its drive. Not set, they live in the project's .baked/worktrees. On Windows a short folder such as C:\\.bk keeps a task's checks under the path length a toolchain handles (dart test fails past about 90 characters). A run keeps the folder its worktree was created in.",
+    scopes: BOTH,
+    type: "path",
+    default: null,
+    placeholder: "C:\\.bk",
   },
   {
     id: "coordinator.workStyle",

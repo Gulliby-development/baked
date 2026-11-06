@@ -171,13 +171,88 @@ const BYTEMERGE: WriteShape = {
   written: encodeFile(ENCODE_ROWS),
 };
 
+// sseknit (Rust, R84) parse: `(input, events)` tuples in a `const` array; rustfmt's layout.
+const SSE_PATH = "tests/parse_rows.rs";
+const sseFile = (rows: string[]) =>
+  ["use sseknit::parse;", "", "const ROWS: &[(&str, &[&str])] = &[", ...rows.map((r) => `    ${r},`), "];", "", "#[test]", "fn rows() {", "    for (input, events) in ROWS {", "        assert_eq!(parse(input), *events);", "    }", "}", ""].join("\n");
+const SSE_ROWS = ['("data: a\\n\\n", &["a"])', '(": comment\\n\\ndata: b\\n\\n", &["b"])', '("data: x\\ndata: y\\n\\n", &["x\\ny"])', '("event: tick\\ndata: 1\\n\\n", &["1"])'];
+const SSEKNIT: WriteShape = {
+  path: SSE_PATH,
+  reference: { path: "tests/scaffold_rows.rs", text: sseFile(['("", &[])']) },
+  block: [`ParseRows in ${SSE_PATH} (4 rows, (input, events))`, ...SSE_ROWS],
+  written: sseFile(SSE_ROWS),
+};
+
+// wrapsmith (PowerShell, R84) cols: Pester `-TestCases @(` hashtables, one per line, no separator,
+// PowerShell's own escapes (`` `n ``).
+const COLS_PATH = "tests/Cols.Tests.ps1";
+const colsFile = (rows: string[]) =>
+  ["BeforeAll {", '    . "$PSScriptRoot/../src/Cols.ps1"', "}", "", "Describe 'cols' {", "    It 'cols <Argv>' -TestCases @(", ...rows.map((r) => `        ${r}`), "    ) {", "        $Stdin | Invoke-Cols @Argv | Should -BeExactly $Out", "    }", "}", ""].join("\n");
+const COLS_ROWS = ["@{ Argv = @('3'); Stdin = \"abc def ghi`n\"; Out = \"abc`ndef`nghi`n\" }", "@{ Argv = @('5'); Stdin = \"a b c`n\"; Out = \"a b c`n\" }", "@{ Argv = @('1'); Stdin = \"it's`n\"; Out = \"it's`n\" }"];
+const WRAPCOLS: WriteShape = {
+  path: COLS_PATH,
+  reference: { path: "tests/Scaffold.Tests.ps1", text: colsFile(["@{ Argv = @(); Stdin = ''; Out = '' }"]) },
+  block: [`cols rows in ${COLS_PATH} (3 rows, @{ Argv; Stdin; Out })`, ...COLS_ROWS],
+  written: colsFile(COLS_ROWS),
+};
+
+// csp (ReScript, R85) cli: `Harness.row(...)` calls, two spaces, a comma after every row.
+const CSP_PATH = "tests/CliTest.res";
+const cspFile = (rows: string[]) => ["let rows = [", ...rows.map((r) => `  ${r},`), "]", "", "Harness.run(rows)", ""].join("\n");
+const CSP_ROWS = ['Harness.row(["--help"], "", 0, "usage: csp [--strict] FILE\\n", "")', 'Harness.row(["--version"], "", 0, "csp 1.0\\n", "")', 'Harness.row(["--nope"], "", 2, "", "csp: unknown option --nope\\n")'];
+const CSP: WriteShape = {
+  path: CSP_PATH,
+  reference: { path: "tests/ScaffoldTest.res", text: cspFile(['Harness.row([], "", 0, "", "")']) },
+  block: [`CliTest in ${CSP_PATH} (3 rows, Harness.row(args, stdin, code, out, err))`, ...CSP_ROWS],
+  written: cspFile(CSP_ROWS),
+};
+
+// Ruby (minitest): arrays in a `ROWS = [` list; rubocop's layout puts no comma after the last row.
+const RB_PATH = "test/split_rows_test.rb";
+const rbFile = (rows: string[]) =>
+  ['require "minitest/autorun"', 'require_relative "../lib/split"', "", "class SplitRowsTest < Minitest::Test", "  ROWS = [", ...rows.map((r, i) => `    ${r}${i === rows.length - 1 ? "" : ","}`), "  ].freeze", "", "  def test_rows", "    ROWS.each { |input, out| assert_equal out, Split.split(input) }", "  end", "end", ""].join("\n");
+const RB_ROWS = ['["a,b", ["a", "b"]]', '["a,,b", ["a", "", "b"]]', '["\\"q,r\\",s", ["q,r", "s"]]'];
+const RBSPLIT: WriteShape = {
+  path: RB_PATH,
+  reference: { path: "test/scaffold_test.rb", text: rbFile(['["", []]', '[",", ["", ""]]']) },
+  block: [`SplitRows in ${RB_PATH} (3 rows, [input, out])`, ...RB_ROWS],
+  written: rbFile(RB_ROWS),
+};
+
+// Swift (XCTest): tuples in a `let rows: [(...)] = [` list; swift-format's layout.
+const SW_PATH = "Tests/SplitTests/SplitRowsTests.swift";
+const swFile = (rows: string[]) =>
+  ["import Split", "import XCTest", "", "final class SplitRowsTests: XCTestCase {", "  let rows: [(String, [String])] = [", ...rows.map((r) => `    ${r},`), "  ]", "", "  func testRows() {", "    for (input, out) in rows {", "      XCTAssertEqual(split(input), out)", "    }", "  }", "}", ""].join("\n");
+const SW_ROWS = ['("a,b", ["a", "b"])', '("a,,b", ["a", "", "b"])', '("\\(1),\\t", ["\\(1)", "\\t"])'];
+const SWSPLIT: WriteShape = {
+  path: SW_PATH,
+  reference: { path: "Tests/SplitTests/ScaffoldTests.swift", text: swFile(['("", [])']) },
+  block: [`SplitRows in ${SW_PATH} (3 rows, (input, out))`, ...SW_ROWS],
+  written: swFile(SW_ROWS),
+};
+
+// Lua (busted): tables in a list; stylua's layout (tabs, a comma after every row).
+const LUA_PATH = "spec/split_rows_spec.lua";
+const luaFile = (rows: string[]) =>
+  ['local split = require("split")', "", "local rows = {", ...rows.map((r) => `\t${r},`), "}", "", 'describe("split", function()', "\tfor _, row in ipairs(rows) do", "\t\tit(row[1], function()", "\t\t\tassert.are.same(row[2], split(row[1]))", "\t\tend)", "\tend", "end)", ""].join("\n");
+const LUA_ROWS = ['{ "a,b", { "a", "b" } }', '{ "a,,b", { "a", "", "b" } }', '{ "a\\tb", { "a\\tb" } }'];
+const LUASPLIT: WriteShape = {
+  path: LUA_PATH,
+  reference: { path: "spec/scaffold_spec.lua", text: luaFile(['{ "", {} }']) },
+  block: [`SplitRows in ${LUA_PATH} (3 rows, { input, out })`, ...LUA_ROWS],
+  written: luaFile(LUA_ROWS),
+};
+
+/** The #2553 part A languages: each row's shape case, fixed point and scenario. */
+const PART_A: Record<string, WriteShape> = { rust: SSEKNIT, powershell: WRAPCOLS, rescript: CSP, ruby: RBSPLIT, swift: SWSPLIT, lua: LUASPLIT };
+
 const rowsOf = (shape: WriteShape) => shape.block.slice(1);
 const plan = (shape: WriteShape, text = shape.reference.text, source: "file" | "reference" = "reference") =>
   rowFilePlan(shape.path, rowsOf(shape), { source, text });
 const OK: Omit<RowFileInputs, "count"> = { language: true, shape: "reference", runs: 1, oneLine: true, sameHead: true, arity: true, separated: true };
 
 describe("rowFilePlan: the host writes a prescribed row file from its shape (#2528)", () => {
-  for (const [name, shape] of Object.entries({ "c deflate": TINYFLATE, "c macro": INFLATE, "dart slotprompt": SLOTPROMPT, "cpp pnmforge": PNMFORGE, "java bytemerge": BYTEMERGE }))
+  for (const [name, shape] of Object.entries({ "c deflate": TINYFLATE, "c macro": INFLATE, "dart slotprompt": SLOTPROMPT, "cpp pnmforge": PNMFORGE, "java bytemerge": BYTEMERGE, ...PART_A }))
     test(`${name}: the reference's preamble and epilogue around one prescribed row per line`, () => {
       const { inputs, content } = plan(shape);
       expect(inputs).toEqual({ count: rowsOf(shape).length, ...OK });
@@ -219,12 +294,43 @@ describe("rowFilePlan: the host writes a prescribed row file from its shape (#25
     expect(rowFilePlan("tests/header_test.cpp", headers, { source: "reference", text: table(['{"", 0, 0}']) }).content).toBe(table(headers));
   });
 
-  test("Java: a `Stream.of(` with one row gives no separator between rows, its `));` closes the list", () => {
+  test("Java: a `Stream.of(` with one row is the list's last row, its `));` closes the list (#2930)", () => {
     const one = BYTEMERGE.reference.text.replace('        Arguments.of("x", "[120]"),\n', "");
-    const { inputs } = rowFilePlan(ENCODE_PATH, rowsOf(BYTEMERGE), { source: "reference", text: one });
-    expect(rowFileRefusal(ENCODE_PATH, inputs)).toContain("no separator");
+    const { inputs, content } = rowFilePlan(ENCODE_PATH, rowsOf(BYTEMERGE), { source: "reference", text: one });
+    expect(rowFileRefusal(ENCODE_PATH, inputs)).toBeNull();
+    // The rows before the last take the list's `,`, never the `;` of its close.
+    expect(content).toBe(BYTEMERGE.written);
     // One prescribed row takes the one row's place, close and all.
     expect(rowFilePlan(ENCODE_PATH, rowsOf(BYTEMERGE).slice(0, 1), { source: "reference", text: one }).content).toBe(encodeFile(rowsOf(BYTEMERGE).slice(0, 1)));
+  });
+
+  test("Rust: rstest `#[case(...)]` rows need no separator, so one case is a shape; call statements and struct literals", () => {
+    const rstest = (rows: string[]) =>
+      ["use rstest::rstest;", "", "#[rstest]", ...rows, "fn cli(#[case] args: &[&str], #[case] code: i32, #[case] out: &str) {", "    assert_eq!(run(args), (code, out.to_string()));", "}", ""].join("\n");
+    const cases = ['#[case(&["cols", "3"], 0, "abc\\ndef\\n")]', '#[case(&["--help"], 0, "usage: sseknit <command>\\n")]', '#[case(&[], 2, "")]'];
+    const one = rowFilePlan("tests/cli.rs", cases, { source: "reference", text: rstest(['#[case(&[], 0, "")]']) });
+    expect(one.inputs).toEqual({ count: 3, ...OK });
+    expect(one.content).toBe(rstest(cases));
+    // `#[rstest]` and the `#[case]` parameters are no rows; a case's arguments are its call's.
+    expect(rowArity(cases[0] ?? "")).toBe(3);
+    // A call statement per row in a test function.
+    const calls = (rows: string[]) => ["#[test]", "fn cli_rows() {", ...rows.map((r) => `    ${r};`), "}", ""].join("\n");
+    const callRows = ['row(&["cols", "3"], "abc def\\n", 0, "abc\\ndef\\n", "")', 'row(&["--help"], "", 0, "usage\\n", "")'];
+    expect(rowFilePlan("tests/cli.rs", callRows, { source: "reference", text: calls(['row(&[], "", 0, "", "")']) }).content).toBe(calls(callRows));
+    // sseknit's struct literals (`Row { input, events }`): two fields each.
+    expect(rowArity(PLACE_PARSE_ROWS[0] ?? "")).toBe(2);
+    expect(rowFilePlan(PLACE_PARSE_PATH, PLACE_PARSE_ROWS, { source: "reference", text: placeParseFile(['Row { input: "", events: &[] }']) }).content).toBe(placeParseFile(PLACE_PARSE_ROWS));
+  });
+
+  test("PowerShell: a helper's command rows (R84 wrapsmith) are written; the request's notation rows are not", () => {
+    expect(rowArity(WRAP_CALLS[0] ?? "")).toBe(9);
+    const one = rowFilePlan(WRAP_PATH, WRAP_CALLS, { source: "reference", text: wrapFile(["Row @() -Stdin '' -Code 0 -Out '' -Err ''"]) });
+    expect(one.inputs).toEqual({ count: 2, ...OK });
+    expect(one.content).toBe(WRAPSMITH.written);
+    // `run "cols" "3" stdin="..." => 0 "..." ""` is the request's notation: the session translates it (#2583).
+    const notation = rowFilePlan(WRAP_PATH, WRAP_ROWS, { source: "reference", text: wrapFile(["Row @() -Stdin '' -Code 0 -Out '' -Err ''"]) });
+    expect(rowFileRefusal(WRAP_PATH, notation.inputs)).toContain("one row head");
+    expect(notation.content).toBeNull();
   });
 
   test("a shape the host cannot read declines with its reason", () => {
@@ -238,12 +344,13 @@ describe("rowFilePlan: the host writes a prescribed row file from its shape (#25
     expect(refusal(deflateFile(['{ "00", "0300", 0 }']))).toContain("argument count");
     // A row spread over lines.
     expect(refusal(deflateFile(['{ "00",\n    "0300" }']))).toContain("spreads a row");
-    // One row with no separator: the separator between rows is not known.
-    expect(refusal(['  rows([', '    row(["a"], "", 0, "", "")', "  ])", ""].join("\n"), ['row(["b"], "", 0, "", "")', 'row(["c"], "", 0, "", "")'], "test/eval_rows_test.exs")).toContain("no separator");
+    // One statement row with no separator: the separator between rows is not known (a list's
+    // one row is its last row, #2930).
+    expect(refusal(['  test "rows" do', '    row(["a"], "", 0, "", "")', "  end", ""].join("\n"), ['row(["b"], "", 0, "", "")', 'row(["c"], "", 0, "", "")'], "test/eval_rows_test.exs")).toContain("no separator");
     // Rows of two heads.
     expect(refusal(TINYFLATE.reference.text, ['{ "a", "b" }', 'ROW("a", "b")'])).toContain("one row head");
     // A language without a row yet (#2553).
-    expect(refusal("const ROWS: &[(&str, &str)] = &[\n    (\"a\", \"b\"),\n];\n", ['("c", "d")'], "tests/rows.rs")).toContain("language");
+    expect(refusal('ROWS=(\n  "a b"\n)\n', ['("c d")'], "tests/rows.sh")).toContain("language");
   });
 
   test("rowArity counts a row's top-level arguments, strings and nested brackets skipped", () => {
@@ -287,6 +394,27 @@ const FORMATTERS: Record<string, { program: string; args: (file: string) => stri
   dart: { program: "dart", args: (f) => ["format", f] },
   cpp: { program: "clang-format", args: (f) => ["-i", "-style=LLVM", f] },
   java: { program: "google-java-format", args: (f) => ["-i", f] },
+  rust: { program: "rustfmt", args: (f) => ["--edition", "2021", f] },
+  ruby: { program: "rubocop", args: (f) => ["--autocorrect", "--only", "Layout", "--format", "quiet", f] },
+  swift: { program: "swift-format", args: (f) => ["format", "-i", f] },
+  lua: { program: "stylua", args: (f) => [f] },
+  // `rescript format` skips a project's `tests/*Test.res`; the example is its layout as written.
+  rescript: { program: "rescript", args: (f) => ["format", f] },
+  powershell: {
+    program: "pwsh",
+    args: (f) => ["-NoProfile", "-Command", `$t = Get-Content -Raw '${f}'; Set-Content -NoNewline -Path '${f}' -Value (Invoke-Formatter -ScriptDefinition $t)`],
+    probe: ["-NoProfile", "-Command", "Get-Command Invoke-Formatter"],
+  },
+  // #2553 part B. dotnet format and the R styler work on a folder or through R; the others in place.
+  csharp: { program: "dotnet", args: (f) => ["format", "whitespace", dirname(f), "--folder", "--include", f], probe: ["format", "--version"] },
+  kotlin: { program: "ktlint", args: (f) => ["--format", f] },
+  scala: { program: "scalafmt", args: (f) => ["--quiet", "--config-str", "version=3.8.3,runner.dialect=scala213", f] },
+  php: { program: "pint", args: (f) => ["--preset", "psr12", f] },
+  r: { program: "Rscript", args: (f) => ["-e", `styler::style_file(${JSON.stringify(f)})`], probe: ["-e", "library(styler)"] },
+  ocaml: { program: "ocamlformat", args: (f) => ["--enable-outside-detected-project", "-i", f] },
+  zig: { program: "zig", args: (f) => ["fmt", f], probe: ["version"] },
+  objc: { program: "clang-format", args: (f) => ["-i", "-style=LLVM", f] },
+  solidity: { program: "forge", args: (f) => ["fmt", f] },
 };
 
 describe("the written row file is a fixed point of its language's formatter (#2528)", () => {
@@ -333,6 +461,28 @@ describe("the written row file is a fixed point of its language's formatter (#25
       }
     }
   });
+  // The Rust row forms besides the example's tuples: rstest `#[case(...)]` rows and call statements.
+  test.skipIf(!has("rustfmt"))("rustfmt leaves the Rust rstest case and call-statement forms as written", () => {
+    const rstest = (rows: string[]) =>
+      ["use rstest::rstest;", "use sseknit::cli::run;", "", "#[rstest]", ...rows, "fn cli(#[case] args: &[&str], #[case] stdin: &str, #[case] code: i32, #[case] out: &str) {", "    assert_eq!(run(args, stdin), (code, out.to_string()));", "}", ""].join("\n");
+    const calls = (rows: string[]) => ["#[test]", "fn cli_rows() {", ...rows.map((r) => `    ${r};`), "}", ""].join("\n");
+    const cases = [
+      { file: rstest, shape: ['#[case(&["--version"], "", 0, "sseknit 0.1.0\\n")]'], rows: ['#[case(&["cols", "3"], "abc def ghi\\n", 0, "abc\\ndef\\nghi\\n")]', '#[case(&["--help"], "", 0, "usage: sseknit <command>\\n")]'] },
+      { file: calls, shape: ['row(&[], "", 0, "", "")'], rows: ['row(&["cols", "3"], "abc def ghi\\n", 0, "abc\\ndef\\nghi\\n", "")', 'row(&["--help"], "", 0, "usage: sseknit <command>\\n", "")'] },
+    ];
+    const dir = mkdtempSync(join(tmpdir(), "baked-row-file-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const target = join(dir, "cli.rs");
+    for (const { file, shape, rows } of cases) {
+      const reference = file(shape);
+      for (const text of [reference, rowFilePlan("tests/cli.rs", rows, { source: "reference", text: reference }).content]) {
+        expect(text).toBe(text === reference ? reference : file(rows));
+        writeFileSync(target, text ?? "");
+        expect(spawnSync("rustfmt", ["--edition", "2021", target]).status).toBe(0);
+        expect(readFileSync(target, "utf8")).toBe(text ?? "");
+      }
+    }
+  });
   test("the ruff formatter leaves the Python example as written", () => {
     if (!has("ruff")) return;
     const row = ROW_FILE_SHAPES.python;
@@ -361,7 +511,9 @@ class RowFileExecutor extends FixtureExecutor {
     if (request.profile.output === "plan") {
       const graph = (result.output as { taskGraph: TaskGraph }).taskGraph;
       const first = graph.tasks[0]!;
-      graph.tasks.push({ ...first, id: "T002", title: "Row file", dependsOn: ["T001"], writes: [{ path: this.shape.path, action: "create" }], reference: this.shape.reference.path, checkIds: [] });
+      // A shape at the row file's own path is the file in the task's base (#2930): the task modifies it.
+      const own = this.shape.reference.path === this.shape.path;
+      graph.tasks.push({ ...first, id: "T002", title: "Row file", dependsOn: ["T001"], writes: [{ path: this.shape.path, action: own ? "modify" : "create" }], ...(own ? {} : { reference: this.shape.reference.path }), checkIds: [] });
     }
     if (request.profile.output === "implementation") {
       this.sessions.push(request.task?.id ?? "");
@@ -391,7 +543,7 @@ const rowsCheck = (shape: WriteShape) => ({
 const requestOf = (shape: WriteShape) =>
   ["Create ready value.", "", "The prescribed rows, one test each:", "", "```text", ...shape.block, "```", ""].join("\n");
 
-async function deliver(shape: WriteShape, extra: Partial<RunPolicy>) {
+async function deliver(shape: WriteShape, extra: Partial<RunPolicy>, prompt = requestOf(shape)) {
   const policy: RunPolicy = { ...fixturePolicy, checks: [...fixturePolicy.checks, rowsCheck(shape)], ...extra };
   let executor: RowFileExecutor | undefined;
   const fixture = workflowFixture({
@@ -402,7 +554,7 @@ async function deliver(shape: WriteShape, extra: Partial<RunPolicy>) {
     },
   });
   cleanups.push(fixture.dispose);
-  const run = await fixture.service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: requestOf(shape), ownerLabel: "test", policy });
+  const run = await fixture.service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt, ownerLabel: "test", policy });
   let current = await fixture.service.drive(run.runId, new AbortController().signal);
   for (let i = 0; i < 8 && current.status === "waiting"; i++) {
     if (fixture.service.store.requests(run.runId).find((r) => r.status === "pending")?.kind !== "approval") break;
@@ -424,7 +576,7 @@ async function deliver(shape: WriteShape, extra: Partial<RunPolicy>) {
 }
 
 describe("scenario: R82, a row-file task the host writes without a session (#2528)", () => {
-  for (const [language, shape] of Object.entries({ c: TINYFLATE, "c-macro": INFLATE, dart: SLOTPROMPT, cpp: PNMFORGE, java: BYTEMERGE }))
+  for (const [language, shape] of Object.entries({ c: TINYFLATE, "c-macro": INFLATE, dart: SLOTPROMPT, cpp: PNMFORGE, java: BYTEMERGE, ...PART_A }))
     test(`${language}: with rowFileWrite on the host writes ${shape.path} from the reference and no session opens for it`, async () => {
       const { final, file, sessions, record, skipped } = await deliver(shape, { rowFileWrite: "on" });
       expect(final.status).toBe("completed");
@@ -473,6 +625,238 @@ describe("scenario: R82, a row-file task the host writes without a session (#252
     const before = replayTrace(out, { hostApplyRule: (writes) => hostApplyDecision(writes.map(({ rows: _, ...w }) => w)) }).runs.find((r) => r.runId === runId);
     expect(before?.newApplyDecisions).toBe(1);
   }, 120000);
+});
+
+// #2909, bench round 96 cellref (Go): the prose line before another file's rows block named the
+// task's row file, and the block was taken for that file's excerpt. The host declined, and a
+// session wrote the rows (436k tokens). The row file is host-written with no session.
+describe("scenario: R96 cellref, a rows block after prose that names the task's row file (#2909)", () => {
+  for (const [language, shape] of Object.entries({ c: TINYFLATE, java: BYTEMERGE }))
+    test(`${language}: the host writes ${shape.path} and no session opens for it`, async () => {
+      const other = ["```text", `cli in tests/cli_rows_other${shape.path.slice(shape.path.lastIndexOf("."))} (1 rows)`, rowsOf(shape)[0], "```"].join("\n");
+      const prompt = requestOf(shape).replace("The prescribed rows, one test each:", `The wrapper in \`${shape.path}\` runs each row once; the cli rows:\n\n${other}\n\nThe prescribed rows, one test each:`);
+      const { final, sessions, record, file } = await deliver(shape, { rowFileWrite: "on" }, prompt);
+      expect(final.status).toBe("completed");
+      expect(sessions).toEqual(["T001"]);
+      expect(record).toMatchObject({ mode: "on", wouldApply: true, applied: true });
+      expect(record?.writes[0]).toMatchObject({ files: 0 });
+      expect(file).toBe(shape.written);
+    }, 120000);
+});
+
+// #2553 (part B): a row file in C#, Kotlin, Scala, PHP, R, OCaml, Zig, Objective-C or Solidity had
+// no `ROW_FILE_SHAPES` row, so the host declined with "the host does not write row files for
+// <path>'s language yet" and a session retyped the rows (R83-R85: 1M or more tokens per language a
+// round put through an initiative). Each case is the language's list form in its formatter's
+// layout: the scaffold's rows and the request's rows, the file written from the scaffold.
+const listFile = (before: string[], row: (r: string, last: boolean) => string, after: string[]) => (rows: string[]) =>
+  [...before, ...rows.map((r, i) => row(r, i === rows.length - 1)), ...after].join("\n");
+const listShape = (path: string, scaffold: string, file: (rows: string[]) => string, shapeRows: string[], rows: string[]): WriteShape => ({
+  path,
+  reference: { path: scaffold, text: file(shapeRows) },
+  block: [`Rows in ${path} (${rows.length} rows)`, ...rows],
+  written: file(rows),
+});
+const ROWS_B: Record<string, WriteShape> = {
+  // xUnit: one `[InlineData(...)]` attribute per row; the `[Theory]` above them is not a row.
+  csharp: listShape(
+    "tests/Wordcount.Tests/CountRowsTests.cs",
+    "tests/Wordcount.Tests/ScaffoldTests.cs",
+    listFile(["using Xunit;", "", "public class CountRowsTests", "{", "    [Theory]"], (r) => `    ${r}`, ["    public void Counts(string text, int count) => Assert.Equal(count, Words.Count(text));", "}", ""]),
+    ['[InlineData("", 0)]', '[InlineData("a", 1)]'],
+    ['[InlineData("", 0)]', '[InlineData("a b", 2)]', '[InlineData("tab\\there", 2)]', '[InlineData("\\"q\\" \\\\ x", 3)]'],
+  ),
+  // JUnit 5 in Kotlin: `Arguments.of(...)` rows in a `listOf(`, ktlint's trailing comma on each.
+  kotlin: listShape(
+    "src/test/kotlin/wordcount/CountRowsTest.kt",
+    "src/test/kotlin/wordcount/ScaffoldTest.kt",
+    listFile(["package wordcount", "", "object CountRows {", "    @JvmStatic", "    fun rows() =", "        listOf("], (r) => `            ${r},`, ["        )", "}", ""]),
+    ['Arguments.of("", 0)'],
+    ['Arguments.of("", 0)', 'Arguments.of("a b", 2)', 'Arguments.of("\\$x\\t\\"q\\"", 2)'],
+  ),
+  // ScalaTest: tuples in a `Seq(`, no comma after the last (scalafmt's default).
+  scala: listShape(
+    "src/test/scala/wordcount/CountRowsSuite.scala",
+    "src/test/scala/wordcount/ScaffoldSuite.scala",
+    listFile(["class CountRowsSuite extends AnyFunSuite {", "  val rows = Seq("], (r, last) => `    ${r}${last ? "" : ","}`, ["  )", "}", ""]),
+    ['("", 0)', '("a", 1)'],
+    ['("", 0)', '("a b", 2)', '("tab\\there", 2)', '("\\"q\\"", 1)'],
+  ),
+  // PHPUnit: arrays returned by a data provider.
+  php: listShape(
+    "tests/CountRowsTest.php",
+    "tests/ScaffoldTest.php",
+    listFile(["<?php", "", "final class CountRowsTest extends TestCase", "{", "    public static function rows(): array", "    {", "        return ["], (r) => `            ${r},`, ["        ];", "    }", "}", ""]),
+    ["['', 0]"],
+    ["['', 0]", "['a b', 2]", '["tab\\there", 2]', "['it\\'s', 1]"],
+  ),
+  // testthat: `list(...)` rows in a list (styler), no comma after the last. Outside
+  // `tests/testthat`: that folder makes `detectGates` offer styler, and on a runner with Rscript
+  // (Windows) a `styler-written` check then runs on the host's file whether styler is installed
+  // or not, which this scenario is not about.
+  r: listShape(
+    "tests/test-count-rows.R",
+    "tests/test-scaffold.R",
+    listFile(['test_that("words are counted", {', "  rows <- list("], (r, last) => `    ${r}${last ? "" : ","}`, ["  )", "  for (row in rows) expect_equal(count_words(row[[1]]), row[[2]])", "})", ""]),
+    ['list("", 0)', 'list("a", 1)'],
+    ['list("", 0)', 'list("a b", 2)', 'list("tab\\there", 2)', 'list("\\"q\\"", 1)'],
+  ),
+  // alcotest: tuples in a list, each closed by `;` (ocamlformat's vertical layout).
+  ocaml: listShape(
+    "test/test_count_rows.ml",
+    "test/test_scaffold.ml",
+    listFile(["let rows =", "  ["], (r) => `    ${r};`, ["  ]", "", 'let () = Alcotest.run "count" [ ("rows", List.map case rows) ]', ""]),
+    ['("", 0)'],
+    ['("", 0)', '("the quick brown fox jumps over the lazy dog", 9)', '("tab\\there", 2)', '("\\"q\\"", 1)'],
+  ),
+  // std.testing: struct literals in a table, zig fmt's trailing comma on each.
+  zig: listShape(
+    "src/count_rows_test.zig",
+    "src/scaffold_test.zig",
+    listFile(["const rows = [_]Row{"], (r) => `    ${r},`, ["};", "", 'test "rows" {', "    for (rows) |row| try std.testing.expectEqual(row.count, words.count(row.text));", "}", ""]),
+    ['.{ .text = "", .count = 0 }'],
+    ['.{ .text = "", .count = 0 }', '.{ .text = "a b", .count = 2 }', '.{ .text = "tab\\there", .count = 2 }', '.{ .text = "\\"q\\"", .count = 1 }'],
+  ),
+  // XCTest: array literals in an `@[` list (clang-format's layout).
+  objc: listShape(
+    "Tests/HexRowsTests.m",
+    "Tests/ScaffoldTests.m",
+    listFile(["@implementation HexRowsTests", "", "- (void)testRows {", "  NSArray<NSArray<NSString *> *> *rows = @["], (r) => `    ${r},`, ["  ];", "  for (NSArray<NSString *> *row in rows)", "    XCTAssertEqualObjects([HexCodec encode:row[0]], row[1]);", "}", "", "@end", ""]),
+    ['@[ @"", @"" ]'],
+    ['@[ @"", @"" ]', '@[ @"abc", @"616263" ]', '@[ @"a\\tb", @"610962" ]', '@[ @"\\"q\\"", @"227122" ]'],
+  ),
+  // Foundry: rows pushed onto a storage array of structs in `setUp`.
+  solidity: listShape(
+    "test/CountRows.t.sol",
+    "test/Scaffold.t.sol",
+    listFile(["contract CountRowsTest is Test {", "    Row[] internal rows;", "", "    function setUp() public {"], (r) => `        ${r};`, ["    }", "}", ""]),
+    ['rows.push(Row("", 0))'],
+    ['rows.push(Row("", 0))', 'rows.push(Row("a b", 2))', 'rows.push(Row("tab\\there", 2))', 'rows.push(Row("\\"q\\"", 1))'],
+  ),
+};
+
+describe("rowFilePlan: row files in C#, Kotlin, Scala, PHP, R, OCaml, Zig, Objective-C and Solidity (#2553)", () => {
+  for (const [language, shape] of Object.entries(ROWS_B))
+    test(`${language}: the scaffold's preamble and epilogue around one prescribed row per line`, () => {
+      const { inputs, content } = plan(shape);
+      expect(inputs).toEqual({ count: rowsOf(shape).length, ...OK });
+      expect(content).toBe(shape.written);
+      expect(rowFileRefusal(shape.path, inputs)).toBeNull();
+    });
+
+  test("C#: TheoryData initialiser rows and `Add(...)` rows", () => {
+    const theory = (rows: string[]) =>
+      ["public static TheoryData<string, int> Rows => new()", "{", ...rows.map((r) => `    ${r},`), "};", ""].join("\n");
+    const rows = ['{ "a b", 2 }', '{ "tab\\there", 2 }'];
+    expect(rowFilePlan("tests/CountRows.cs", rows, { source: "reference", text: theory(['{ "", 0 }']) }).content).toBe(theory(rows));
+    const add = (rows: string[]) =>
+      ["public class CountRows : TheoryData<string, int>", "{", "    public CountRows()", "    {", ...rows.map((r) => `        ${r};`), "    }", "}", ""].join("\n");
+    const added = ['Add("a b", 2)', 'Add("tab\\there", 2)'];
+    expect(rowFilePlan("tests/CountRows.cs", added, { source: "reference", text: add(['Add("", 0)']) }).content).toBe(add(added));
+  });
+
+  test("Kotlin: a JUnit `Stream.of(` list's last row keeps the list's close", () => {
+    const stream = (rows: string[]) =>
+      ["fun rows(): Stream<Arguments> =", "    Stream.of(", ...rows.map((r, i) => `        ${r}${i === rows.length - 1 ? ")" : ","}`), ""].join("\n");
+    const rows = ['Arguments.of("a b", 2)', 'Arguments.of("", 0)', 'Arguments.of("c", 1)'];
+    expect(rowFilePlan("src/test/kotlin/CountRowsTest.kt", rows, { source: "reference", text: stream(['Arguments.of("x", 1)', 'Arguments.of("y", 1)']) }).content).toBe(stream(rows));
+  });
+
+  test("forms with no one-line row head decline with their reason", () => {
+    const refusal = (path: string, text: string, rows: string[]) =>
+      rowFileRefusal(path, rowFilePlan(path, rows, { source: "reference", text }).inputs);
+    // A testthat `tibble::tribble(` row is bare cells: no bracket head, so no row line of R.
+    expect(refusal("tests/testthat/test-rows.R", 'rows <- tibble::tribble(\n  ~text, ~count,\n  "", 0,\n)\n', ['"a b", 2,'])).toContain("one row head");
+    // A PHP keyed provider row starts with its string key.
+    expect(refusal("tests/RowsTest.php", "return [\n    'empty' => ['', 0],\n];\n", ["'two' => ['a b', 2]"])).toContain("one row head");
+    // A C# attribute other than `[InlineData(` is not a row.
+    expect(refusal("tests/RowsTests.cs", "[Theory]\n[InlineData(\"\", 0)]\n[InlineData(\"a\", 1)]\n", ["[Fact]"])).toContain("one row head");
+  });
+});
+
+describe("scenario: a row file in the languages of #2553 part B, written by the host without a session", () => {
+  for (const [language, shape] of Object.entries(ROWS_B))
+    test(`${language}: with rowFileWrite on the host writes ${shape.path} from the scaffold and no session opens for it`, async () => {
+      const { final, file, sessions, record, skipped } = await deliver(shape, { rowFileWrite: "on" });
+      expect(final.status).toBe("completed");
+      // On main the host declines (`language: false`) and a session writes the file: T001, T002.
+      expect(sessions).toEqual(["T001"]);
+      expect(file).toBe(shape.written);
+      expect(record).toMatchObject({ mode: "on", wouldApply: true, applied: true });
+      expect(record?.writes[0]?.rows).toEqual({ count: rowsOf(shape).length, ...OK });
+      expect(skipped).toBe("host-written");
+    }, 120000);
+});
+
+// #2930: a row file two features share (R99 skillseek, Ruby: `foundation` wrote row 1 of
+// `spec/terms_spec.rb`, `terms-score` rows 2 to 15). The file an earlier feature left with one row
+// is the later task's shape, and in a language whose list puts no separator after its last row
+// that one row has none: the host declined the file ("no separator") and a session spent 655k
+// tokens on rows the host writes at 0. The one row is the list's last row; the separator between
+// rows comes from the request's rows or the language (`listSeparator`). Every language with a row
+// shape is a case here, so a new `ROW_FILE_SHAPES` row whose list's last row has no separator
+// fails until it says how its last row ends.
+const oneRowShapes = Object.entries(ROW_FILE_SHAPES).flatMap(([language, record]) => {
+  if (isNoRow(record)) return [];
+  const { path, reference, rows } = record.example;
+  const oneRow = rowFilePlan(path, rows.slice(0, 1), { source: "reference", text: reference }).content ?? "";
+  const written = rowFilePlan(path, rows, { source: "reference", text: reference }).content ?? "";
+  const shape: WriteShape = { path, reference: { path, text: oneRow }, block: [`Rows in ${path} (${rows.length} rows)`, ...rows], written };
+  return [[language, shape] as const];
+});
+const AFFECTED_2930 = ["elixir", "java", "scala", "csharp", "ruby", "r"];
+
+describe("rowFilePlan: a shared row file an earlier feature left with one row (#2930)", () => {
+  for (const [language, shape] of oneRowShapes)
+    test(`${language}: the file's one row is a shape, and the host writes every prescribed row`, () => {
+      expect(shape.written).not.toBe("");
+      const { inputs, content } = plan(shape, shape.reference.text, "file");
+      expect(rowFileRefusal(shape.path, inputs)).toBeNull();
+      expect(content).toBe(shape.written);
+    });
+
+  test("R99 skillseek (Ruby): the request's rows give the separator, and the file's one row stays the last", () => {
+    const spec = (rows: string[]) => ['require "terms"', "", "TERMS = [", ...rows.map((r) => `  ${r}`), "].freeze", ""].join("\n");
+    const rows = ['["a b", ["a", "b"]],', '["A-b", ["a", "b"]],', '["", []]'];
+    expect(rowFilePlan("spec/terms_spec.rb", rows, { source: "file", text: spec(['["x", ["x"]]']) }).content).toBe(spec(rows));
+    // In a language that names no list separator too: a Python list without its magic comma.
+    const params = (rows: string[]) => ["import pytest", "", '@pytest.mark.parametrize("text,count", [', ...rows.map((r) => `    ${r}`), "])", "def test_count(text, count):", "    assert count_words(text) == count", ""].join("\n");
+    const pyRows = ['("a b", 2),', '("", 0)'];
+    expect(rowFilePlan("tests/test_count.py", pyRows, { source: "file", text: params(['("a", 1)']) }).content).toBe(params(pyRows));
+  });
+
+  test("a list's close on the one row's line is no separator: Java and Kotlin `Stream.of(`, a gtest `Values(`", () => {
+    const java = BYTEMERGE.reference.text.replace('        Arguments.of("x", "[120]"),\n', "");
+    expect(rowFilePlan(ENCODE_PATH, rowsOf(BYTEMERGE), { source: "file", text: java }).content).toBe(BYTEMERGE.written);
+    const stream = (rows: string[]) => ["fun rows(): Stream<Arguments> =", "    Stream.of(", ...rows.map((r, i) => `        ${r}${i === rows.length - 1 ? ")" : ","}`), ""].join("\n");
+    const kt = ['Arguments.of("a b", 2)', 'Arguments.of("", 0)'];
+    expect(rowFilePlan("src/test/kotlin/CountRowsTest.kt", kt, { source: "file", text: stream(['Arguments.of("x", 1)']) }).content).toBe(stream(kt));
+    const values = (rows: string[]) => ["INSTANTIATE_TEST_SUITE_P(", "    Rows, CliTest,", "    ::testing::Values(", ...rows.map((r, i) => `        ${r}${i === rows.length - 1 ? "));" : ","}`), ""].join("\n");
+    const cpp = ['CliRow{{"--version"}, 0, "v\\n", ""}', 'CliRow{{}, 2, "", "usage\\n"}'];
+    expect(rowFilePlan("tests/cli_test.cpp", cpp, { source: "file", text: values(['CliRow{{"a"}, 0, "", ""}']) }).content).toBe(values(cpp));
+  });
+
+  test("a statement row needs no separator and none is guessed: one such row still declines", () => {
+    const refusal = (path: string, text: string, rows: string[]) => rowFileRefusal(path, rowFilePlan(path, rows, { source: "file", text }).inputs);
+    // A Ruby call statement in a test method, an Elixir one in a `test` block, an OCaml list row.
+    expect(refusal("test/rows_test.rb", 'def test_rows\n  check("a", 1)\nend\n', ['check("b", 2)', 'check("c", 3)'])).toContain("no separator");
+    expect(refusal("test/rows_test.exs", 'test "rows" do\n  check("a", 1)\nend\n', ['check("b", 2)', 'check("c", 3)'])).toContain("no separator");
+    expect(refusal("test/test_rows.ml", 'let rows = [\n  ("a", 1)\n]\n', ['("b", 2)', '("c", 3)'])).toContain("no separator");
+  });
+});
+
+describe("scenario: R99 skillseek, a later feature's task writes a shared row file that holds one row (#2930)", () => {
+  for (const [language, shape] of oneRowShapes.filter(([language]) => AFFECTED_2930.includes(language)))
+    test(`${language}: the task's base holds ${shape.path} with one row; the host writes every row and no session opens`, async () => {
+      const { final, file, sessions, record, skipped } = await deliver(shape, { rowFileWrite: "on" });
+      expect(final.status).toBe("completed");
+      // On main the host declines ("one row with no separator") and a session writes it: T001, T002.
+      expect(sessions).toEqual(["T001"]);
+      expect(file).toBe(shape.written);
+      expect(record).toMatchObject({ mode: "on", wouldApply: true, applied: true });
+      expect(record?.writes[0]?.rows).toEqual({ count: rowsOf(shape).length, ...OK, shape: "file" });
+      expect(skipped).toBe("host-written");
+    }, 120000);
 });
 
 // #2564: a row file whose language has no `ROW_FILE_SHAPES` row (C++ and Java, #2553), or whose
@@ -817,14 +1201,18 @@ describe("scenario: R85, place_rows indents rows as the request writes them (#26
   });
 
   test("rescript: rows placed with four spaces are re-indented by one place_rows call", async () => {
-    const four = placeCspFile([]).replace("[\n", `[\n${PLACE_CSP_ROWS.map((r) => `    ${r},`).join("\n")}\n`);
+    // Since ReScript has a row-file shape (#2553) the host writes a file it can read from that
+    // file's own layout, four spaces and all; the frame's second list (two runs of rows) makes it
+    // decline, so the layout correction is the session's one place_rows call.
+    const extra = '\nlet extra = [\n  Harness.row(["--x"], "", 2, "", ""),\n]\n';
+    const four = `${placeCspFile([]).replace("[\n", `[\n${PLACE_CSP_ROWS.map((r) => `    ${r},`).join("\n")}\n`)}${extra}`;
     const { final, file, seen } = await placeScenario({ ...PLACE_CSP, scaffold: four }, { rowFileWrite: "on" }, [
       () => call("place_rows", { path: PLACE_CSP_PATH, line: 1, rows: [1, 3], reindent: true }),
       submitRows(PLACE_CSP),
     ]);
     expect(seen.prompts[1]).toContain(`Re-indented rows 1 to 3 of the request's rows for ${PLACE_CSP_PATH} at lines 2 to 4`);
     expect(final.status).toBe("completed");
-    expect(file).toBe(PLACE_CSP.written);
+    expect(file).toBe(`${PLACE_CSP.written}${extra}`);
   });
 });
 

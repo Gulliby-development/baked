@@ -12,6 +12,12 @@ on:
 
 permissions: {}
 
+# A newer push to the same pull request cancels this run, so superseded runs free their runners:
+# the account runs a limited number of jobs at once, and on 2026-11-04 Linux jobs waited for one (#2915).
+concurrency:
+  group: security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   zizmor:
     runs-on: ubuntu-latest
