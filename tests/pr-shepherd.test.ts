@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   type CheckRun,
   type IssueInfo,
+  isTrackingIssue,
   latestChecks,
   MARKER,
   type PullInfo,
@@ -58,6 +59,12 @@ describe("pr shepherd", () => {
       issue(12, { comments: ["Root cause still unknown."] }),
     ];
     expect(unclaimedIssues(issues, taken).map((i) => i.number)).toEqual([11, 10, 12]);
+  });
+
+  test("the tracking issue the report rewrites is not listed as unclaimed work", () => {
+    expect(isTrackingIssue(report([], [], now))).toBe(true);
+    expect(isTrackingIssue("Priority: P2\n\n## Problem")).toBe(false);
+    expect(isTrackingIssue(null)).toBe(false);
   });
 
   test("the report carries the marker the tracking issue is found by", () => {
