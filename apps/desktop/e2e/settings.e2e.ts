@@ -73,7 +73,16 @@ test("the Providers page shows how much of each subscription is left", async ({ 
   const panel = page.getByRole("region", { name: "Subscription limits" });
   await expect(panel.getByRole("article", { name: "Codex" })).toContainText("62% left");
   await expect(panel.getByRole("article", { name: "Codex" })).toContainText("resets in 2 h");
-  await expect(panel.getByRole("article", { name: "Claude Code" })).toContainText("seen 42 min ago");
+  await expect(panel.getByRole("article", { name: "Claude Code", exact: true })).toContainText(
+    "seen 42 min ago",
+  );
+  // Each labelled account (#2303) has its own card after its provider's.
+  await expect(panel.getByRole("article", { name: "Claude Code · Personal" })).toContainText(
+    "29% left",
+  );
+  await expect(panel.getByRole("article", { name: "Claude Code · Client seat" })).toContainText(
+    "not signed in",
+  );
   await expect(panel.getByRole("article", { name: "GitHub Copilot" })).toContainText(
     "0% left · 0 of 300",
   );

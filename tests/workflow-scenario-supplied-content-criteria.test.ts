@@ -7,6 +7,7 @@ import { type CaseWalk, caseCheck, citedKind } from "../src/core/verification/cr
 import type { Spec, TaskGraph } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
 import { requestConflictDecision } from "../src/core/workflows/request-conflict.js";
+import { rowBlockFiles } from "../src/core/workflows/sizing.js";
 import {
   namesExactContent,
   notPrescribedFindings,
@@ -173,6 +174,24 @@ describe("a literal that describes rows is not a case to remove (#2524)", () => 
     expect(findings[0]?.blocking).toBe(false);
   });
 
+  // #2889, R95 windowgate scheduling AC-008: the criterion named the row files of the earlier
+  // validation feature (`InputRowsTest`, `LimitsRowsTest`, `ReadsRowsTest`), which the request
+  // prescribes and this feature's plan does not write; the names were noted as missing rows.
+  test("R95 windowgate: a criterion naming another feature's row files raises no note", () => {
+    const own = "src/test/kotlin/OptionsRowsTest.kt";
+    const other = ["InputRowsTest", "LimitsRowsTest", "ReadsRowsTest"].map((n) => `src/test/kotlin/${n}.kt`);
+    const kt = (path: string, n: number) => `\`\`\`kotlin\n// Rows in ${path} (${n} rows)\n${Array.from({ length: n }, (_, i) => `row("--opt${i}", "ok${i}"),`).join("\n")}\n\`\`\``;
+    const request = `Add scheduling.\n\n${[own, ...other].map((p) => kt(p, 2)).join("\n\n")}\n`;
+    const spec: Spec = {
+      ...fixtureSpec,
+      criteria: [criterion("AC-008", "the rows in `InputRowsTest`, `LimitsRowsTest` and `ReadsRowsTest` still pass"), R81],
+    };
+    const plan = [task("T008", [{ path: own, action: "create" }], ["AC-008", "AC-009"])];
+    const findings = notPrescribedFindings(spec, graph(plan), request, { checks });
+    expect(findings.map((f) => f.id)).toEqual(["NOT-PRESCRIBED-AC-009"]);
+    expect(rowBlockFiles(request)).toEqual([own, ...other]);
+  });
+
   test("each R82 literal is cited, and how", () => {
     const names = { names: new Set(["filter_args", "filter_errors"]), counts: new Set([12, 5, 17]) };
     expect(citedKind("12", " rows of", names)).toBe("count");
@@ -270,6 +289,66 @@ describe("a literal that describes rows is not a case to remove (#2524)", () => 
       .map((p) => p.key);
     expect(keys).toEqual(["analysis-AC-009"]);
   }, 60000);
+});
+
+// #2911: R96 varprompt (C#, initiative), 13 `case_not_prescribed` records, 5 distinct literals,
+// none true: row-number and value ranges (`1–28`, `1–10`, `1–17` and `20` of AC-006; `1–16`,
+// `0–100` of AC-004), the placeholder word of `varprompt: unknown command WORD\n` (AC-001), the
+// scaffold's stub text `varprompt: not implemented\n` (AC-004) and `null`, a state of the parsed
+// model (template AC-001). `citedKind` reads them as `range`, `placeholder`, `scaffold` and
+// `state`; a row the brief never prescribes is still noted beside them.
+describe("ranges, a placeholder word, scaffold text and null are not rows to remove (#2911)", () => {
+  const criterion = (id: string, then: string, when = "the cli tests run"): Spec["criteria"][number] => ({
+    id, requirementIds: ["FR-001"], given: "the prescribed rows", when, then, method: "automated",
+  });
+  const r96 = (cli: string, options: string) => [
+    criterion("AC-006", `the supplied rows \`1–3\` of \`${cli}\` and rows \`1–1\` and \`2\` of \`${options}\` pass, \`1–5\` in all`),
+    criterion("AC-004", "a value outside `0–100` is refused, and before its handler lands the command prints `varprompt: not implemented\\n`"),
+    criterion("AC-001", "an unknown command writes `varprompt: unknown command WORD\\n` to stderr"),
+    criterion("AC-010", "the parsed template's default value is `null` until a value is set"),
+  ];
+  const R81 = criterion("AC-009", "it exits 0", 'the user runs `["eval","--as","frac","7/3"]`');
+  const ids = [...r96("cli_rows", "options_rows"), R81].map((c) => c.id);
+
+  test("each R96 literal is cited, and how; output and row text are not", () => {
+    const names = { names: new Set(["cli_rows"]), counts: new Set([3, 2, 5]) };
+    expect(citedKind("1–28", " pass", names)).toBe("range");
+    expect(citedKind("1–17, 20", "", names)).toBe("range");
+    expect(citedKind("0–100", " is refused", names)).toBe("range");
+    expect(citedKind("20", " pass", names, false, "`OptionsRows` rows `1–17` and ")).toBe("range");
+    expect(citedKind("1-10", " pass", names, false, "the `CliRows` rows ")).toBe("range");
+    expect(citedKind(String.raw`varprompt: unknown command WORD\n`, " to stderr", names)).toBe("placeholder");
+    expect(citedKind(String.raw`varprompt: not implemented\n`, "", names)).toBe("scaffold");
+    for (const stub of ["NotImplementedException", "NotImplementedError", "todo!()", "unimplemented!()", "TODO()", "???", "error: not yet implemented"])
+      expect(citedKind(stub, "", names)).toBe("scaffold");
+    for (const word of ["null", "nil", "None", "NULL", "nullptr", "undefined", "Nothing", "Nil", "$null"])
+      expect(citedKind(word, " until", names, true, "the parsed default is ")).toBe("state");
+    // Row text: a printed null, a hyphen pair outside a list of rows, a plain exit code, a message.
+    expect(citedKind("null", "", names, true, "for an empty document it prints ")).toBeUndefined();
+    expect(citedKind("1-10", " pages", names, false, "the user passes ")).toBeUndefined();
+    expect(citedKind("7", "", names, false, "it exits with ")).toBeUndefined();
+    expect(citedKind("varprompt: unknown command frob", "", names)).toBeUndefined();
+    expect(citedKind("not implemented for maps", "", names)).toBeUndefined();
+  });
+
+  // One case per language: the four R96 criteria raise no note, the R81 row does.
+  const LANGUAGES = [
+    { name: "csharp", fence: "csharp", cli: "tests/CliRows.cs", options: "tests/OptionsRows.cs", names: ["CliRows", "OptionsRows"] as const, header: (p: string, n: number) => `// Rows in ${p} (${n} rows)`, row: (i: number) => `[InlineData("set v${i}", "ok${i}")]` },
+    { name: "dart", fence: "dart", cli: "test/cli_rows_test.dart", options: "test/options_rows_test.dart", names: ["cli_rows", "options_rows"] as const, header: (p: string, n: number) => `// Rows in ${p} (${n} rows)`, row: (i: number) => `row('set v${i}', 'ok${i}'),` },
+    { name: "c", fence: "c", cli: "tests/test_cli_rows.c", options: "tests/test_options_rows.c", names: ["cli_rows", "options_rows"] as const, header: (p: string, n: number) => `/* Rows in ${p} (${n} rows) */`, row: (i: number) => `ROW("set v${i}", "ok${i}"),` },
+    { name: "elixir", fence: "elixir", cli: "test/cli_rows_test.exs", options: "test/options_rows_test.exs", names: ["cli_rows", "options_rows"] as const, header: (p: string, n: number) => `# Rows in ${p} (${n} rows)`, row: (i: number) => `row("set v${i}", "ok${i}")` },
+    { name: "typescript", fence: "ts", cli: "tests/cli_rows.test.ts", options: "tests/options_rows.test.ts", names: ["cli_rows", "options_rows"] as const, header: (p: string, n: number) => `// Rows in ${p} (${n} rows)`, row: (i: number) => `{ args: "set v${i}", out: "ok${i}" },` },
+  ];
+  for (const l of LANGUAGES)
+    test(`${l.name}: ranges, a placeholder word, scaffold text and null raise no note; the R81 row does`, () => {
+      const rows = (from: number, n: number) => Array.from({ length: n }, (_, i) => l.row(from + i));
+      const fenced = (p: string, r: string[]) => `\`\`\`${l.fence}\n${l.header(p, r.length)}\n${r.join("\n")}\n\`\`\``;
+      const request = `Add the cli.\n\n${fenced(l.cli, rows(0, 3))}\n\n${fenced(l.options, rows(3, 2))}\n`;
+      const spec: Spec = { ...fixtureSpec, criteria: [...r96(...l.names), R81] };
+      const plan = [task("T006", [{ path: l.cli, action: "create" }], ids), task("T007", [{ path: l.options, action: "create" }], ids)];
+      const findings = notPrescribedFindings(spec, graph(plan), request, { checks });
+      expect(findings.map((f) => f.id)).toEqual(["NOT-PRESCRIBED-AC-009"]);
+    });
 });
 
 // #2531: outside prescribed rows the walk still demanded a cited literal (#2524 applied

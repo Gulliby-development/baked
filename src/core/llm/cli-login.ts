@@ -3,9 +3,14 @@
  * Codex). The CLI keeps its own credentials; BAKED only starts its login, relays the progress
  * lines and sign-in URL it prints, and never reads or stores the tokens. Front ends without a
  * terminal (the desktop app over `baked serve`) start a login here and poll its state.
+ *
+ * Every function takes an optional account (#2303): the login, status and logout then run with
+ * that account's credential home (`providerAccountEnv`), and the CLI's own sign-in is untouched.
  */
 import { invalidateProviderModelCache } from "./models.js";
 import { checkProviders } from "./provider.js";
+import { ProviderAccountError, readProviderAccounts } from "./provider-accounts.js";
+import { providerAccountEnv } from "./providers/account-env.js";
 import {
   getClaudeCodeLoginStatus,
   logoutClaudeCode,
@@ -35,6 +40,8 @@ export type CliLoginState = "running" | "succeeded" | "failed" | "cancelled";
 
 export interface CliLogin {
   provider: CliLoginProvider;
+  /** The account signing in; absent for the CLI's own sign-in. */
+  account?: string;
   state: CliLoginState;
   /** Progress lines the CLI printed, oldest first, capped at {@link MAX_LINES}. */
   lines: string[];
@@ -57,12 +64,14 @@ export interface CliLogin {
 export type CliLoginRunner = (
   onLine: (line: string) => void,
   onUrl: (url: string) => void,
+  env?: NodeJS.ProcessEnv,
 ) => { promise: Promise<void>; abort: () => void; submitCode?: (code: string) => void };
 
+/** `env` points the CLI at an account's credential home; without it, the CLI's own. */
 export interface CliLoginBackend {
-  status(): CliSignInStatus;
+  status(env?: NodeJS.ProcessEnv): CliSignInStatus;
   run: CliLoginRunner;
-  logout(): { ok: boolean; message: string };
+  logout(env?: NodeJS.ProcessEnv): { ok: boolean; message: string };
 }
 
 const MAX_LINES = 200;
@@ -71,8 +80,8 @@ const PASTE_PROMPT = /^Paste code here if prompted\s*>?/i;
 
 const backends: Record<CliLoginProvider, CliLoginBackend> = {
   "claude-code": {
-    status: () => {
-      const s = getClaudeCodeLoginStatus({ refresh: true });
+    status: (env) => {
+      const s = getClaudeCodeLoginStatus({ refresh: true, ...(env ? { env } : {}) });
       return {
         installed: s.installed,
         loggedIn: s.loggedIn,
@@ -80,19 +89,19 @@ const backends: Record<CliLoginProvider, CliLoginBackend> = {
         command: "claude auth login",
       };
     },
-    run: (onLine, onUrl) =>
+    run: (onLine, onUrl, env) =>
       runClaudeCodeLogin((line) => {
         const url = URL_PATTERN.exec(line)?.[0];
         if (url) onUrl(url);
         // The prompt has no place to type into here; the code field takes its role.
         const shown = line.replace(PASTE_PROMPT, "").trim();
         if (shown) onLine(shown);
-      }),
-    logout: () => logoutClaudeCode(),
+      }, env),
+    logout: (env) => logoutClaudeCode(env),
   },
   codex: {
-    status: () => {
-      const s = getCodexLoginStatus();
+    status: (env) => {
+      const s = getCodexLoginStatus(env);
       return {
         installed: s.installed,
         loggedIn: s.loggedIn,
@@ -100,8 +109,8 @@ const backends: Record<CliLoginProvider, CliLoginBackend> = {
         command: "codex login",
       };
     },
-    run: (onLine, onUrl) => runCodexBrowserLogin(onLine, onUrl),
-    logout: () => logoutCodex(),
+    run: (onLine, onUrl, env) => runCodexBrowserLogin(onLine, onUrl, env),
+    logout: (env) => logoutCodex(env),
   },
 };
 
@@ -112,7 +121,25 @@ interface Active {
   submitCode?: (code: string) => void;
 }
 
-const logins = new Map<CliLoginProvider, Active>();
+/** Logins by provider, or `provider:account` for an account's own (#2303). */
+const logins = new Map<string, Active>();
+
+const loginKey = (provider: CliLoginProvider, account?: string) =>
+  account ? `${provider}:${account}` : provider;
+
+/**
+ * The environment of `account`'s CLI processes; undefined for the CLI's own sign-in. An account
+ * the global config does not list is refused, so no request can make a home of its choosing.
+ */
+export function cliAccountEnv(
+  provider: CliLoginProvider,
+  account?: string,
+): NodeJS.ProcessEnv | undefined {
+  if (!account) return undefined;
+  if (!readProviderAccounts(provider).accounts.some((a) => a.id === account))
+    throw new ProviderAccountError(`${provider} has no account ${account}.`, "NOT_FOUND");
+  return providerAccountEnv(provider, { id: account });
+}
 
 /** Replaces a provider's backend; tests use it so no real CLI runs. Returns the restore function. */
 export function setCliLoginBackend(
@@ -121,39 +148,49 @@ export function setCliLoginBackend(
 ): () => void {
   const previous = backends[provider];
   backends[provider] = backend;
-  logins.delete(provider);
+  const forget = () => {
+    for (const key of [...logins.keys()])
+      if (key === provider || key.startsWith(`${provider}:`)) logins.delete(key);
+  };
+  forget();
   return () => {
     backends[provider] = previous;
-    logins.delete(provider);
+    forget();
   };
 }
 
-export function cliSignInStatus(provider: CliLoginProvider): CliSignInStatus {
-  return backends[provider].status();
+export function cliSignInStatus(provider: CliLoginProvider, account?: string): CliSignInStatus {
+  return backends[provider].status(cliAccountEnv(provider, account));
 }
 
-/** The current or last login of this process for `provider`, if one was started. */
-export function getCliLogin(provider: CliLoginProvider): CliLogin | null {
-  const active = logins.get(provider);
+/** The current or last login of this process for `provider` (or one of its accounts), if one was started. */
+export function getCliLogin(provider: CliLoginProvider, account?: string): CliLogin | null {
+  const active = logins.get(loginKey(provider, account));
   return active ? snapshot(active.login) : null;
 }
 
 /** Resolves when the current login of `provider` ends; tests and callers that must wait use it. */
-export async function cliLoginSettled(provider: CliLoginProvider): Promise<CliLogin | null> {
-  await logins.get(provider)?.done;
-  return getCliLogin(provider);
+export async function cliLoginSettled(
+  provider: CliLoginProvider,
+  account?: string,
+): Promise<CliLogin | null> {
+  await logins.get(loginKey(provider, account))?.done;
+  return getCliLogin(provider, account);
 }
 
 /**
  * Starts the CLI login of `provider`, or returns the one already running. A login of an already
  * signed-in CLI succeeds at once without opening a browser.
  */
-export function startCliLogin(provider: CliLoginProvider): CliLogin {
-  const current = logins.get(provider);
+export function startCliLogin(provider: CliLoginProvider, account?: string): CliLogin {
+  const key = loginKey(provider, account);
+  const current = logins.get(key);
   if (current?.login.state === "running") return snapshot(current.login);
+  const env = cliAccountEnv(provider, account);
 
   const login: CliLogin = {
     provider,
+    ...(account ? { account } : {}),
     state: "running",
     lines: [],
     startedAt: new Date().toISOString(),
@@ -165,16 +202,16 @@ export function startCliLogin(provider: CliLoginProvider): CliLogin {
     if (error) login.error = error;
   };
   const backend = backends[provider];
-  const status = backend.status();
+  const status = backend.status(env);
   if (!status.installed) {
     finish("failed", status.message);
-    logins.set(provider, { login, abort: () => {}, done: Promise.resolve() });
+    logins.set(key, { login, abort: () => {}, done: Promise.resolve() });
     return snapshot(login);
   }
   if (status.loggedIn) {
     login.lines.push(`Already signed in. ${status.message}`.trim());
     finish("succeeded");
-    logins.set(provider, { login, abort: () => {}, done: Promise.resolve() });
+    logins.set(key, { login, abort: () => {}, done: Promise.resolve() });
     return snapshot(login);
   }
 
@@ -187,6 +224,7 @@ export function startCliLogin(provider: CliLoginProvider): CliLogin {
     (url) => {
       login.url ??= url;
     },
+    env,
   );
   const done = handle.promise.then(
     async () => {
@@ -199,7 +237,7 @@ export function startCliLogin(provider: CliLoginProvider): CliLogin {
     },
   );
   if (handle.submitCode) login.acceptsCode = true;
-  logins.set(provider, {
+  logins.set(key, {
     login,
     abort: () => {
       cancelled = true;
@@ -219,8 +257,12 @@ export class CliLoginCodeError extends Error {}
  * at the CLI's prompt would. The login then ends as the CLI decides: signed in, or failed with
  * the CLI's message for a wrong or expired code.
  */
-export function submitCliLoginCode(provider: CliLoginProvider, code: string): CliLogin {
-  const active = logins.get(provider);
+export function submitCliLoginCode(
+  provider: CliLoginProvider,
+  code: string,
+  account?: string,
+): CliLogin {
+  const active = logins.get(loginKey(provider, account));
   if (active?.login.state !== "running")
     throw new CliLoginCodeError("No sign-in is running; start one first.");
   if (!active.submitCode)
@@ -237,8 +279,11 @@ export function submitCliLoginCode(provider: CliLoginProvider, code: string): Cl
 }
 
 /** Stops a running login. Returns the login's state, or null when none was started. */
-export async function cancelCliLogin(provider: CliLoginProvider): Promise<CliLogin | null> {
-  const active = logins.get(provider);
+export async function cancelCliLogin(
+  provider: CliLoginProvider,
+  account?: string,
+): Promise<CliLogin | null> {
+  const active = logins.get(loginKey(provider, account));
   if (!active) return null;
   if (active.login.state === "running") {
     active.abort();
@@ -250,8 +295,9 @@ export async function cancelCliLogin(provider: CliLoginProvider): Promise<CliLog
 /** Signs the CLI out with its own logout command. */
 export async function logoutCli(
   provider: CliLoginProvider,
+  account?: string,
 ): Promise<{ ok: boolean; message: string }> {
-  const result = backends[provider].logout();
+  const result = backends[provider].logout(cliAccountEnv(provider, account));
   await refreshProvider(provider);
   return result;
 }

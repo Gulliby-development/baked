@@ -144,9 +144,10 @@ describe("scenario: the split's high end from measured actual-to-low ratios (#19
 });
 
 describe("scenario: a feature cheaper than every sample under the ratio rule (#1982, forecast-floor rule)", () => {
-  test("a cheaper initiative keeps the low end at the lowest rate and widens the ratios, never the low end", () => {
+  test("a cheaper initiative keeps the low end at the lowest rate and widens the ratios and the high end, never the low end", () => {
     // Initiative D cost 200k per path, half the others: the floor drops to it, and the others now
-    // land about twice above that floor, so the measured spread is wide and the high end stays put.
+    // land about twice above that floor, so the measured spread is wide. That spread is the high end
+    // even above the size class's 1.4x (#2950); the expected value stays what the class gives.
     const samples = [...SAMPLES, sample("d1", "D", "medium", 200_000, 3), sample("d2", "D", "medium", 210_000, 2)];
     const estimate = estimateInitiative({ features: [core], history, samples, maxTotalTokens: BUDGET });
     const f = estimate.features[0];
@@ -156,8 +157,10 @@ describe("scenario: a feature cheaper than every sample under the ratio rule (#1
     // The ratio rule never raises the low end: it is what the same samples give without ratios.
     const plain = estimateInitiative({ features: [core], history, samples: samples.map(({ initiativeId: _, ...s }) => s), maxTotalTokens: BUDGET });
     expect(f?.tokens.low).toBe(plain.features[0]?.tokens.low ?? -1);
-    expect(f?.tokens.high).toBeLessThanOrEqual(plain.features[0]?.tokens.high ?? -1);
-    expect(f?.tokens.high).toBeGreaterThanOrEqual(f?.tokens.low ?? Infinity);
+    expect(f?.tokens.high).toBe(Math.round((f?.tokens.low ?? 0) * (estimate.highCalibration?.high ?? 0)));
+    expect(f?.tokens.high).toBeGreaterThan(plain.features[0]?.tokens.high ?? Infinity);
+    expect(f?.highBasis).toBe("ratios");
+    expect(f?.expectedTokens).toBe(plain.features[0]?.expectedTokens ?? -1);
     expect(f?.expectedTokens).toBeGreaterThanOrEqual(f?.tokens.low ?? Infinity);
     expect(f?.expectedTokens).toBeLessThanOrEqual(f?.tokens.high ?? -1);
   });

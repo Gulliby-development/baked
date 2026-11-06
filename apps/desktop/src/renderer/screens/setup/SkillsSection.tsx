@@ -19,11 +19,11 @@ import type { SectionProps } from "../sections.js";
 import {
   ACTIONS,
   errorText,
-  GROW,
   LINE,
   LIST,
   LoadState,
   NOTE,
+  ROW_TEXT,
   SETUP,
   STACK,
   Tag,
@@ -157,7 +157,7 @@ function InstalledGroup({
         <ul className={cn(PANEL, LIST, "p-0")}>
           {skills.map((skill) => (
             <li key={`${skill.scope}/${skill.id}`} className={LINE}>
-              <span className={cn(GROW, "flex flex-col gap-0.5")}>
+              <span className={cn(ROW_TEXT, "flex flex-col gap-0.5")}>
                 <span className="font-mono font-semibold text-foreground">{skill.id}</span>
                 {skill.description && (
                   <span className={cn(WRAP, "text-muted-foreground")}>{skill.description}</span>
@@ -241,7 +241,7 @@ function Catalog({
               const scopes = scopesOf(skill);
               return (
                 <li key={skill.id} className={LINE}>
-                  <span className={cn(GROW, "flex flex-col gap-0.5")}>
+                  <span className={cn(ROW_TEXT, "flex flex-col gap-0.5")}>
                     <span className="font-mono font-semibold text-foreground">{skill.skillId}</span>
                     <span className="font-mono text-[12px] text-dim-foreground">
                       {skill.source}

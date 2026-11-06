@@ -92,15 +92,59 @@ export function leaseOwnerAlive(lease: LeaseRow): boolean | null {
   return owner.exitedWorkerOwner === lease.owner_id ? false : processAlive(owner.pid);
 }
 
+/**
+ * The process-table read behind `commandProcessMayRun`. On Windows it runs PowerShell for seconds,
+ * so it is never called inside a store transaction: see `commandLiveness`. Tests replace
+ * `treeAlive` to observe or slow the read.
+ */
+export const processProbe = { treeAlive: processTreeAlive };
+/** Verdicts of `commandProcessMayRun` read before the current store transaction, by intent JSON. */
+let preread: ReadonlyMap<string, boolean> | null = null;
+
 /** A command of unknown outcome whose process is not proven stopped blocks any takeover. */
 /**
  * A command effect may still have running processes unless its PID is recorded and neither the
  * process nor a descendant started after it is alive. An unreadable process table counts as alive.
+ * While a `commandLiveness` read is held, its verdict, read before the transaction, answers.
  */
 export function commandProcessMayRun(intentJson: string, createdAt = 0): boolean {
+  const known = preread?.get(intentJson);
+  if (known !== undefined) return known;
   const intent = JSON.parse(intentJson) as { pid?: number; spawnedAt?: number; scope?: string };
   if (intent.pid === undefined) return true;
-  return processTreeAlive(intent.pid, intent.spawnedAt ?? createdAt, intent.scope) !== false;
+  return processProbe.treeAlive(intent.pid, intent.spawnedAt ?? createdAt, intent.scope) !== false;
+}
+/**
+ * Reads whether each unsettled command of `runIds` may still run, and until the result is disposed
+ * those verdicts answer `commandProcessMayRun`. Take it with `using` before a store transaction
+ * that checks command processes, so the process table is never read while the SQLite write lock
+ * is held (a Windows read runs PowerShell for seconds and blocked every other writer). A verdict
+ * read early stays sound: a command whose process tree is gone stays gone, and one still running
+ * at most makes the decision wait, as it would have. A command recorded after the read is checked
+ * live, which costs one signal while its PID is alive.
+ */
+export function commandLiveness(
+  store: WorkflowStore,
+  runIds: readonly (string | null | undefined)[],
+): Disposable {
+  const verdicts = new Map(preread ?? []);
+  for (const runId of new Set(runIds)) {
+    if (!runId) continue;
+    for (const effect of store.effects(runId))
+      if (
+        effect.kind === "command" &&
+        ["prepared", "unknown"].includes(effect.status) &&
+        !verdicts.has(effect.intent_json)
+      )
+        verdicts.set(effect.intent_json, commandProcessMayRun(effect.intent_json));
+  }
+  const outer = preread;
+  preread = verdicts;
+  return {
+    [Symbol.dispose]: () => {
+      preread = outer;
+    },
+  };
 }
 export function commandMayBeRunning(store: WorkflowStore, runId: string): boolean {
   return store
@@ -115,7 +159,7 @@ export function commandMayBeRunning(store: WorkflowStore, runId: string): boolea
 /**
  * Releases this run's leases when their owner process is proven gone and no owned command may
  * still run; the same conditions under which acquire() would take them over. Call inside a
- * store transaction. Returns the released resources.
+ * store transaction that holds a `commandLiveness` read of the run. Returns the released resources.
  */
 export function releaseDeadOwnerLeases(store: WorkflowStore, runId: string): string[] {
   const stale = store.leases().filter((lease) => lease.run_id === runId);
@@ -195,6 +239,15 @@ export class WorkspaceLeases {
     runId: string | null,
     options: { isolated?: boolean; maxExecuting?: number } = {},
   ): void {
+    // A takeover checks the previous owner's commands: their processes are read before the lock.
+    const seen = this.store.lease(resource);
+    const takenFrom =
+      seen &&
+      seen.owner_id !== this.owner &&
+      (leaseOwnerAlive(seen) === false || stalledOwner(seen))
+        ? seen.run_id
+        : null;
+    using _liveness = commandLiveness(this.store, [takenFrom]);
     this.store.transaction(() => {
       if (options.maxExecuting !== undefined && isExecutionLease(resource)) {
         const others = executingLeases(this.store).filter((lease) => lease.run_id !== runId);

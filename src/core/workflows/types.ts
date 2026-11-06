@@ -161,6 +161,13 @@ export const RuntimeStateSchema = z
     extraCorrectiveTasks: z.number().int().nonnegative().default(0),
     /** Rounds the `assume` rule granted by itself after a contradiction stop (at most one). */
     autoExtensions: z.number().int().nonnegative().default(0),
+    /**
+     * Findings a refused correction left without a repair task, handed over by a person's repair
+     * grant (#2878). The next review or convergence pass retires those it does not raise again.
+     */
+    strandedFindings: z
+      .array(z.object({ id: z.string(), pass: z.enum(["review", "convergence"]) }))
+      .default([]),
     /** Findings a person already decided to repair; the convergence stop does not ask again. */
     decidedFindings: z.array(z.string()).default([]),
     /** Findings the run is accepted with (known limitations). */
@@ -592,6 +599,15 @@ export const RuntimeStateSchema = z
      * `autoApproval.declined` (#1467).
      */
     autoApprovalDeclined: z.string().nullable().default(null),
+    /**
+     * The provider accounts the run asked for (`--account codex=work`, #2303); every model turn
+     * of the run uses them instead of the project's. Null: the project's accounts.
+     */
+    accounts: z
+      .object({ codex: z.string().optional(), "claude-code": z.string().optional() })
+      .strict()
+      .nullable()
+      .default(null),
     /**
      * An initiative feature run started under `workflows.planAhead` before every feature it
      * depends on was finished (#1834): its worktree starts from a provisional base and its tasks

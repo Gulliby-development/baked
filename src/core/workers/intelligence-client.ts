@@ -246,7 +246,9 @@ export class IntelligenceClient extends WorkerClient {
     } catch {
       // Worker may already be dead — still need to dispose
     }
-    this.dispose();
+    // Waits for the worker to exit: its dispose handler stops the language servers, the ones
+    // still in their handshake too, and a caller may delete the workspace right after close.
+    await this.disposeAndWait();
   }
 
   /**

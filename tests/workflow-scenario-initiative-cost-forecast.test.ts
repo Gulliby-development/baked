@@ -201,7 +201,7 @@ describe("scenario: initiative forecast follows accepted features' measured spen
     const active = initiatives.view("values");
     expect(active.features[2]?.runId).toBeTruthy();
     expect(store.steps(active.features[2]!.runId!).some((s) => s.stage_id === "research" && s.status === "completed")).toBe(true);
-    const estimate = initiatives.estimate("values", 0);
+    const estimate = initiatives.estimate("values");
     const measuredUsd = [...finished].reduce((sum, id) => sum + store.costUsage(id!).spentUsd, 0);
     const measuredTokens = estimate.features.filter((f) => f.basis === "measured")
       .reduce((sum, f) => sum + f.spent, 0);
@@ -232,7 +232,7 @@ describe("scenario: initiative forecast follows accepted features' measured spen
         leanUsd += attemptSpend(store, feature.runId!, a.id, a.model_id)?.costUsd ?? 0;
       }
     }
-    const estimate = initiatives.estimate("values", 0);
+    const estimate = initiatives.estimate("values");
     const remaining = estimate.features.filter((f) => f.basis !== "measured")
       .reduce((sum, f) => sum + f.expectedTokens - f.spent, 0);
     const spent = accepted.reduce((sum, f) => sum + store.costUsage(f.runId!).spentUsd, 0);

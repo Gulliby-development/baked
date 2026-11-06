@@ -7,7 +7,8 @@ import { attemptCapFault, codeWebSearchFor, NativeAgentExecutor } from "../src/c
 import { WorkspaceLeases } from "../src/core/workflows/leases.js";
 import { type AgentProfile, ProfileSchema, type RunPolicy } from "../src/core/workflows/schemas.js";
 import { AttemptStepController, type AttemptUsageRecord, allTokensCapFor } from "../src/core/workflows/step-budget.js";
-import { mergeToolBackends, runUsage, toolBackendLine } from "../src/core/workflows/usage.js";
+import { findPricing } from "../src/core/llm/pricing.js";
+import { attemptCost, mergeToolBackends, runUsage, toolBackendLine } from "../src/core/workflows/usage.js";
 import type { AgentExecutor, ExecutionRequest, Task } from "../src/core/workflows/types.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -189,6 +190,48 @@ describe("attempt usage of a failing native attempt", () => {
     expect(usage).toMatchObject({ stopReason: "error", totalTokens: used });
     expect(usage?.steps.map((s) => s.outputTokens)).toEqual([100, cap]);
     expect(usage?.estimatedUsage?.outputTokens).toBe(100 + cap);
+  });
+
+  // The charged estimate is a step of the record and also in the sum `estimatedUsage` repeats, so
+  // the price counted it twice: in the run's cost, its dollar cap and the stage rates (#2669).
+  test("an attempt charged at the output cap is priced once", async () => {
+    scriptModel([
+      step(1000, 100, { name: "unknown_tool", input: {} }),
+      () => {
+        throw new Error("Incomplete response returned, reason: max_output_tokens");
+      },
+    ]);
+    const priced = "openai/gpt-5.4";
+    const { store, run, attemptId, executor, request, usageRecord } = await nativeAttempt(
+      fixturePolicy,
+      "research",
+      undefined,
+      priced,
+    );
+    await expect(executor.execute(request)).rejects.toThrow("max_output_tokens");
+    const usage = usageRecord();
+    const pricing = findPricing(priced)?.pricing;
+    if (!usage || !pricing) throw new Error("usage or price missing");
+    const once =
+      usage.steps.reduce(
+        (sum, s) => sum + (s.inputTokens ?? 0) * pricing.input + (s.outputTokens ?? 0) * pricing.output,
+        0,
+      ) / 1e6;
+    expect(once).toBeGreaterThan(0);
+    expect(attemptCost(priced, usage)).toBeCloseTo(once, 9);
+    expect(store.attemptCostUsd(run.runId, attemptId)).toBeCloseTo(once, 9);
+    expect(runUsage(store, run.runId).attempts.find((a) => a.attemptId === attemptId)?.costUsd).toBeCloseTo(once, 9);
+  });
+
+  test("an estimate the steps do not carry is still priced", () => {
+    // Codex reported zero tokens for every step (#1057): only `estimatedUsage` holds the spend.
+    const record = {
+      steps: [{ inputTokens: 0, outputTokens: 0, cacheReadTokens: null, toolCalls: 1, compactedBytes: 0 }],
+      estimatedUsage: { inputTokens: 4_000, outputTokens: 1_000 },
+    } as unknown as AttemptUsageRecord;
+    const pricing = findPricing("openai/gpt-5.4")?.pricing;
+    if (!pricing) throw new Error("price missing");
+    expect(attemptCost("openai/gpt-5.4", record)).toBeCloseTo((4_000 * pricing.input + 1_000 * pricing.output) / 1e6, 9);
   });
 
   test("an attempt that fails before any model step records zero tokens", async () => {

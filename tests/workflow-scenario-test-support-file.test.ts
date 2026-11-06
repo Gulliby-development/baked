@@ -8,7 +8,7 @@ import { TEST_MARKERS } from "../src/core/intelligence/language-traits.js";
 import { declaresTest, TEST_DECLARATIONS } from "../src/core/intelligence/test-declarations.js";
 import { detectLanguageFromPath } from "../src/core/intelligence/types.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
-import { isWrittenTestFile, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
+import { holdsWrittenTests, isCompiledTestFile, isWrittenTestFile, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { runRootPath } from "../src/core/workflows/effects.js";
 import { hostApplyRecords } from "../src/core/workflows/host-apply.js";
@@ -273,6 +273,29 @@ class ScriptedExecutor implements AgentExecutor {
     return { output, inputTokens: 20, outputTokens: 30 };
   }
 }
+
+// #2447: the hold of a test task's written-tests check asks the selection's question. Another,
+// unfinished task's test-tree file that declares no test is support the tests may load (a Go
+// constants `_test.go` file, a helper under `__tests__/`, `test_helper.rb`), so it holds the check
+// back like a source file; another task's file that declares a test still does not.
+describe("another task's support file holds the written-tests check, in every language (#2447)", () => {
+  for (const language of SUPPORTED_LANGUAGES) {
+    const cell = rowOf(SUPPORT_CASES, language);
+    if (!cell?.run) continue;
+    test(`${language}: an unfinished support file holds, an unfinished test file does not`, () => {
+      const [supportPath, supportText] = cell.support;
+      const [testPath, testText] = cell.test;
+      const root = project({ [supportPath]: supportText, [testPath]: testText });
+      const compiled = isCompiledTestFile(testPath);
+      expect(holdsWrittenTests(supportPath, compiled, [], root)).toBe(true);
+      // A compiled test project builds every test file, so there a test file holds too (#1396).
+      expect(holdsWrittenTests(testPath, compiled, [], root)).toBe(compiled);
+      // A file not written yet keeps its name's verdict.
+      const empty = project({});
+      expect(holdsWrittenTests(testPath, compiled, [], empty)).toBe(compiled);
+    });
+  }
+});
 
 describe("scenario: a host-written fixtures_test.go before the package's tests (#2439, R77 trailspin)", () => {
   test("no tests-written failure, no implementer session for the fixtures task, and supplied_drift stays quiet", async () => {

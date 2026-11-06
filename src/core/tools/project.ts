@@ -19,6 +19,7 @@ import {
 } from "../workflows/gates.js";
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
 import { ProcessScope } from "../workflows/process-scope.js";
+import { lintrPrint } from "../workflows/r-tools.js";
 import { pythonEnvironment, sbtTestTask } from "../workflows/toolchain.js";
 import { formatTimeoutMs, recordFormatTimeout, singleFileFormat } from "./auto-format.js";
 import { runBoundedShell } from "./bounded-process.js";
@@ -467,13 +468,14 @@ async function detectToolchain(cwd: string): Promise<DetectedToolchain> {
   }
 
   // R — a package (DESCRIPTION) or a project with testthat tests (#1500). The edit-time format is
-  // styler on the file, which Rscript passes to the expression after it.
+  // styler on the file, which Rscript passes to the expression after it. The lint leaves
+  // indentation to styler where it is installed, as the lintr gate does (#2948).
   if ((await has("DESCRIPTION")) || (await has("tests/testthat"))) {
     const pkg = await has("DESCRIPTION");
     const r = rscriptExecutable();
     const quoted = r.includes(" ") ? `"${r}"` : r;
     profile.test = `${quoted} -e "${pkg ? "testthat::test_local()" : "testthat::test_dir('tests/testthat')"}"`;
-    profile.lint = `${quoted} -e "${pkg ? "lintr::lint_package()" : "lintr::lint_dir('.')"}"`;
+    profile.lint = `${quoted} -e "${lintrPrint(pkg)}"`;
     profile.build = pkg ? "R CMD build ." : null;
     profile.format = `${quoted} -e "styler::style_file(commandArgs(TRUE))"`;
     return profile;
