@@ -64,7 +64,8 @@ import { INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } fro
 import { docFindingRepairs, documentationFinding, reproAllows, reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
 import { packageNeeds } from "../src/core/workflows/package-probe.js";
 import { extractFixtures, nodeUnderBun, redirectFixture, writeIntoCopy } from "../src/core/verification/doc-examples.js";
-import { placedWhere, placeRows } from "../src/core/tools/place-rows.js";
+import { anchorLine, placedWhere, placeRows } from "../src/core/tools/place-rows.js";
+import { joinedRows } from "../src/core/workflows/initiatives/plan.js";
 import { keepFixerRange } from "../src/core/workflows/range-fixer-scope.js";
 import { rowMoveDecision } from "../src/core/workflows/row-block-drift.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
@@ -6614,6 +6615,35 @@ describe("row_block_drift gate: a row the file held before the run is not added 
   for (const [name, rows, added] of cases)
     test(name, () => {
       expect(rowMoveDecision(rows).added).toEqual(added);
+    });
+});
+
+describe("place_rows anchor: a repeated opening line is named by its occurrence (#2977)", () => {
+  // R105 cutpick2 bars T003: two PHP lists open with `return [`; 19 calls with absolute lines.
+  const lines = ["return [", "];", "return [", "];"];
+  const cases: [string, { after: string; occurrence?: number; line?: number }, number | string][] = [
+    ["no occurrence: refused, naming the occurrences", { after: "return [" }, "lines 1, 3 all read"],
+    ["occurrence 2", { after: "return [", occurrence: 2 }, 3],
+    ["occurrence over line", { after: "return [", occurrence: 1, line: 4 }, 1],
+    ["occurrence past the last match", { after: "return [", occurrence: 3 }, "only 2 lines"],
+  ];
+  for (const [name, input, want] of cases)
+    test(name, () => {
+      const got = anchorLine(input, lines);
+      if (typeof want === "number") expect(got).toBe(want);
+      else expect(String(got)).toStartWith(want);
+    });
+});
+
+describe("feature rows gate: one gapped entry reads as its runs in separate entries (#2978)", () => {
+  // R103-R105: the decomposer writes one gapped entry per path; joinedRows makes it the same plan.
+  const cases: [string, { path: string; rows: number[] }[]][] = [
+    ["runs in separate entries", [{ path: "t.php", rows: [1, 2] }, { path: "t.php", rows: [5] }, { path: "./t.php", rows: [8] }]],
+    ["runs out of order, one repeated", [{ path: "t.php", rows: [8] }, { path: "t.php", rows: [1, 2, 5] }, { path: "t.php", rows: [2] }]],
+  ];
+  for (const [name, entries] of cases)
+    test(name, () => {
+      expect(joinedRows(entries)).toEqual(joinedRows([{ path: "t.php", rows: [1, 2, 5, 8] }]));
     });
 });
 

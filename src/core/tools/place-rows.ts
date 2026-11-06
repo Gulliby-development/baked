@@ -232,7 +232,15 @@ export const placeRowsInput = z
       .max(400)
       .optional()
       .describe(
-        "The text of the line the rows go after, as the file holds it (surrounding whitespace ignored), such as the opening line of the list the rows belong in. It survives an earlier insert, unlike line; when the file holds it more than once, line picks the nearest.",
+        "The text of the line the rows go after, as the file holds it (surrounding whitespace ignored), such as the opening line of the list the rows belong in. It survives an earlier insert, unlike line; when the file holds it more than once, give occurrence (or line, and the nearest is used).",
+      ),
+    occurrence: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe(
+        "With after, when the file holds that text more than once (two lists that open with the same line, such as `return [`): which of those lines, from 1 at the top of the file. An insert into the first list leaves the second the second, so occurrence survives an earlier insert as after does.",
       ),
     rows: z
       .array(z.number().int())
@@ -289,7 +297,7 @@ export function placeRowsDescription(
   const files = [...targets]
     .map(([path, rows]) => `${path} (rows ${rowsText(numbersOf(numbers, path, rows))})`)
     .join(", ");
-  return `Insert the request's prescribed rows verbatim into ${files}: rows [first, last] go after the given line of the existing file, one row per line, in the request's order, exactly as the request writes them. Never type a prescribed row with edit_file or multi_edit: write everything else (imports, the row type, the list's opening and close, the harness calls) with edit_file, leaving the rows out, then place them with this tool. Give indent and separator when the defaults do not fit the language or the request's layout: indent by default is ${INDENT_DEFAULT}; the separator that ends each row is by default ${SEPARATOR_DEFAULT}. A file with more than one list, or rows placed in more than one call: give after (the opening line of the list the rows belong in, such as \`static const std::vector<Row> totals = {\`) instead of line, since every insert moves the lines below it, or place the rows of the last list first. The result names the line the rows follow and the list that holds them, and shows the first placed line with its indentation; to fix the indentation of rows already placed, call again with reindent: true and the indent they take. ${MOVE_NOTE}`;
+  return `Insert the request's prescribed rows verbatim into ${files}: rows [first, last] go after the given line of the existing file, one row per line, in the request's order, exactly as the request writes them. Never type a prescribed row with edit_file or multi_edit: write everything else (imports, the row type, the list's opening and close, the harness calls) with edit_file, leaving the rows out, then place them with this tool. Give indent and separator when the defaults do not fit the language or the request's layout: indent by default is ${INDENT_DEFAULT}; the separator that ends each row is by default ${SEPARATOR_DEFAULT}. A file with more than one list, or rows placed in more than one call: give after (the opening line of the list the rows belong in, such as \`static const std::vector<Row> totals = {\`) instead of line, since every insert moves the lines below it, or place the rows of the last list first; when two lists open with the same line (such as \`return [\`), add occurrence, 2 for the second from the top. The result names the line the rows follow and the list that holds them, and shows the first placed line with its indentation; to fix the indentation of rows already placed, call again with reindent: true and the indent they take. ${MOVE_NOTE}`;
 }
 
 /**
@@ -358,10 +366,12 @@ const OPENS_LIST = /[[({=]$/;
  * `input.after`, else `input.line`, or why neither names one. An absolute line moves with every
  * insert above it: R102 tailcut filters T002 placed a two-list C++ file in two calls, computed the
  * second list's line before the first insert, and put its rows inside the first list. A quoted
- * line survives the insert; when the file holds it more than once, `line` picks the nearest.
+ * line survives the insert; when the file holds it more than once, `occurrence` picks the n-th from
+ * the top (#2977: R105 cutpick2 bars T003 took 19 calls on a PHP file whose two lists both open with
+ * `return [`), else `line` the nearest.
  */
 export function anchorLine(
-  input: Pick<PlaceRowsInput, "line" | "after">,
+  input: Pick<PlaceRowsInput, "line" | "after" | "occurrence">,
   lines: readonly string[],
 ): number | string {
   if (input.after === undefined) {
@@ -373,10 +383,16 @@ export function anchorLine(
   const matches = lines.flatMap((line, i) => (line.trim() === want ? [i + 1] : []));
   if (!matches.length)
     return `no line reads ${JSON.stringify(want)}. Give after as the whole text of one line of the file (such as the list's opening line), or line with its number.`;
+  if (input.occurrence !== undefined) {
+    const nth = matches[input.occurrence - 1];
+    if (nth === undefined)
+      return `only ${String(matches.length)} line${matches.length === 1 ? "" : "s"} (${matches.join(", ")}) read${matches.length === 1 ? "s" : ""} ${JSON.stringify(want)}; give occurrence from 1 to ${String(matches.length)}.`;
+    return nth;
+  }
   if (matches.length === 1) return matches[0] as number;
   const near = input.line;
   if (near === undefined)
-    return `lines ${matches.join(", ")} all read ${JSON.stringify(want)}. Give line too, and the nearest of them is used.`;
+    return `lines ${matches.join(", ")} all read ${JSON.stringify(want)}. Give occurrence (1 for line ${String(matches[0])}, 2 for line ${String(matches[1])}, from the top), or line and the nearest of them is used.`;
   return matches.reduce((best, m) => (Math.abs(m - near) < Math.abs(best - near) ? m : best));
 }
 
