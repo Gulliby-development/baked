@@ -258,6 +258,13 @@ export const CheckSchema = z
      * whole (#1837, #1582). Absent means every file of the task.
      */
     fixPaths: z.array(RelativePath).optional(),
+    /**
+     * The lines (1-based, inclusive) of the one `fixPaths` file a range formatter's fixer formats
+     * (#2970): its changes outside them are put back where the check still passes without them.
+     */
+    fixLines: z
+      .array(z.tuple([z.number().int().positive(), z.number().int().positive()]))
+      .optional(),
     fixUnsafe: z
       .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
       .strict()

@@ -774,6 +774,7 @@ import {
   ruleFindingKey,
 } from "./quality/rules.js";
 import { DEFAULT_SAST_CONFIG, QUALITY_SAST, runSast, sastClaim, sastOf } from "./quality/sast.js";
+import { putBackOutsideRange } from "./range-fixer-scope.js";
 import { carriesOver, changedSince, previousRound } from "./re-review.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
@@ -17877,6 +17878,9 @@ ${note}`;
               path,
               id: journal(path, check, images.get(path) ?? null),
             }));
+            // A range fixer's file as it was, to put back its changes outside the range (#2970).
+            const ranged = check.fixLines && targets.length === 1 ? targets[0] : undefined;
+            const rangedBefore = ranged ? readText(workspacePath(root, ranged)) : null;
             // A fixer that writes text mode on Windows turns a LF file into CRLF (#2214).
             const endings = captureEndings(paths.map((path) => workspacePath(root, path)));
             let result: FixerResult;
@@ -17897,6 +17901,32 @@ ${note}`;
               throw error;
             }
             restoreEndings(endings);
+            if (ranged) {
+              const done = await putBackOutsideRange(
+                workspacePath(root, ranged),
+                ranged,
+                rangedBefore,
+                check.fixLines,
+                async () =>
+                  (
+                    await runFixer(
+                      scope,
+                      { executable: check.executable, args: check.args },
+                      {
+                        cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                        env: buildCheckEnv(check),
+                        timeoutMs: check.timeoutMs,
+                        signal,
+                        sandbox: runSandbox(policy, root, {
+                          gitWrite: root !== this.store.workspace,
+                        }),
+                      },
+                    )
+                  ).exitCode === 0,
+              );
+              if (done)
+                recordPutBack(this.store, runId, attempt, `fixer ${check.id} range`, [done]);
+            }
             let fixed = false;
             for (const effect of effects) {
               const target = workspacePath(root, effect.path);
