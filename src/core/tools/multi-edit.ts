@@ -21,6 +21,7 @@ import {
   withLineEnding,
   withoutCopiedBom,
 } from "./line-endings.js";
+import { oldStringRange, rangeText, replaceRange } from "./line-range.js";
 import {
   appendAutoFormatResult,
   appendCloneHints,
@@ -129,31 +130,18 @@ export const multiEditTool = {
         const oldLineCount = edit.oldString.split("\n").length;
         const newLineCount = edit.newString.split("\n").length;
 
-        // Helper: apply line-based replacement at a given range
-        const applyLineReplace = (start: number, end: number, replacement?: string): boolean => {
-          const lines = content.split("\n");
-          if (start < 0 || end > lines.length || start >= end) return false;
-          const before = lines.slice(0, start);
-          const after = lines.slice(end);
-          content = [...before, ...(replacement ?? edit.newString).split("\n"), ...after].join(
-            "\n",
-          );
-          return true;
-        };
-
         // ── PRIMARY: line-based editing (when lineStart is provided) ──
         // Line numbers are AUTHORITATIVE — oldString is verification only.
         if (adjustedLineStart != null) {
-          const start = adjustedLineStart - 1;
-          const end = start + oldLineCount;
           const lines = content.split("\n");
+          const range = oldStringRange(lines, edit.oldString, adjustedLineStart);
 
-          if (start >= 0 && end <= lines.length && start < end) {
-            const rangeContent = lines.slice(start, end).join("\n");
+          if (range) {
+            const rangeContent = rangeText(lines, range);
 
             // Exact match at range — high confidence
             if (rangeContent === edit.oldString) {
-              applyLineReplace(start, end);
+              content = replaceRange(lines, range, edit.newString);
               lineOffset += newLineCount - oldLineCount;
               continue;
             }
@@ -165,8 +153,8 @@ export const multiEditTool = {
               edit.newString,
             );
             if (rangeFixed) {
-              applyLineReplace(start, end, rangeFixed.newStr);
-              lineOffset += rangeFixed.newStr.split("\n").length - (end - start);
+              content = replaceRange(lines, range, rangeFixed.newStr);
+              lineOffset += rangeFixed.newStr.split("\n").length - rangeContent.split("\n").length;
               continue;
             }
 
