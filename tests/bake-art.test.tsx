@@ -181,10 +181,22 @@ test("boot splash painter draws the stage and exits on EXIT", async () => {
   });
   proc.stdin.write(`${JSON.stringify(bootSplashFrames(80, 24, DARK_THEME, { reduced: true, truecolor: true }))}\n`);
   proc.stdin.write(`${JSON.stringify([0.5, "Checking providers and keys"])}\n`);
-  await Bun.sleep(400);
+  // The painter applies a progress line on its next 100 ms tick. Wait for that frame rather than
+  // a fixed time: on a loaded macOS runner the child had not started its tick before EXIT, and
+  // the output still read "PROOFING  Starting 0%".
+  const reader = proc.stdout.getReader();
+  const decoder = new TextDecoder();
+  let out = "";
+  const deadline = Date.now() + 10_000;
+  while (!(out.includes("BAKING") && out.includes(" 50%")) && Date.now() < deadline) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    out += decoder.decode(value, { stream: true });
+  }
   proc.stdin.write("EXIT\n");
   proc.stdin.end();
-  const out = await new Response(proc.stdout).text();
+  for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read())
+    out += decoder.decode(chunk.value, { stream: true });
   expect(await proc.exited).toBe(0);
   expect(out).toContain("BAKING");
   expect(out).toContain("Checking providers and keys");

@@ -119,6 +119,9 @@ const RowFramework = z.enum([
   "pest",
   "exunit",
   "dart",
+  "kotlin",
+  "scalatest",
+  "munit",
 ]);
 const RowPackage = z
   .string()
@@ -163,8 +166,8 @@ export const TaskSchema = z
           .object({
             framework: RowFramework,
             /**
-             * The Go package, Java package, C# namespace or PHP namespace (dots for backslashes) of
-             * the harness and the host's test.
+             * The Go package, Java or Kotlin package, Scala package, C# namespace or PHP namespace
+             * (dots for backslashes) of the harness and the host's test.
              */
             package: RowPackage.optional(),
             harness: RelativePath,
@@ -255,6 +258,13 @@ export const CheckSchema = z
      * whole (#1837, #1582). Absent means every file of the task.
      */
     fixPaths: z.array(RelativePath).optional(),
+    /**
+     * The lines (1-based, inclusive) of the one `fixPaths` file a range formatter's fixer formats
+     * (#2970): its changes outside them are put back where the check still passes without them.
+     */
+    fixLines: z
+      .array(z.tuple([z.number().int().positive(), z.number().int().positive()]))
+      .optional(),
     fixUnsafe: z
       .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
       .strict()
@@ -576,6 +586,13 @@ export const PolicySchema = z
      */
     costForecast: z.enum(["ask", "advise", "off"]).optional(),
     /**
+     * Which token mix the cost forecast prices a stage without paid samples of its model at
+     * (#2963): `off` the blended mixes, `shadow` the same and records the forecast at each
+     * model's own provider family mix (with Claude's cache writes) beside it as `providerMix`,
+     * `on` shows that forecast. Absent means `shadow`, so stored policies keep their hash.
+     */
+    providerTokenMix: z.enum(["off", "shadow", "on"]).optional(),
+    /**
      * The mode of each registered stop reason (stop-reasons.ts): `shadow` and `advisory` record a
      * `decision.would_stop` event instead of stopping the run or declining the approval (#1714).
      * Hard limits on money, tokens, time and storage take only `enforce`. Absent keeps every
@@ -771,6 +788,15 @@ export const PolicySchema = z
      */
     hostApply: z.literal("on").optional(),
     /**
+     * The host's partial apply of a task (host-apply.ts `hostApplyPartialSplit`, #2937): when the
+     * decision keeps a task whole for an implementer because one write declines, `on` lets the
+     * host write the task's other files (each under its own `hostApply` or `rowFileWrite` "on")
+     * and gives the session only the declined files as writes. `off` records nothing. Absent
+     * means shadow (the split is recorded as the record's `partial`, a session writes every
+     * file), so stored policies keep their hash.
+     */
+    hostApplyPartial: z.enum(["off", "on"]).optional(),
+    /**
      * The edge-input probe of a source task (edge-inputs.ts, #1808): `on` asks the `edge-cases`
      * profile once per planned source task that settled without failures for extreme legal inputs
      * its criteria allow; the host runs them through the project's entry points and a case that
@@ -838,6 +864,14 @@ export const PolicySchema = z
      * files and only say it), so stored policies keep their hash.
      */
     rowRunRoute: z.literal("on").optional(),
+    /**
+     * The host's answer to a spec conflict about a test file whose rows the request prescribes
+     * (conflict-row-reply.ts, #2493): `on` lets the host compare the file with the rows and, when
+     * it drifts, reply with the row diff and keep the request side, instead of a model settle.
+     * Absent means shadow (the decision and the reply are recorded under `conflicts/rows/`, the
+     * conflict takes the other settles), so stored policies keep their hash.
+     */
+    conflictRowReply: z.literal("on").optional(),
     /**
      * The host's restore of a prescribed row whose long byte run a delivered test file counts
      * differently, outside the checks stage (row-restore.ts `rowRunRestores`, #2543): on resume of
@@ -969,6 +1003,15 @@ export const PolicySchema = z
          * feature's estimate (`documentedSurface`, mode `shadow`) only.
          */
         documentedSurface: z.boolean().optional(),
+        /**
+         * Prices a feature with fewer paths than its size pool's median, where the pool's tokens
+         * do not follow their paths (no path fit), at the square root of that path share of the
+         * pool's range, and a feature of legal files alone (a `LICENSE`) at the per-path rate
+         * (`fewPathDetail`, #2640), recorded on each estimate (`fewPathShare`, #2869). Documentation
+         * features keep their price. Absent means on (#2893); `false` turns it off, and the size
+         * pool then prices them as features of its usual paths.
+         */
+        fewPathPrice: z.boolean().optional(),
         /**
          * Weighs an initiative estimate's finished features by how recent their initiative is: a
          * feature's weight halves for every this many initiatives started after its own
@@ -1721,6 +1764,14 @@ export const WorkflowConfigSchema = z
      */
     planChargeExpected: z.enum(PLAN_CHARGE_EXPECTED_MODES).optional(),
     /**
+     * The folder that holds new runs' worktrees, `<root>/<run's 8 hex digits>/main` (#2461):
+     * absolute, starting with `~`, or relative to the project. Unset, they live in the project's
+     * `.baked/worktrees`. A short folder such as `C:\.bk` keeps a task's checks under the path
+     * length a toolchain handles on Windows (`WORKTREE_PATH_LIMITS`). It must be on the project's
+     * drive; a run's worktree keeps the folder it was created in.
+     */
+    worktreeRoot: z.string().trim().min(1).max(240).optional(),
+    /**
      * Deadlines and stall limits (milliseconds): a tool call that never returns, a model attempt
      * with no progress, and how often a stalled run resumes by itself. Defaults in `stall.ts`.
      */
@@ -2422,6 +2473,11 @@ export interface StartRequest {
    * without it only the `active` class follows an explicit run model.
    */
   modelStrict?: boolean;
+  /**
+   * The provider accounts this run uses (CLI `--account PROVIDER=ID`, #2303) instead of the
+   * project's; each must exist and be allowed for the project, or the run does not start.
+   */
+  accounts?: import("../llm/provider-accounts.js").AccountChoice;
   /** What blocking questions do in this run (CLI `--clarification MODE`); it overrides the policy. */
   clarification?: ClarificationMode;
   /** What the test-integrity guard does in this run (CLI `--test-integrity MODE`); it overrides the policy. */

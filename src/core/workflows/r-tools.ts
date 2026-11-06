@@ -30,12 +30,32 @@ const LINT_LINES =
   "for (x in l) cat(sprintf('%s:%d:%d: %s: [%s] %s\\n', x$filename, x$line_number, x$column_number, x$type, x$linter, x$message), sep = '')";
 
 /**
+ * Where styler is installed it owns indentation, and the lints `l` keep no `indentation_linter` lint
+ * (#2948). The format-written check styles every R file a task writes when styler is there (#2817),
+ * and styler indents a multi-line `if` condition 2 past its first line, where lintr's default
+ * `indentation_linter` asks for 6 and none of its `hanging_indent_style` values takes 2: no text
+ * passed both, and in R101 turntrim the red lintr check opened 16 correctives. Without styler nothing restyles a file, so
+ * lintr keeps the rule. The package name is split so the lint command never names styler, which
+ * `FORMAT_COMMAND` (`check-policy.ts`) would read as a formatter check. It holds no `$` or `"`, so
+ * a shell's double quotes keep it as written (the edit tools' lint profile, `project.ts`).
+ */
+export const STYLER_OWNS_INDENTATION =
+  "if (requireNamespace(paste0('sty', 'ler'), quietly = TRUE)) l <- l[vapply(l, function(x) x[['linter']] != 'indentation_linter', logical(1))]";
+
+/** The lintr call on the package (`DESCRIPTION`) or on the directory. */
+const lintrCall = (pkg: boolean): string => `lintr::${pkg ? "lint_package()" : "lint_dir('.')"}`;
+
+/**
  * lintr on the package or the directory, one `path:line:column: type: [linter] message` per lint.
  * The lines are written here, not by `print`: under `GITHUB_ACTIONS` lintr prints GitHub
  * `::warning file=...` annotations instead, which the diagnostic count does not read.
  */
 export const lintrRun = (pkg: boolean): string =>
-  `l <- lintr::${pkg ? "lint_package()" : "lint_dir('.')"}; ${LINT_LINES}; quit(status = as.integer(length(l) > 0))`;
+  `l <- ${lintrCall(pkg)}; ${STYLER_OWNS_INDENTATION}; ${LINT_LINES}; quit(status = as.integer(length(l) > 0))`;
+
+/** lintr as the edit tools' lint command runs it: lintr's own print of the lints the gate keeps. */
+export const lintrPrint = (pkg: boolean): string =>
+  `l <- ${lintrCall(pkg)}; ${STYLER_OWNS_INDENTATION}; print(l)`;
 
 /**
  * styler in dry mode, one `path: would be reformatted by styler` line per file it would change:

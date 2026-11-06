@@ -188,6 +188,11 @@ export interface StartBody {
   modelStrict?: boolean;
   /** The run's dollar cap in US dollars (`--max-cost-usd`); omitted, the policy or setting applies. */
   maxCostUsd?: number;
+  /**
+   * Labelled provider accounts the run uses instead of the project's (`--account`, #2303); a
+   * provider left out keeps the project's account.
+   */
+  accounts?: { codex?: string; "claude-code"?: string };
   /** The run records the proposal of `POST /v1/workflow/propose` and the workflow kept. */
   autoPreset?: boolean;
 }

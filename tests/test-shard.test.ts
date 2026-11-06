@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { planShards, type ShardWeights, testFiles, weightsFor } from "../scripts/test-shard.js";
+import { busyShards, planShards, type ShardWeights, testFiles, weightsFor } from "../scripts/test-shard.js";
 import { buildWeights, fileSeconds } from "../scripts/test-shard-weights.js";
 
 // Round-robin by name put the replay corpus and the slowest workflow suites in one Windows shard:
@@ -82,5 +82,22 @@ describe("refreshing the weights from shard logs", () => {
       files: { "tests/slow.test.ts": 21 },
     });
     expect(buildWeights([log], ["tests/slow.test.ts"]).files).toEqual({ "tests/slow.test.ts": 21 });
+  });
+});
+
+describe("busy shards (#2915)", () => {
+  test("names only the shards that get a file, so the others take no runner", () => {
+    const weights = { default: 1, files: { "tests/a.test.ts": 100, "tests/b.test.ts": 50 } };
+    expect(busyShards(["tests/a.test.ts", "tests/b.test.ts"], 5, weights)).toEqual([1, 2]);
+    expect(busyShards(["tests/a.test.ts"], 3, weights)).toEqual([1]);
+    expect(busyShards([], 3, weights)).toEqual([]);
+  });
+
+  test("the command prints them between spaces, for the workflow's contains()", () => {
+    const run = Bun.spawnSync([process.execPath, "scripts/test-shard.ts", "--busy", "macos", "3"], {
+      env: { ...process.env, TEST_FILES: "tests/test-shard.test.ts" },
+    });
+    expect(run.exitCode).toBe(0);
+    expect(run.stdout.toString()).toBe(" 1 \n");
   });
 });

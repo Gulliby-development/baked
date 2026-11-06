@@ -92,6 +92,12 @@ The tables below list the commands the palette shows, generated from `src/core/c
 | --- | --- |
 | `/keys` | Manage LLM provider API keys |
 | `/limits` | Show how much of each subscription's usage limit is left |
+| `/accounts` | List provider accounts and the one this project uses |
+| `/accounts add` | Add a labelled account of Codex or Claude Code |
+| `/accounts login` | Sign an account in, in its own credential home |
+| `/accounts use` | Choose the account this project uses, or default |
+| `/accounts logout` | Sign an account out |
+| `/accounts remove` | Sign out and delete an account |
 | `/codex` | Show Codex login status |
 | `/codex login` | Log in to Codex with your ChatGPT subscription |
 | `/codex logout` | Log out of the current Codex account |
@@ -143,7 +149,7 @@ Without the terminal UI, `baked login codex|claude-code` and `baked logout ...` 
 | `/agent-context preview` | Preview the rules and files an agent's prompt carries |
 | `/agent-context remove` | Remove an entry from the working set |
 | `/agent-features` | Toggle agent features (de-sloppify, tier routing) |
-| `/code-quality` | Quality gates of workflow runs (duplication ratchet, anti-slop rules, dependency check, Semgrep, property-based tests, mutation gate) and the library docs source of implementers |
+| `/code-quality` | Quality gates of workflow runs (duplication ratchet, anti-slop rules, dependency check, Semgrep, property-based tests, mutation gate), the library docs source of implementers and the worktree folder of worktree runs (`workflows.worktreeRoot`) |
 | `/chat-style` | Toggle chat layout style |
 | `/diff-style` | Change diff display style |
 | `/instructions` | Toggle instruction files (baked.md, CLAUDE.md, etc.) |

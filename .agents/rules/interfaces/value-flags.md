@@ -1,0 +1,1 @@
+A value option of `baked --headless` (`src/headless/parse.ts`) is listed in `VALUE_FLAGS`, which splits `--option=value` into `--option value` before parsing, and its branch reads only `args[++i]`; never match `--option=` by hand in one branch, or the other spelling is silently dropped. `tests/headless.test.ts` (`--flag=value`) compares both spellings of every value option.

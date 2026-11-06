@@ -196,4 +196,25 @@ describe("headless saved sessions", () => {
     expect(await tagExists(dir, undoneTag)).toBe(false);
     expect(tab?.checkpointTags?.map((t) => t.index)).toEqual([0, 1, 2]);
   });
+
+  test("--session ID keeps a launched session's worktree, parent and archived flag", async () => {
+    const dir = repo();
+    const store = new SessionManager(dir);
+    const first = await headlessRun(dir, store, null, "first", []);
+    const saved = store.loadSession(first.id);
+    if (!saved) throw new Error("not saved");
+    const worktree = { path: join(dir, "wt"), branch: "baked/session-x", baseHead: "abc123" };
+    await store.saveSession(
+      { ...saved.meta, worktree, parentId: "coordinator-1", archived: true },
+      saved.tabMessages,
+      saved.tabCoreMessages,
+    );
+
+    await headlessRun(dir, store, first.id, "second", []);
+
+    const meta = store.loadSession(first.id)?.meta;
+    expect(meta?.worktree).toEqual(worktree);
+    expect(meta?.parentId).toBe("coordinator-1");
+    expect(meta?.archived).toBe(true);
+  });
 });

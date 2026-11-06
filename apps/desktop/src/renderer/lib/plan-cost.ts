@@ -15,6 +15,8 @@ export interface PlanCost {
     rate?: "run" | "history" | "mix" | "default";
     otherModels?: boolean;
   } | null;
+  /** The final review and convergence, priced as the cost forecast prices them (absent on older backends). */
+  review?: { usd: number; stages: string[] } | null;
 }
 
 const RATE_TEXT = {
@@ -36,5 +38,8 @@ export function planCostText(cost: PlanCost): string {
   const tasks = cost.implementation
     ? `; the planned tasks about ${usd(cost.implementation.usd.low)}–${usd(cost.implementation.usd.high)} on ${cost.implementation.model}${RATE_TEXT[cost.implementation.rate ?? "default"]}${cost.implementation.otherModels ? OTHER_MODELS_TEXT : ""}`
     : "";
-  return `${planning}${tasks}`;
+  const review = cost.review
+    ? `; the final review and convergence about ${usd(cost.review.usd)}`
+    : "";
+  return `${planning}${tasks}${review}`;
 }

@@ -658,6 +658,8 @@ function pwshGates(workspace: string): GateSuggestion[] {
  * lintr is preselected with a `.lintr` config and offered without one, since its default linters
  * may already fail on the code. styler is offered, not preselected, with the fixer
  * `styler::style_file` on the task's file; the format-written check holds new files to it.
+ * styler owns indentation: where it is installed lintr's `indentation_linter` lints are left out,
+ * since the two disagree on a multi-line `if` condition and no text passes both (#2948).
  */
 function rGates(workspace: string): GateSuggestion[] {
   const pkg = has(workspace, "DESCRIPTION");
@@ -757,11 +759,13 @@ function cargoGates(workspace: string): GateSuggestion[] {
   return [
     {
       check: {
-        ...gate("cargo-fmt", "cargo", ["fmt", "--check"], 120000),
+        // rustfmt reads neither NO_COLOR nor CARGO_TERM_COLOR and colours its diff under a colour
+        // TERM (R90 windowfit, #2830); `--color=never` is its own switch.
+        ...gate("cargo-fmt", "cargo", ["fmt", "--check", "--", "--color=never"], 120000),
         fix: { executable: "cargo", args: ["fmt"] },
       },
       source: "Cargo.toml",
-      reason: "cargo fmt --check (fixer: cargo fmt)",
+      reason: "cargo fmt --check -- --color=never (fixer: cargo fmt)",
       preselected: true,
     },
     {

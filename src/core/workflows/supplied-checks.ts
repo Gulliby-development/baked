@@ -268,6 +268,24 @@ export function suppliedCheckText(record: SuppliedCheckRecord): string | null {
   return `Supplied content fails the project's checks: ${where}. The request gives this content verbatim and requires the check to pass; no implementer can deliver both. Ask which one wins: the verbatim content, or the check (the content changed until it passes).`;
 }
 
+/**
+ * Why the host does not apply a task's supplied content under `hostApply: "on"` (#2462): the
+ * task's `supplied-checks/` record found a diagnostic of the project's own file-scoped check on a
+ * line the content sets (`conflict`). The one reader of the record for the apply decision
+ * (`hostApplyRecord`'s `suppliedConflict`); no other site vetoes an apply. R78 deltaglue frames
+ * and R80 deltaglue cli: the host wrote content its lint rejected, and correctives of 293k and
+ * 374k tokens followed. Null without a record or a conflict: the decision stands.
+ */
+export function suppliedCheckVeto(record: SuppliedCheckRecord | null): string | null {
+  if (!record?.conflict) return null;
+  const failing = record.checks.filter((c) => c.offenses.length);
+  const first = failing[0]?.offenses[0];
+  const where = first
+    ? ` at ${first.path}${first.line === null ? "" : `:${first.line}`}${first.rule ? ` (${first.rule})` : ""}`
+    : "";
+  return `supplied content fails ${failing.map((c) => c.checkId).join(", ")}${where}: an implementer reconciles the request's content with the check`;
+}
+
 /** The run's recorded probes, latest per task, in task order. */
 export function suppliedCheckRecords(
   store: Pick<WorkflowStore, "artifacts" | "readArtifact">,

@@ -5,6 +5,7 @@ import {
   measureFileRows,
   measureRows,
   type RowBlockDrift,
+  type RowMeasure,
   rowBlockDecision,
   rowBlockDrifts,
   rowHead,
@@ -166,7 +167,10 @@ export function rowEditBreaks(
   const block = suppliedRows(request, [plainPath]).get(plainPath);
   if (!block) return null;
   const beforeRows = measureFileRows(block.lines, before);
-  const driftedBefore = new Set(rowBlockDecision(measureRows(block.lines, before, beforeRows)));
+  // A dropped copy of a row the request gives twice (#2704) is recorded, not guarded: no `copy`.
+  const guarded = (measures: RowMeasure[]) =>
+    rowBlockDecision(measures.map(({ copy: _, ...measure }) => measure));
+  const driftedBefore = new Set(guarded(measureRows(block.lines, before, beforeRows)));
   // A row held only by a line in the request's notation (#2583: `run "cols" … => 0 "…" ""` that
   // place_rows wrote into a Pester file) is no executable row: translating it is no break.
   const places = rowPlaces(beforeRows);
@@ -175,7 +179,7 @@ export function rowEditBreaks(
     const at = places.get(n);
     return at !== undefined && rowNotation(lines[at - 1] ?? "");
   };
-  const rows = rowBlockDecision(measureRows(block.lines, after)).filter(
+  const rows = guarded(measureRows(block.lines, after)).filter(
     (n) => !driftedBefore.has(n) && !notation(n),
   );
   if (!rows.length) return null;
@@ -183,10 +187,28 @@ export function rowEditBreaks(
   return { path: plainPath, rows, texts: rows.map((n) => cut(block.lines[n - 1] ?? "")) };
 }
 
-/** The answer to an edit `rowEditBreaks` put back. */
-export function rowEditBreakText(broken: RowEditBreak): string {
+/**
+ * Whether a task asks for prescribed rows to change place (#2955): its title or description (a
+ * corrective's carries its finding) names an order, a move, a swap, a split or another list.
+ */
+const MOVE_ASK =
+  /\b(?:re-?order\w*|out of order|(?:wrong|another|other|request'?s?|their|row) order|order of (?:the )?rows|mov(?:e|es|ed|ing)|swap\w*|split\w*|(?:wrong|another|other|second|first) list)\b/i;
+export function asksForMove(task: Pick<Task, "title" | "description"> | null | undefined): boolean {
+  return task ? MOVE_ASK.test(`${task.title}\n${task.description}`) : false;
+}
+
+/**
+ * The answer to an edit `rowEditBreaks` put back. `move` (the task asks for a move, `asksForMove`,
+ * #2955) adds the one-call move: the guard judges each call alone, so the literal advice alone left
+ * R102 tailcut's corrective with no route to the order it had to restore. A row still a line of
+ * the file elsewhere after the edit is held there, so the guard never breaks it: a put-back move is
+ * always a deletion, and only the task's words tell it from a session dropping a row.
+ */
+export function rowEditBreakText(broken: RowEditBreak, move = false): string {
   const which = broken.rows.map((n, i) => `row ${n} (${broken.texts[i]})`).join("; ");
-  return `Edit put back: it changed the request's prescribed ${broken.rows.length === 1 ? "row" : "rows"} of ${broken.path} that the file held: ${which}. The request fixes these rows, their inputs and expected outputs exactly; keep the test's literals as they are and change the source so it produces the expected output.`;
+  const text = `Edit put back: it changed the request's prescribed ${broken.rows.length === 1 ? "row" : "rows"} of ${broken.path} that the file held: ${which}. The request fixes these rows, their inputs and expected outputs exactly; keep the test's literals as they are and change the source so it produces the expected output.`;
+  if (!move) return text;
+  return `${text} If the task is to move prescribed rows (another order, or another list of the file), that is allowed when one call leaves every prescribed row in the file: each call is judged alone, so a deletion alone is put back. Use place_rows with move: true, rows [first, last] and the line they go after, or a single multi_edit that removes the rows and inserts them at their new place.`;
 }
 
 /**
@@ -211,12 +233,32 @@ export function respelledRunLine(text: string, row: string): string | null {
 /**
  * A row line's top-level argument count (`{ "a", "b" }` 2, `row(x, [y, z])` 2) and the index just
  * past the bracket that closes the row, or null when the row's bracket does not close on the line.
- * Strings are skipped with their escapes.
+ * Strings are skipped with their escapes. Besides a bracketed head (`{`, `row(`, `Arguments.of(`)
+ * it reads three forms (#2553): a struct literal after a bare name (Rust `Row { input: "a", events:
+ * &[] }`, its fields), an attribute row (Rust rstest `#[case("a", 0)]`, the inner call's arguments,
+ * the row ending past its `]`) and a command row (PowerShell `Row @('a') -Code 0`, its words).
  */
 export function rowSpan(line: string): { count: number; end: number } | null {
   const head = rowHead(line);
-  const open = /[([{]$/.test(head) ? line.indexOf(head) + head.length - 1 : -1;
-  if (open < 0) return null;
+  const at = line.indexOf(head);
+  if (head === "#[") {
+    const call = /^#\[[A-Za-z_]\w*\(/.exec(line.slice(at))?.[0];
+    if (!call) return bracketSpan(line, at + 1);
+    const inner = bracketSpan(line, at + call.length - 1);
+    return inner && line[inner.end] === "]" ? { count: inner.count, end: inner.end + 1 } : null;
+  }
+  if (/[([{]$/.test(head)) return bracketSpan(line, at + head.length - 1);
+  if (!/^[A-Za-z_][\w.:-]*$/.test(head)) return null;
+  const rest = line.slice(at + head.length);
+  const gap = /^\s+/.exec(rest)?.[0].length ?? 0;
+  if (!gap) return null;
+  const from = at + head.length + gap;
+  if (line[from] === "{") return bracketSpan(line, from);
+  return commandSpan(line, from);
+}
+
+/** The arguments of the bracket that opens at `open` and the index just past its close. */
+function bracketSpan(line: string, open: number): { count: number; end: number } | null {
   let depth = 0;
   let count = 0;
   let content = false;
@@ -247,6 +289,40 @@ export function rowSpan(line: string): { count: number; end: number } | null {
     } else if (depth === 1 && ch.trim()) content = true;
   }
   return null;
+}
+
+/**
+ * The words of a command row from `from` (`@('cols', '3') -Code 0 -Out "a`n"`: 5) and the index
+ * just past the last one; a trailing `,` or `;` is the row's separator, not a word. A double-quoted
+ * word escapes with a backtick (PowerShell), a single-quoted one has no escape. Null when a string
+ * or bracket does not close on the line, or a closing bracket has no opening one.
+ */
+function commandSpan(line: string, from: number): { count: number; end: number } | null {
+  let count = 0;
+  let end = from;
+  let depth = 0;
+  let word = false;
+  for (let i = from; i < line.length; i++) {
+    const ch = line[i] ?? "";
+    if (depth === 0 && /\s/.test(ch)) {
+      word = false;
+      continue;
+    }
+    if (depth === 0 && (ch === ";" || ch === ",") && !line.slice(i + 1).trim()) break;
+    if (!word && depth === 0) {
+      word = true;
+      count++;
+    }
+    if (ch === '"' || ch === "'") {
+      let j = i + 1;
+      while (j < line.length && line[j] !== ch) j += ch === '"' && line[j] === "`" ? 2 : 1;
+      if (j >= line.length) return null;
+      i = j;
+    } else if ("([{".includes(ch)) depth++;
+    else if (")]}".includes(ch) && --depth < 0) return null;
+    if (depth === 0) end = i + 1;
+  }
+  return depth === 0 && count ? { count, end } : null;
 }
 
 /** The text after a row line's closing bracket (`,`, `;`, or `));` closing the list too). */
