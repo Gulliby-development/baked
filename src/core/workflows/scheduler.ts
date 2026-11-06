@@ -35,6 +35,7 @@ import {
 import { invisibleCharacters } from "../llm/provider-answer.js";
 import { ProviderUnreachableError } from "../llm/provider-health.js";
 import { dataDir, matchGlob } from "../platform/index.js";
+import { findPython } from "../platform/python.js";
 import { runSandbox } from "../security/sandbox.js";
 import { buildSafeEnv } from "../spawn.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
@@ -18521,10 +18522,8 @@ ${note}`;
     const libraries = propertyLibraries({
       ...libraryFiles(root),
       pythonImports: (module) => {
-        const python =
-          process.platform === "win32"
-            ? (Bun.which("python") ?? Bun.which("py"))
-            : (Bun.which("python3") ?? Bun.which("python"));
+        // The Windows Store stub answers every import with exit 9009, which read as "missing" (#2992).
+        const python = findPython();
         if (!python) return null;
         const probe = Bun.spawnSync([python, "-c", `import ${module}`], {
           cwd: root,

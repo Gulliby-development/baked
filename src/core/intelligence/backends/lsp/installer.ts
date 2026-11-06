@@ -26,6 +26,7 @@ import {
   EXE,
   IS_WIN,
 } from "../../../platform/index.js";
+import { findPython, pythonExecutable } from "../../../platform/python.js";
 
 const BAKED_LSP_DIR = join(dataDir(), "lsp-servers");
 const VERSIONS_FILE = join(configDir(), "lsp-versions.json");
@@ -145,12 +146,12 @@ function getInstallMethod(purl: ParsedPurl): InstallMethod {
   }
 }
 
-const PYTHON_CMD = IS_WIN ? "python" : "python3";
-
 function getToolchainRequirement(method: InstallMethod, pkg: MasonPackage): string | null {
   switch (method) {
     case "generic":
-      return Object.values(pkg.bin ?? {}).some((b) => b.startsWith("python:")) ? PYTHON_CMD : null;
+      return Object.values(pkg.bin ?? {}).some((b) => b.startsWith("python:"))
+        ? pythonExecutable()
+        : null;
     case "cargo":
       return "cargo";
     case "golang":
@@ -249,6 +250,8 @@ function commandOnPath(cmd: string): boolean {
 
 function toolchainAvailable(toolchain: string | null): boolean {
   if (!toolchain) return true;
+  // `python` on PATH may be the Windows Store stub, which runs no Python (#2992).
+  if (toolchain === pythonExecutable()) return findPython() !== null;
   return commandOnPath(toolchain);
 }
 
@@ -932,13 +935,14 @@ function shQuote(value: string): string {
 
 function writeLauncher(binDir: string, binName: string, bin: GenericBin, target: string): void {
   if (IS_WIN) {
-    const command = bin.kind === "python" ? `${PYTHON_CMD} "${target}"` : `"${target}"`;
+    const command = bin.kind === "python" ? `${pythonExecutable()} "${target}"` : `"${target}"`;
     writeFileSync(join(binDir, binName + CMD_EXT), `@echo off\r\n${command} %*\r\n`);
     return;
   }
   if (bin.kind === "exec") chmodSync(target, 0o755);
   // Exec the file by its real path so scripts can find files relative to themselves.
-  const command = bin.kind === "python" ? `${PYTHON_CMD} ${shQuote(target)}` : shQuote(target);
+  const command =
+    bin.kind === "python" ? `${pythonExecutable()} ${shQuote(target)}` : shQuote(target);
   const launcher = join(binDir, binName);
   writeFileSync(launcher, `#!/bin/sh\nexec ${command} "$@"\n`);
   chmodSync(launcher, 0o755);

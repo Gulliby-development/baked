@@ -6,6 +6,7 @@ import { extractExamples, placeholderOf, runDocExamples } from "../src/core/veri
 import { entryPointCommand, projectEntryPoints } from "../src/core/verification/entry-points.js";
 import { runProbe } from "../src/core/verification/repro.js";
 import { ProcessScope } from "../src/core/workflows/process-scope.js";
+import { findPython } from "../src/core/platform/python.js";
 
 // Bench round 55 (#1821): the documented-example check ran 0 of 27 README examples in three apps.
 // `routeshadow tree app.txt` was skipped because routeshadow is not cargo, `stampbook status`
@@ -175,7 +176,9 @@ else console.log("usage: routeshadow match FILE METHOD PATH");`,
     expect(result?.firstDifference?.actual).toContain("users.show");
   });
 
-  test.skipIf(!Bun.which("python3"))("a Python console script runs through the environment's interpreter (stampbook)", async () => {
+  // `Bun.which("python3")` finds the Windows Store stub where Python is only `python` (#2992).
+  const python = findPython(["python3", "python"]);
+  test.skipIf(!python)("a Python console script runs through the environment's interpreter (stampbook)", async () => {
     const readme = [`${fence}console`, "$ stampbook status", "0 stamps", fence].join("\n");
     const results = await readmeRun(
       readme,
@@ -184,7 +187,7 @@ else console.log("usage: routeshadow match FILE METHOD PATH");`,
         "stampbook/__init__.py": "",
         "stampbook/cli.py": "import sys\n\ndef main():\n    print('0 stamps' if sys.argv[1:] == ['status'] else sys.argv[0])\n    return 0\n",
       },
-      ["python3"],
+      [python ?? "python3"],
     );
     expect(results.map((r) => [r.status, r.reason])).toEqual([["match", undefined]]);
   });
