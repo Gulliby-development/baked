@@ -31,6 +31,7 @@ import {
 } from "../core/compaction/index.js";
 import {
   assembleCompacted,
+  compactedTail,
   messageChars,
   rehydrateWorkingState,
   splitForCompaction,
@@ -1193,7 +1194,7 @@ export function useChat({
         }
 
         const newMessages = assembleCompacted(summary, recentMessages);
-        const sanitized = newMessages.slice(2);
+        const sanitized = compactedTail(newMessages);
         setCoreMessages(newMessages);
         emitCacheReset(); // Old read results are gone — allow re-reads
         const trackedFiles = contextManager.getTrackedFiles();

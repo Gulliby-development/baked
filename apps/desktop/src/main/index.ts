@@ -3,6 +3,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   type IpcMainInvokeEvent,
   ipcMain,
@@ -45,6 +46,12 @@ import { allowPermission, microphoneAccess, microphoneSettingsUrl } from "./micr
 import { checkDraft, newProjectFolder } from "./new-project.js";
 import { manageKnownProject, renameKnownProject } from "./project-actions.js";
 import { SettingsStore } from "./settings.js";
+import {
+  STARTUP_ERROR_COPIED_CSS,
+  startupErrorAction,
+  startupErrorDetails,
+  startupErrorUrl,
+} from "./startup-error.js";
 import { ProjectSupervisor, type Stream } from "./supervisor.js";
 import { AppTray } from "./tray.js";
 import { CloseRequests, closeAction, closeToTray } from "./tray-model.js";
@@ -85,11 +92,18 @@ let listed: Promise<unknown> = Promise.resolve();
 let window: BrowserWindow | null = null;
 const closeRequests = new CloseRequests();
 let quitting = false;
+/** The error page's window once startup failed; it replaces the main window for good. */
+let startupErrorWindow: BrowserWindow | null = null;
 const broadcast = (channel: string, ...args: unknown[]): void => {
   if (window && !window.isDestroyed()) window.webContents.send(channel, ...args);
 };
 
 function showWindow(hash?: string): void {
+  if (startupErrorWindow) {
+    startupErrorWindow.show();
+    startupErrorWindow.focus();
+    return;
+  }
   if (!window) createWindow();
   if (window?.isMinimized()) window.restore();
   window?.show();
@@ -465,14 +479,54 @@ async function boot(): Promise<void> {
   }
 }
 
+/**
+ * Shows a startup failure on the BAKED-styled error page (#2686) in its own sandboxed window
+ * without a preload: its Copy details and Quit links navigate to `baked-startup:`, which is
+ * intercepted here. The native error box is only the fallback when that page cannot load.
+ */
+async function showStartupError(error: unknown): Promise<void> {
+  const details = startupErrorDetails(error);
+  try {
+    window?.destroy();
+    const errorWindow = new BrowserWindow({
+      width: 720,
+      height: 520,
+      minWidth: 420,
+      minHeight: 320,
+      backgroundColor: "#191410",
+      title: "BAKED failed to start",
+      ...(process.platform === "darwin" ? {} : { icon: windowIcon() }),
+      webPreferences: {
+        contextIsolation: true,
+        sandbox: true,
+        nodeIntegration: false,
+        webSecurity: true,
+      },
+    });
+    startupErrorWindow = errorWindow;
+    errorWindow.setMenuBarVisibility(false);
+    errorWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    errorWindow.webContents.on("will-navigate", (event, url) => {
+      event.preventDefault();
+      const action = startupErrorAction(url);
+      if (action === "copy") {
+        clipboard.writeText(details);
+        void errorWindow.webContents.insertCSS(STARTUP_ERROR_COPIED_CSS);
+      } else if (action === "quit") app.quit();
+    });
+    errorWindow.on("closed", () => app.quit());
+    await errorWindow.loadURL(startupErrorUrl(details));
+  } catch {
+    dialog.showErrorBox("BAKED failed to start", details);
+    app.quit();
+  }
+}
+
 if (process.platform === "win32") app.setAppUserModelId(appUserModelId(app.isPackaged));
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on("second-instance", () => showWindow());
-  app.whenReady().then(boot, (error: unknown) => {
-    dialog.showErrorBox("BAKED failed to start", String(error));
-    app.quit();
-  });
+  app.whenReady().then(boot).catch(showStartupError);
   app.on("activate", () => showWindow());
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();

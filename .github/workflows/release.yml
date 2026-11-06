@@ -1,6 +1,7 @@
 name: Release
 
-# Runs when a version tag is pushed (`scripts/release.sh` creates it). It checks
+# Runs when a version tag is pushed (`scripts/release.sh` creates it), or when
+# scheduled-release.yml dispatches it on the tag it created. It checks
 # that the tag matches package.json, runs the full check suite, builds every
 # distributable through the Builds workflow, and publishes a GitHub release with
 # the archives, the desktop installers, their SHA-256 checksums and notes
@@ -10,6 +11,9 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # A tag pushed with GITHUB_TOKEN starts no workflow, so scheduled-release.yml
+  # dispatches this one on its tag. On any other ref every job is skipped.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,6 +24,7 @@ concurrency:
 
 jobs:
   verify:
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

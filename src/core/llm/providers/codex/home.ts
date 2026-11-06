@@ -1,6 +1,9 @@
 import { existsSync, linkSync, mkdirSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { getCwd } from "../../../cwd.js";
 import { dataDir, userHome } from "../../../platform/index.js";
+import { activeProviderAccount } from "../../provider-accounts.js";
+import { providerAccountEnv } from "../account-env.js";
 
 /** What a model turn needs from the user's Codex home: the sign-in and the provider settings. */
 const SHARED_FILES = ["auth.json", "config.toml"] as const;
@@ -38,8 +41,17 @@ export function isolatedCodexHome(
   }
 }
 
-/** The environment of a Codex process that runs model turns: the isolated home when there is one. */
-export function codexRunEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+/**
+ * The environment of a Codex process that runs model turns. When `folder`'s project uses one of
+ * the person's Codex accounts (#2303), that account's own home, which holds its sign-in and none
+ * of the user's files; otherwise the isolated home when there is one.
+ */
+export function codexRunEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  folder: string = getCwd(),
+): NodeJS.ProcessEnv {
+  const account = activeProviderAccount("codex", folder);
+  if (account) return providerAccountEnv("codex", account, env);
   const home = isolatedCodexHome(userCodexHome(env));
   return home ? { ...env, CODEX_HOME: home } : env;
 }

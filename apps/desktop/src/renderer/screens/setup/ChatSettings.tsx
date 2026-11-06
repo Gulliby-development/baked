@@ -424,7 +424,84 @@ function SettingControl({
           change={change}
         />
       );
+    case "path":
+      return (
+        <PathEditor
+          setting={setting}
+          current={typeof current === "string" ? current : null}
+          disabled={disabled}
+          change={change}
+        />
+      );
   }
+}
+
+/** A folder setting (`workflows.worktreeRoot`, #2461): its value, and a dialog that edits it. */
+function PathEditor({
+  setting,
+  current,
+  disabled,
+  change,
+}: {
+  setting: SettingDefinition;
+  current: string | null;
+  disabled: boolean;
+  change: Change;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const id = `setting-${setting.id}`;
+  const placeholder = setting.type === "path" ? setting.placeholder : "";
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    const value = draft.trim();
+    void change(
+      value ? { set: { [setting.id]: value } } : { set: { [setting.id]: null } },
+      `Saved ${setting.label}`,
+    ).then((ok) => ok && setOpen(false));
+  };
+  return (
+    <>
+      <span
+        className={cn("font-mono text-[13px]", current ? "text-foreground" : "text-dim-foreground")}
+      >
+        {current ?? "not set"}
+      </span>
+      <Button
+        variant="secondary"
+        size="md"
+        disabled={disabled}
+        onClick={() => {
+          setDraft(current ?? "");
+          setOpen(true);
+        }}
+      >
+        Edit
+      </Button>
+      <EditDialog
+        open={open}
+        onOpenChange={setOpen}
+        title={setting.label}
+        description={setting.help}
+      >
+        <form className="flex flex-col gap-4" onSubmit={submit}>
+          <div className="flex flex-col gap-1">
+            <Label htmlFor={id}>Folder</Label>
+            <Input
+              id={id}
+              value={draft}
+              placeholder={placeholder}
+              onChange={(e) => setDraft(e.target.value)}
+            />
+            <span className={cn("text-dim-foreground", NOTE)}>
+              Absolute, starting with ~, or relative to the project. Empty unsets it.
+            </span>
+          </div>
+          <DialogActions disabled={disabled} onCancel={() => setOpen(false)} />
+        </form>
+      </EditDialog>
+    </>
+  );
 }
 
 function EditDialog({

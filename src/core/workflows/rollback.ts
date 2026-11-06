@@ -193,6 +193,34 @@ export function taskEditsInPlace(
 }
 
 /**
+ * The states the task's own uncommitted writes of `path` gave the file in the roots other than
+ * `root`: the hash before and after each applied write (#2928). One task's attempts can run in two
+ * roots, the run root and a batch worker, best-of-N candidate or restarted worktree cut from the
+ * run root's content, so the file one root holds can be the task's own write made in the other.
+ * Every check of whether a file holds the task's own earlier write reads this, never a root filter
+ * of its own.
+ */
+export function taskWritesElsewhere(
+  store: WorkflowStore,
+  runId: string,
+  taskId: string,
+  path: string,
+  root: string,
+): Set<string | null> {
+  const hashes = new Set<string | null>();
+  for (const edit of uncommittedEdits(store, runId, taskId))
+    if (
+      pathOf(edit) === path &&
+      intentRoot(edit.intent_json) !== root &&
+      (edit.status === "applied" || edit.status === "reconciled")
+    ) {
+      hashes.add(edit.before_hash);
+      hashes.add(edit.after_hash);
+    }
+  return hashes;
+}
+
+/**
  * Undoes the run's uncommitted task edits, or those of the given paths, on an explicit request.
  * The caller holds the run's execution and mutation leases. The expected workspace baseline moves
  * with every restored path, so the workspace check accepts the restored files.

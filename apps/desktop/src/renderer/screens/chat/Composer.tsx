@@ -10,6 +10,7 @@ import type {
 } from "../../client/chat.js";
 import type { CommandEntry } from "../../client/setup.js";
 import { Icon } from "../../components/Icon.js";
+import { autoSizeTextarea } from "../../lib/autosize.js";
 import { cn } from "../../lib/cn.js";
 import { LABEL } from "../../lib/styles.js";
 import { type ContextSizeControl, ContextSizePicker } from "./ContextSizeMenu.js";
@@ -465,13 +466,16 @@ export function Composer({
     // After seeded text (such as "Change the split: "), typing goes on from its end.
     el.setSelectionRange(el.value.length, el.value.length);
   }, [autoFocusKey]);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: resize whenever the text changes
+  const placeholder = busy
+    ? "Add to the running turn…"
+    : `Ask BAKED to do something${loadCommands ? " · / runs a custom command" : ""} · @ adds a file or symbol · ! runs a command${
+        acceptsImages ? " · paste or drop images" : ""
+      }`;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: resize whenever the text or placeholder changes
   useEffect(() => {
     const el = area.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_PX)}px`;
-  }, [text]);
+    if (el) autoSizeTextarea(el, MAX_TEXTAREA_PX);
+  }, [text, placeholder]);
   const canSend = (text.trim().length > 0 || attachments.length > 0) && !sending && reading === 0;
   const submit = async (): Promise<void> => {
     const value = text.trim();
@@ -644,13 +648,7 @@ export function Composer({
         rows={2}
         className="resize-none rounded-base px-[10px] py-2 border-none outline-none bg-transparent text-foreground font-[inherit] text-[15px] leading-[1.5] max-h-[240px] placeholder:text-dim-foreground"
         value={text}
-        placeholder={
-          busy
-            ? "Add to the running turn…"
-            : `Ask BAKED to do something${loadCommands ? " · / runs a custom command" : ""} · @ adds a file or symbol · ! runs a command${
-                acceptsImages ? " · paste or drop images" : ""
-              }`
-        }
+        placeholder={placeholder}
         aria-autocomplete="list"
         aria-controls={showCommands ? "chat-commands" : showMentions ? "chat-mentions" : undefined}
         onChange={(event) => {

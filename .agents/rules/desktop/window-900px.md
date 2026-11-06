@@ -1,0 +1,1 @@
+A desktop screen fits a 900px window without horizontal scroll: a fixed `min-w-[...]` stays below the width its container has at 900px, and only a diagram meant to scroll (a run conveyor, a workflow graph) scrolls sideways (#2684).

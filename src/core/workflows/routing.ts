@@ -64,6 +64,64 @@ export function explicitModelConfig(config: AppConfig, model: string): AppConfig
   };
 }
 
+/** Configured routes that keep part of an explicit-model run on another model, one group per source. */
+interface ShadowedRoute {
+  model: string;
+  source: string;
+  /** Roles and `stage ID`s, as the warning names them. */
+  targets: string[];
+  /** Stage IDs a `--route STAGE=MODEL` would move this group with. */
+  stages: string[];
+  /** Some of the group runs outside any stage (a transition gate), so no stage route moves it. */
+  unstaged: boolean;
+}
+
+/**
+ * Groups the configured routes that do not follow an explicit run model. `sites` maps a profile to
+ * the stages that run it (null: a transition gate); a profile whose every site has a stage route
+ * is covered by those routes and is left out. Without `sites`, every shadowed profile counts.
+ */
+function shadowedRoutes(
+  record: RoutingRecord,
+  profiles: readonly Pick<AgentProfile, "id" | "role">[],
+  sites?: ReadonlyMap<string, readonly (string | null)[]>,
+  byId = false,
+): ShadowedRoute[] {
+  const groups = new Map<string, ShadowedRoute>();
+  const shadowed = (entry: RoutingEntry): boolean =>
+    entry.model !== record.runModel && /^(modelRouting|taskRouter)/.test(entry.source);
+  const add = (target: string, entry: RoutingEntry, stages: readonly (string | null)[]): void => {
+    const key = `${entry.model}|${entry.source}`;
+    const group = groups.get(key) ?? {
+      model: entry.model,
+      source: entry.source,
+      targets: [],
+      stages: [],
+      unstaged: false,
+    };
+    if (!group.targets.includes(target)) group.targets.push(target);
+    for (const stage of stages)
+      if (stage === null) group.unstaged = true;
+      else if (!group.stages.includes(stage)) group.stages.push(stage);
+    groups.set(key, group);
+  };
+  const roleOf = new Map(profiles.map((p) => [p.id, p.role]));
+  for (const [id, entry] of Object.entries(record.profiles)) {
+    if (!shadowed(entry)) continue;
+    const open = (sites?.get(id) ?? [null]).filter(
+      (stage) => stage === null || !record.stages[stage],
+    );
+    if (sites?.get(id)?.length && !open.length) continue;
+    add(byId ? id : (roleOf.get(id) ?? id), entry, sites ? open : []);
+  }
+  for (const [id, entry] of Object.entries(record.stages))
+    if (shadowed(entry)) add(`stage ${id}`, entry, [id]);
+  return [...groups.values()];
+}
+
+const uses = (targets: readonly string[]): string =>
+  `${targets.join(", ")} use${targets.length === 1 ? "s" : ""}`;
+
 /**
  * Warnings for an explicit run model that configured routes override: only the `active` class
  * follows the run model, so a configured class, role, profile or stage route silently wins unless
@@ -73,20 +131,52 @@ export function shadowedModelWarnings(
   record: RoutingRecord,
   profiles: readonly Pick<AgentProfile, "id" | "role">[],
 ): string[] {
-  const groups = new Map<string, { model: string; source: string; targets: string[] }>();
-  const add = (target: string, entry: RoutingEntry): void => {
-    if (entry.model === record.runModel || !/^(modelRouting|taskRouter)/.test(entry.source)) return;
-    const key = `${entry.model}|${entry.source}`;
-    const group = groups.get(key) ?? { model: entry.model, source: entry.source, targets: [] };
-    if (!group.targets.includes(target)) group.targets.push(target);
-    groups.set(key, group);
-  };
-  const roleOf = new Map(profiles.map((p) => [p.id, p.role]));
-  for (const [id, entry] of Object.entries(record.profiles)) add(roleOf.get(id) ?? id, entry);
-  for (const [id, entry] of Object.entries(record.stages)) add(`stage ${id}`, entry);
-  return [...groups.values()].map(
+  return shadowedRoutes(record, profiles).map(
     ({ model, source, targets }) =>
-      `Model ${record.runModel} applies to the active class only; ${targets.join(", ")} use${targets.length === 1 ? "s" : ""} ${model} (${source}). Use --model-strict to run everything on ${record.runModel}.`,
+      `Model ${record.runModel} applies to the active class only; ${uses(targets)} ${model} (${source}). Use --model-strict to run everything on ${record.runModel}.`,
+  );
+}
+
+/**
+ * The same warnings for a reroute (#2960): a reroute keeps the run's configured routes, so a class,
+ * role, profile or stage route that names the old model keeps those agents on it, and the run blocks
+ * again on the provider the operator moved away from. Each line names the stage routes that move the
+ * rest (`--route review=MODEL`) by profile ID; a profile every stage of which already has a stage route
+ * is left out. A profile outside any known stage (a transition gate, the critic, a profile the
+ * definition does not bind) needs its configured route changed, which the line says too.
+ * A strict run has no configured routes, and a run without an explicit model follows its routes on
+ * purpose, so both get none.
+ */
+export function rerouteShadowWarnings(
+  record: RoutingRecord,
+  definition: Definition,
+  policy: RunPolicy,
+  gates: ReadonlyMap<string, Gate>,
+  profiles: readonly AgentProfile[],
+): string[] {
+  if (!record.explicitModel || record.strict) return [];
+  const sites = new Map<string, (string | null)[]>();
+  const site = (profileId: string, stageId: string | null): void => {
+    const list = sites.get(profileId) ?? [];
+    if (!list.includes(stageId)) list.push(stageId);
+    sites.set(profileId, list);
+  };
+  for (const { stageId, profileIds } of boundSides(definition, policy, gates, profiles))
+    for (const id of profileIds) site(id, stageId);
+  for (const stage of definition.stages)
+    if ("profileId" in stage && stage.profileId) site(stage.profileId, stage.id);
+  // The scheduler never applies a stage route to the critic (`stageRoute`), so only its own does.
+  for (const profile of profiles) if (profile.output === "critique") sites.set(profile.id, [null]);
+  const model = record.runModel;
+  return shadowedRoutes(record, profiles, sites, true).map(
+    ({ model: old, source, targets, stages, unstaged }) => {
+      const routes = stages.map((id) => `--route ${id}=${model}`).join(" ");
+      const fix = [
+        ...(routes ? [`reroute with ${routes}`] : []),
+        ...(unstaged || !routes ? [`set ${source} to ${model}`] : []),
+      ].join(", or ");
+      return `Model ${model} applies to the active class only; ${uses(targets)} ${old} (${source}). To move ${targets.length === 1 ? "it" : "them"} to ${model}, ${fix}.`;
+    },
   );
 }
 

@@ -159,6 +159,44 @@ describe("multi_edit keeps the file's line endings", () => {
 	});
 });
 
+describe("edit tools keep a UTF-8 byte-order mark (#2789)", () => {
+	const BOM = "﻿";
+
+	it("edit_file edits line 1 by lineStart and keeps the mark", async () => {
+		const path = await fixture("bom.txt", `${BOM}one\r\ntwo\r\n`);
+		const res = await editFileTool.execute({ path, oldString: "one", newString: "ONE", lineStart: 1 });
+		expect(res.success).toBe(true);
+		expect(await readFile(path, "utf-8")).toBe(`${BOM}ONE\r\ntwo\r\n`);
+	});
+
+	it("edit_file matches when the model copies the mark from read output", async () => {
+		const path = await fixture("bom2.txt", `${BOM}one\ntwo\n`);
+		const res = await editFileTool.execute({ path, oldString: `${BOM}one`, newString: `${BOM}uno`, lineStart: 1 });
+		expect(res.success).toBe(true);
+		expect(await readFile(path, "utf-8")).toBe(`${BOM}uno\ntwo\n`);
+	});
+
+	it("edit_file fuzzy-matches line 1 without lineStart", async () => {
+		const path = await fixture("bom3.txt", `${BOM}  one\ntwo\n`);
+		const res = await editFileTool.execute({ path, oldString: "\tone\ntwo", newString: "\tone\n2" });
+		expect(res.success).toBe(true);
+		expect(await readFile(path, "utf-8")).toBe(`${BOM}  one\n2\n`);
+	});
+
+	it("multi_edit edits line 1 by lineStart when its text repeats later", async () => {
+		const path = await fixture("bom4.txt", `${BOM}x\ny\nx\n`);
+		const res = await multiEditTool.execute({ path, edits: [{ oldString: "x", newString: "X", lineStart: 1 }] });
+		expect(res.success).toBe(true);
+		expect(await readFile(path, "utf-8")).toBe(`${BOM}X\ny\nx\n`);
+	});
+
+	it("does not add a mark to a file without one", async () => {
+		const path = await fixture("nobom.txt", "one\ntwo\n");
+		await editFileTool.execute({ path, oldString: "one", newString: `${BOM}ONE`, lineStart: 1 });
+		expect(await readFile(path, "utf-8")).toBe("ONE\ntwo\n");
+	});
+});
+
 describe("read shows the file's line endings", () => {
 	it("adds a header for CRLF files and hides the carriage returns", async () => {
 		const path = await fixture("r.txt", "one\r\ntwo\r\n");

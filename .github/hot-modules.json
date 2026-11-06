@@ -1,5 +1,5 @@
 {
-  "_doc": "Hot harness modules (#1718, #1723): code where a fix has repeatedly caused the next bench stop. One list for the error budget rule in AGENTS.md, the hot-module label on pull requests and the weekly mutation run. A module's tests are the test files that import one of its paths. Add a module (or a path) in the same PR as a fix when it shows two escapes in a month (`bun scripts/hot-modules.ts escape`). See docs/bench-loop.md#hot-modules.",
+  "_doc": "Hot harness modules (#1718, #1723): code where a fix has repeatedly caused the next bench stop. One list for the error budget rule in .agents/rules/budget/hot-modules-error-budget.md, the hot-module label on pull requests and the weekly mutation run. A module's tests are the test files that import one of its paths. Add a module (or a path) in the same PR as a fix when it shows two escapes in a month (`bun scripts/hot-modules.ts escape`). See docs/bench-loop.md#hot-modules.",
   "modules": [
     {
       "id": "cost-forecast",
