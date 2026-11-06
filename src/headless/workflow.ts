@@ -591,6 +591,9 @@ export async function executeWorkflowCommand(
           ? { routes: parseRouteOverrides(args.flags.route) }
           : {}),
       });
+      // Configured routes the reroute left on another model, as the start prints them (#2960).
+      for (const warning of readRoutingSummary(service.store, runId)?.warnings ?? [])
+        process.stderr.write(`warning: ${warning}\n`);
       if (args.flags.resume !== true) return rerouted;
       return resumeAfter(rerouted.revision, "The new routes are applied");
     }

@@ -206,6 +206,7 @@ bun test tests/feature-parity.test.ts
 | Import, export, gc and redact runs | `/workflow` | `baked workflow import`, `baked workflow export`, `baked workflow gc` +1 | `/v1/workflow/import`, `/v1/workflow/runs/:id/export`, `/v1/workflow/gc` +2 | `project/runs` |
 | Export a run or initiative as a portable SDD package (folder or zip) | `/workflow` | `baked workflow export-package` | `/v1/workflow/runs/:id/package`, `/v1/initiatives/:id/package` | `project/runs`, `project/initiatives` |
 | Import an SDD export package to continue its initiative or run; accepted features start at analysis | `/workflow` | `baked workflow import`, `baked-export` | `/v1/workflow/import` | `project/runs` |
+| A reroute warns about configured routes it left on another model and names the stage routes that move them | `/workflow` | `baked workflow reroute`, `baked workflow initiative reroute` | `/v1/workflow/runs/:id`, `/v1/initiatives/:id/reroute` | `project/runs` |
 
 ### Initiatives
 
