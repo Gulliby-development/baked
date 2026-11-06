@@ -11,15 +11,27 @@
  *
  * The module is pure over the file system: it reads files and returns paths and commands; the
  * scheduler decides when to run them.
+ *
+ * A written-tests check runs only the files `runnableTestFiles` selects: the task's test files as
+ * they are in the worktree after its write (a host-written file included), each declaring a test
+ * by its language's rows (`declaresTest`: `TEST_DECLARATIONS`, then `TEST_MARKERS`), a test class
+ * or the inline rows block (#2439). A test-tree file that declares none (Go fixtures in
+ * a `_test.go` file, Minitest's `test_helper.rb`, a C# helper in a test project) is support: a
+ * task that writes only those gets no check that requires tests, and keeps its other checks. Every
+ * runner branch of `affectedTestCheck`, a new one included, takes its files from that selection
+ * and never decides by a helper's name; the hold by another task's unfinished write
+ * (`holdsWrittenTests`) asks the same question (#2447).
+ * `tests/workflow-scenario-test-support-file.test.ts` fails for a supported language without a
+ * support-file case.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, posix } from "node:path";
-import { isTestFile as isLanguageTestFile, isTestFileAt } from "../intelligence/language-traits.js";
+import { declaresTest } from "../intelligence/test-declarations.js";
 import { INLINE_ROWS_BEGIN, INLINE_ROWS_CLASS } from "./acceptance-rows-inline.js";
 import { isStaticCheck } from "./check-policy.js";
 import { PESTER_RUN, pesterOn } from "./pester.js";
 import { testthatOn, testthatRun } from "./r-tools.js";
-import { readTestClasses, type TestClass } from "./test-classes.js";
+import { declaredTestClasses, readTestClasses, type TestClass } from "./test-classes.js";
 import { testGateFlags, withGateFlags } from "./test-gates.js";
 import { toolchainCommand } from "./toolchain.js";
 import type { Check } from "./types.js";
@@ -52,8 +64,11 @@ const SKIPPED_DIRS = new Set([
 
 const JS_FILE = /\.(?:[cm]?[jt]sx?)$/;
 const PY_FILE = /\.py$/;
-/** A Minitest file: `*_test.rb` or `test_*.rb`. */
-const RB_TEST = /(?:_test|(?:^|\/)test_(?!helper\.rb$)[^/]*)\.rb$/;
+/**
+ * A Minitest file: `*_test.rb` or `test_*.rb`. `test_helper.rb` is one by its name; it declares no
+ * test, so `runnableTestFiles` leaves it out of a written-tests check (#2439).
+ */
+const RB_TEST = /(?:_test|(?:^|\/)test_[^/]*)\.rb$/;
 const GO_FILE = /\.go$/;
 const PHP_FILE = /\.php$/;
 /** A busted spec: `*_spec.lua`, or `*_test.lua` under a `.busted` pattern (#1495). */
@@ -90,7 +105,8 @@ const TESTTHAT_FILE = /(?:^|\/)tests\/testthat\/test[-_]?[^/]*\.r$/i;
 /**
  * Whether a path is a test file of a compiled stack the written-tests check runs (#1396): a C#
  * file named `*Test(s).cs` or under a `Tests` or `*.Tests` directory, a Rust integration test
- * directly in a `tests/` directory, or a Java or Kotlin file under `src/test/`.
+ * directly in a `tests/` directory, or a Java, Kotlin or Scala file under `src/test/` (Scala's
+ * through sbt's `testOnly`, #2439).
  */
 export function isCompiledTestFile(path: string): boolean {
   const normal = path.replaceAll("\\", "/");
@@ -108,7 +124,7 @@ export function isCompiledTestFile(path: string): boolean {
           ))
     );
   if (RS_FILE.test(name)) return parts.at(-2) === "tests";
-  return JVM_FILE.test(name) && /(?:^|\/)src\/test\//.test(normal);
+  return (JVM_FILE.test(name) || name.endsWith(".scala")) && /(?:^|\/)src\/test\//.test(normal);
 }
 
 /** Whether a task's written test file is one the written-tests check can run. */
@@ -132,15 +148,27 @@ export function isDocumentationPath(path: string): boolean {
  * it may change code or data the tests load. Documentation does not, unless the test task reads
  * it (#1408: a README task after the tests suppressed the check and a hang reached the feature
  * gate). A compiled test project builds every test file in it, so there another task's test file
- * holds the check back too (#1396).
+ * holds the check back too (#1396). Another task's test file is told apart from a test-support
+ * file by the same question the check's selection asks (`runnableTestFiles`, #2447): a test-tree
+ * file under `root` that declares no test (Go fixtures in a `_test.go` file, a helper under
+ * `__tests__/`, Minitest's `test_helper.rb`) is support the tests may load, so it holds the check
+ * like a source file. A file not written yet, or with no `root`, keeps its name's verdict.
  */
 export function holdsWrittenTests(
   path: string,
   compiled: boolean,
   reads: readonly string[] = [],
+  root?: string,
 ): boolean {
   if (isDocumentationPath(path) && !reads.includes(path)) return false;
-  return compiled ? !isTestFile(path) : !isWrittenTestFile(path);
+  const named = compiled ? isTestFile(path) : isWrittenTestFile(path);
+  return !named || isTestSupportFile(root, path);
+}
+
+/** Whether a test-tree file under `root` exists and declares no test (#2439, #2447). */
+function isTestSupportFile(root: string | undefined, path: string): boolean {
+  if (root === undefined || !existsSync(join(root, path))) return false;
+  return runnableTestFiles(root, [path]).length === 0;
 }
 
 /** A file's name without its extension: a Rust integration test's binary, and the class fallback. */
@@ -345,9 +373,36 @@ export function affectedTests(root: string, sources: string[]): AffectedTest[] {
 /** The options of `python -m unittest` that take no value. */
 const UNITTEST_FLAG = /^-(?:[vqfbck]|-(?:verbose|quiet|failfast|buffer|catch|locals))$/;
 
-/** Options that take a value, busted's `-o TAP`, `-t unit`, `--exclude-tags slow`, `--lpath ./src/?.lua` (#1495) and bats' `-j 4`, `-f adds`, `--filter-tags unit` (#1497) among them. */
-const VALUE_OPTION =
-  /^(?:--(?:timeout|testTimeout|test-timeout|config|format|formatter|require|tag|out|seed|order|output|tags|exclude-tags|pattern|run|lpath|cpath|jobs|filter|filter-tags|report-formatter)|-[cotpmjfF])$/;
+/**
+ * Each runner's options that take their value as the next argument, so `flagsOnly` keeps the value
+ * with its option. One table for every runner gave `go test -timeout 30s` as `-timeout ./pkg`,
+ * `cargo test --package core` as `--package --test it`, `gradle check -x spotlessCheck` as
+ * `-x test` and `pytest -k slow` as `-k ./tests/test_a.py`, while bats' `-t` and RSpec's `-c`,
+ * which take none, kept the folder after them (#2725).
+ */
+const JS_VALUE_OPTION =
+  /^(?:--(?:timeout|testTimeout|test-timeout|config|reporter|reporters|preload|require|import|project|environment|env|shard|test-name-pattern|testNamePattern|testPathPattern|testPathIgnorePatterns|outputFile|root|dir|seed|pool|maxWorkers|max-concurrency|rerun-each|coverage-reporter|coverage-dir|test-reporter|test-reporter-destination|env-file|conditions)|-[ctr])$/;
+const PYTEST_VALUE_OPTION =
+  /^(?:--(?:timeout|timeout-method|config-file|rootdir|confcutdir|basetemp|maxfail|deselect|ignore|ignore-glob|durations|durations-min|junitxml|junit-xml|junit-prefix|cov|cov-report|cov-config|cov-fail-under|log-level|log-cli-level|log-file|log-format|tb|import-mode|dist|numprocesses|maxprocesses|override-ini|capture|color|reruns|reruns-delay|html|randomly-seed|pythonwarnings|cache-dir)|-[ckmnoprW])$/;
+/** Go's flags are spelt with one dash or two; `-v`, `-race` and `-failfast` take no value. */
+const GO_VALUE_OPTION =
+  /^--?(?:run|skip|count|timeout|tags|p|parallel|cpu|bench|benchtime|coverprofile|coverpkg|covermode|exec|o|vet|shuffle|fuzz|fuzztime|fuzzminimizetime|ldflags|gcflags|asmflags|mod|modfile|overlay|pgo|toolexec|outputdir|blockprofile|cpuprofile|memprofile|mutexprofile|trace|C)$/;
+const CARGO_VALUE_OPTION =
+  /^(?:--(?:package|manifest-path|features|target|target-dir|profile|jobs|color|message-format|exclude|config|lockfile-path|filterset|filter-expr|cargo-profile|test-threads|retries)|-[pFjZEP])$/;
+const MAVEN_VALUE_OPTION =
+  /^(?:-(?:pl|f|s|gs|P|rf|T|b|l|t)|--(?:projects|file|settings|global-settings|activate-profiles|resume-from|threads|builder|log-file|toolchains))$/;
+const GRADLE_VALUE_OPTION =
+  /^(?:-[xpbcgI]|--(?:exclude-task|project-dir|build-file|settings-file|gradle-user-home|init-script|console|warning-mode|max-workers|include-build|project-cache-dir|priority))$/;
+const RSPEC_VALUE_OPTION =
+  /^(?:--(?:format|out|require|tag|example|example-matches|pattern|exclude-pattern|seed|order|default-path|options|failure-exit-code|error-exit-code|deprecation-out)|-[ftoreEIP])$/;
+/** bats' `-j 4`, `-f adds`, `--filter-tags unit` (#1497); `-t` (TAP), `-p` and `-c` take none. */
+const BATS_VALUE_OPTION =
+  /^(?:--(?:jobs|filter|filter-tags|filter-status|formatter|report-formatter|output|setup-suite-file|gather-test-outputs-in|line-reference-format|code-quote-style)|-[jfFo])$/;
+/** busted's `-o TAP`, `-t unit`, `--exclude-tags slow`, `--lpath ./src/?.lua` (#1495); `-c` (coverage) takes none. */
+const BUSTED_VALUE_OPTION =
+  /^(?:--(?:output|tags|exclude-tags|lpath|cpath|pattern|exclude-pattern|run|config-file|seed|lang|loaders|helper|directory|filter|filter-out|repeat|name|Xoutput|Xhelper)|-[otmprCfe])$/;
+const PHPUNIT_VALUE_OPTION =
+  /^(?:--(?:configuration|filter|group|exclude-group|testsuite|exclude-testsuite|bootstrap|log-junit|log-teamcity|testdox-html|testdox-text|coverage-clover|coverage-html|coverage-xml|cache-directory|include-path|order-by|random-order-seed|test-suffix|covers|uses|extension|repeat|processes|shard)|-[cd])$/;
 /** dart test's options that take a value: `-r expanded`, `-t slow`, `-x slow`, `-p vm` (#1494). */
 const DART_VALUE_OPTION =
   /^(?:--(?:reporter|name|plain-name|tags|exclude-tags|platform|preset|concurrency|total-shards|shard-index|file-reporter)|-[rnNtxpPj])$/;
@@ -357,7 +412,7 @@ const MIX_VALUE_OPTION =
   /^--(?:only|exclude|include|seed|max-cases|max-failures|formatter|partitions|slowest|slowest-modules|repeat-until-failure|color)$/;
 
 /** Keeps a test runner's own flags and drops the paths or patterns a check named. */
-const flagsOnly = (args: string[], values = VALUE_OPTION): string[] =>
+const flagsOnly = (args: string[], values: RegExp): string[] =>
   args.filter((arg, i) => arg.startsWith("-") || values.test(args[i - 1] ?? ""));
 
 /** The declared test classes of each test file, by workspace path (#2363). */
@@ -416,24 +471,24 @@ export function affectedTestCheck(
     let prefix: string[] | null = null;
     let targets: string[] = [];
     if (name === "bun" && args[0] === "test") {
-      prefix = ["test", ...flagsOnly(args.slice(1))];
+      prefix = ["test", ...flagsOnly(args.slice(1), JS_VALUE_OPTION)];
       targets = js;
     } else if ((name === "npx" || name === "bunx") && /^(vitest|jest)$/.test(args[0] ?? "")) {
       const runner = args[0] as string;
-      const rest = flagsOnly(args.slice(1));
+      const rest = flagsOnly(args.slice(1), JS_VALUE_OPTION);
       prefix = runner === "vitest" ? [runner, "run", ...rest] : [runner, ...rest];
       targets = js;
     } else if (name === "vitest") {
-      prefix = ["run", ...flagsOnly(args)];
+      prefix = ["run", ...flagsOnly(args, JS_VALUE_OPTION)];
       targets = js;
     } else if (name === "jest" || (name === "node" && args.includes("--test"))) {
-      prefix = flagsOnly(args);
+      prefix = flagsOnly(args, JS_VALUE_OPTION);
       targets = js;
     } else if (name === "pytest" || name === "py.test") {
-      prefix = flagsOnly(args);
+      prefix = flagsOnly(args, PYTEST_VALUE_OPTION);
       targets = py;
     } else if (/^python[\d.]*$/.test(name) && args[0] === "-m" && args[1] === "pytest") {
-      prefix = ["-m", "pytest", ...flagsOnly(args.slice(2))];
+      prefix = ["-m", "pytest", ...flagsOnly(args.slice(2), PYTEST_VALUE_OPTION)];
       targets = py;
     } else if (/^python[\d.]*$/.test(name) && args[0] === "-m" && args[1] === "unittest") {
       // Discovery options (`discover -s tests -p ...`) take values and do not apply to named files.
@@ -441,19 +496,19 @@ export function affectedTestCheck(
       targets = py;
     } else if (name === "phpunit" || name === "pest") {
       // `php vendor/bin/phpunit tests`: the named files take the place of the test folder (#1491).
-      prefix = flagsOnly(args);
+      prefix = flagsOnly(args, PHPUNIT_VALUE_OPTION);
       targets = files.filter((f) => PHP_FILE.test(f));
     } else if (name === "bats") {
       // bats runs the `.bats` files it is given in place of its test folder (#1497).
-      prefix = flagsOnly(args);
+      prefix = flagsOnly(args, BATS_VALUE_OPTION);
       targets = files.filter((f) => f.endsWith(".bats"));
     } else if (name === "busted") {
       // busted runs the spec files it is given in place of its ROOT (`spec`) (#1495).
-      prefix = flagsOnly(args);
+      prefix = flagsOnly(args, BUSTED_VALUE_OPTION);
       targets = files.filter((f) => LUA_TEST.test(f));
     } else if (name === "rspec") {
       // RSpec takes spec files (#1493).
-      prefix = flagsOnly(args);
+      prefix = flagsOnly(args, RSPEC_VALUE_OPTION);
       targets = files.filter((f) => f.endsWith("_spec.rb"));
     } else if (
       name === "rake" &&
@@ -472,16 +527,20 @@ export function affectedTestCheck(
       // mix test takes test files by their path from the project root (#2348).
       prefix = ["test", ...flagsOnly(args.slice(1), MIX_VALUE_OPTION)];
       targets = tests.filter((t) => t.endsWith("_test.exs"));
-    } else if (name === "sbt" && args.includes("test")) {
+    } else if (name === "sbt" && args.some((a) => a === "test" || a === "testFull")) {
       // sbt runs test classes, not files: `testOnly *CalcSuite *CalcSpec`, one sbt command, by the
-      // file names of the Scala tests (#1496).
+      // file names of the Scala tests (#1496), in place of `test` or sbt 2's `testFull` (#2440).
       const classes = tests
         .filter((t) => t.endsWith(".scala"))
         .map((t) => `*${basename(t, ".scala")}`);
-      prefix = args.filter((a) => a !== "test");
+      prefix = args.filter((a) => a !== "test" && a !== "testFull");
       targets = classes.length ? [`testOnly ${classes.join(" ")}`] : [];
     } else if (name === "go" && args[0] === "test") {
-      prefix = withGateFlags(["test", ...flagsOnly(args.slice(1))], gates.get("go"), 1);
+      prefix = withGateFlags(
+        ["test", ...flagsOnly(args.slice(1), GO_VALUE_OPTION)],
+        gates.get("go"),
+        1,
+      );
       targets = [
         ...new Set(
           tests.filter((t) => GO_FILE.test(t)).map((t) => `./${dirname(t).replaceAll("\\", "/")}`),
@@ -558,13 +617,18 @@ function compiledTestArgs(
   if (name === "cargo" && args[0] === "nextest" && args[1] === "run") {
     const files = tests.filter((t) => RS_FILE.test(t)).map(className);
     if (!files.length) return null;
-    return ["nextest", "run", ...flagsOnly(args.slice(2)), ...files.flatMap((f) => ["--test", f])];
+    return [
+      "nextest",
+      "run",
+      ...flagsOnly(args.slice(2), CARGO_VALUE_OPTION),
+      ...files.flatMap((f) => ["--test", f]),
+    ];
   }
   if (name === "cargo" && args[0] === "test") {
     const files = tests.filter((t) => RS_FILE.test(t)).map(className);
     if (!files.length) return null;
     const end = args.indexOf("--");
-    const head = flagsOnly(end === -1 ? args.slice(1) : args.slice(1, end));
+    const head = flagsOnly(end === -1 ? args.slice(1) : args.slice(1, end), CARGO_VALUE_OPTION);
     return [
       "test",
       ...head,
@@ -603,7 +667,7 @@ function compiledTestArgs(
   ) {
     if (args.some((arg) => arg.startsWith("-Dtest="))) return null;
     return [
-      ...flagsOnly(args),
+      ...flagsOnly(args, MAVEN_VALUE_OPTION),
       "test",
       `-Dtest=${classes.join(",")}`,
       "-Dsurefire.failIfNoSpecifiedTests=false",
@@ -614,7 +678,11 @@ function compiledTestArgs(
     args.some((arg) => /^(?:test|check|build)$/.test(arg))
   ) {
     if (args.includes("--tests")) return null;
-    return [...flagsOnly(args), "test", ...classes.flatMap((c) => ["--tests", c])];
+    return [
+      ...flagsOnly(args, GRADLE_VALUE_OPTION),
+      "test",
+      ...classes.flatMap((c) => ["--tests", c]),
+    ];
   }
   return null;
 }
@@ -633,7 +701,10 @@ export function affectedTestsFor(
     tests,
     check: affectedTestCheck(
       checks,
-      tests.map((t) => t.path),
+      runnableTestFiles(
+        root,
+        tests.map((t) => t.path),
+      ),
     ),
   };
 }
@@ -651,11 +722,11 @@ function gateFlags(root: string, files: readonly string[]): Map<string, string[]
   );
 }
 
-/** The JUnit and xUnit test files that hold an inline acceptance rows block. */
+/** The JUnit (Java or Kotlin) and xUnit test files that hold an inline acceptance rows block. */
 function inlineRowFiles(root: string, files: readonly string[]): Set<string> {
   return new Set(
     files.filter((path) => {
-      if (!/\.(?:java|cs)$/.test(path)) return false;
+      if (!/\.(?:java|kt|cs)$/.test(path)) return false;
       try {
         return INLINE_ROWS_BEGIN.test(readFileSync(join(root, path), "utf8"));
       } catch {
@@ -663,6 +734,33 @@ function inlineRowFiles(root: string, files: readonly string[]): Set<string> {
       }
     }),
   );
+}
+
+/**
+ * The test files of `paths` a written-tests check runs (#2439): those under `root` that declare a
+ * test (`declaresTest`), read after the task's write, so a file the host wrote is read as written.
+ * A support file (fixtures, constants, a helper) and a source file named like a test (`PermTest.cs`
+ * without a test attribute, #1848) run no test and are left out. A file that cannot be read keeps
+ * its name's verdict.
+ */
+export function runnableTestFiles(root: string, paths: readonly string[]): string[] {
+  return paths.filter((path) => {
+    const full = join(root, path);
+    if (!existsSync(full)) return false;
+    let text: string;
+    try {
+      text = readFileSync(full, "utf8");
+    } catch {
+      return true;
+    }
+    // The host's inline acceptance rows block (#1763) and a class the runner selects (#2363)
+    // are tests whatever form they are written in.
+    return (
+      INLINE_ROWS_BEGIN.test(text) ||
+      (declaredTestClasses(path, text)?.length ?? 0) > 0 ||
+      declaresTest(path, text)
+    );
+  });
 }
 
 /** How long the test files a task wrote may run on their own after it (#1271). */
@@ -678,12 +776,10 @@ export function writtenTestsCheck(
   writes: readonly { path: string; action: string }[],
   text = "",
 ): Check | null {
-  const files = writes
-    .filter((w) => w.action !== "delete" && isWrittenTestFile(w.path))
-    .map((w) => w.path)
-    .filter((path) => existsSync(join(root, path)))
-    // A source file named like a test (`PermTest.cs` without a test attribute) has no tests to run (#1848).
-    .filter((path) => !isLanguageTestFile(path) || isTestFileAt(root, path));
+  const files = runnableTestFiles(
+    root,
+    writes.filter((w) => w.action !== "delete" && isWrittenTestFile(w.path)).map((w) => w.path),
+  );
   const declared = readTestClasses(root, files);
   const gate = affectedTestCheck(
     checks,

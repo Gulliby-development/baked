@@ -31,7 +31,7 @@ describe("shared per-test timeout (#1385, #1548)", () => {
     const root = mkdtempSync(join(tmpdir(), "baked-per-test-"));
     dirs.push(root);
     mkdirSync(join(root, "tests"));
-    writeFileSync(join(root, "tests/build.property.test.ts"), "");
+    writeFileSync(join(root, "tests/build.property.test.ts"), 'test.prop([fc.integer()])("builds", () => {});\n');
     const written = writtenTestsCheck(root, [check("bun", ["test"])], [{ path: "tests/build.property.test.ts", action: "create" }], "at least 100 generated inputs");
     expect(written).toMatchObject({ id: "tests-written", timeoutMs: 60_000, minCases: 100, args: ["test", "./tests/build.property.test.ts"] });
     expect(withPerTestTimeout(written!, root)).toEqual(["test", "./tests/build.property.test.ts", "--timeout", "30000"]);

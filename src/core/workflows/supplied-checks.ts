@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join, posix } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, posix } from "node:path";
 import { runGit } from "../git/status.js";
 import { copyWorkspace } from "../verification/doc-examples.js";
 import { removeScratch } from "../verification/repro.js";
@@ -9,7 +9,7 @@ import { isCodePath, isStaticCheck, isWholeUnitCheck } from "./check-policy.js";
 import { changedLineRanges, type LineRange } from "./format-written.js";
 import { applyArgs, baseDrift, patchForms } from "./host-apply.js";
 import { isTestCheck } from "./quality/mutation.js";
-import { suppliedBlocks } from "./sizing.js";
+import { type SuppliedBlock, suppliedBlocks } from "./sizing.js";
 import type { WorkflowStore } from "./store.js";
 import type { Check, Task } from "./types.js";
 
@@ -28,6 +28,11 @@ import type { Check, Task } from "./types.js";
  * lines the supplied content sets. Any such diagnostic is a conflict between the request's two
  * demands, which only a person can settle: `suppliedCheckText` is the `spec_conflict` it would
  * raise, naming the check, the rule and the line.
+ *
+ * A task whose files the host writes itself (every write carries the plan's content, `hostWritten`)
+ * is checked the same way with that content, before the host writes it (#2456): no session runs
+ * for it, and R78 pairwick's `Main.scala`, which scalafmt cannot parse, went through three host
+ * correctives that wrote the same content again before the feature blocked `no_progress`.
  *
  * It ships in shadow: the record is `supplied-checks/tasks/<task>.json` (kind `supplied-check`,
  * kept in bench traces with paths, lines and rule ids, no tool messages), the implementer still
@@ -116,7 +121,10 @@ export function suppliedOffenses(
 
 const lf = (text: string) => text.replace(/\r\n/g, "\n");
 
-/** The supplied content of a task's code writes: the text each file has once it is written in. */
+/**
+ * The supplied content of a task's code writes: the text each file has once it is written in. A
+ * write that carries the plan's content (a host-written task) supplies that content whole.
+ */
 async function suppliedContent(
   copy: string,
   request: string,
@@ -132,7 +140,10 @@ async function suppliedContent(
   );
   const files: { path: string; kind: "file" | "diff"; lines: LineRange[]; whole: boolean }[] = [];
   for (const write of writes) {
-    const supplied = blocks.get(write.path) ?? [];
+    const supplied: SuppliedBlock[] =
+      write.content !== undefined
+        ? [{ kind: "file", lines: 0, content: write.content, whole: true }]
+        : (blocks.get(write.path) ?? []);
     if (!supplied.length) continue;
     const target = join(copy, write.path);
     const before = existsSync(target) ? readFileSync(target, "utf8") : null;
@@ -141,6 +152,8 @@ async function suppliedContent(
     if (supplied.length === 1 && only?.kind === "file") {
       // A block for a file that exists is an excerpt unless the prose says it is the whole file.
       if (before !== null && !only.whole) continue;
+      // A file the request creates may be the first of its folder, which the copy lacks.
+      mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, only.content);
     } else if (diffs.length === supplied.length) {
       // A zero-context diff applies only to its own pre-image, as host apply checks it (#2412).
@@ -190,7 +203,7 @@ export async function suppliedCheckRecord(
     request,
     paths.map((w) => w.path),
   );
-  if (!paths.some((w) => supplied.has(w.path))) return null;
+  if (!paths.some((w) => w.content !== undefined || supplied.has(w.path))) return null;
   const record = (
     files: SuppliedCheckRecord["files"],
     skipped: string | null,
@@ -253,6 +266,24 @@ export function suppliedCheckText(record: SuppliedCheckRecord): string | null {
     )
     .join("; ");
   return `Supplied content fails the project's checks: ${where}. The request gives this content verbatim and requires the check to pass; no implementer can deliver both. Ask which one wins: the verbatim content, or the check (the content changed until it passes).`;
+}
+
+/**
+ * Why the host does not apply a task's supplied content under `hostApply: "on"` (#2462): the
+ * task's `supplied-checks/` record found a diagnostic of the project's own file-scoped check on a
+ * line the content sets (`conflict`). The one reader of the record for the apply decision
+ * (`hostApplyRecord`'s `suppliedConflict`); no other site vetoes an apply. R78 deltaglue frames
+ * and R80 deltaglue cli: the host wrote content its lint rejected, and correctives of 293k and
+ * 374k tokens followed. Null without a record or a conflict: the decision stands.
+ */
+export function suppliedCheckVeto(record: SuppliedCheckRecord | null): string | null {
+  if (!record?.conflict) return null;
+  const failing = record.checks.filter((c) => c.offenses.length);
+  const first = failing[0]?.offenses[0];
+  const where = first
+    ? ` at ${first.path}${first.line === null ? "" : `:${first.line}`}${first.rule ? ` (${first.rule})` : ""}`
+    : "";
+  return `supplied content fails ${failing.map((c) => c.checkId).join(", ")}${where}: an implementer reconciles the request's content with the check`;
 }
 
 /** The run's recorded probes, latest per task, in task order. */

@@ -5,6 +5,7 @@ import { builtinProfiles } from "../src/core/agents/profiles/builtin.js";
 import { lowerEffort } from "../src/core/llm/model-routing.js";
 import { outputLimitUsage } from "../src/core/workflows/agent-executor.js";
 import { isCapacityError, isOutputLimit, isTransient } from "../src/core/workflows/retry.js";
+import { OUTPUT_LIMIT_CEILING, raisedOutputCap } from "../src/core/workflows/scheduler.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -78,6 +79,69 @@ describe("scenario: a response past the provider's output cap (#1479, R41)", () 
     const { fixture } = await implement(10, "xhigh");
     expect(fixture.executor.tries.slice(0, 3).map((c) => c.effort)).toEqual(["xhigh", "high", "medium"]);
   }, 60000);
+});
+
+// Bench round R103 (md-site e0ffee1e, #2961): the spec author ran on Claude Code under
+// CLAUDE_CODE_MAX_OUTPUT_TOKENS=8192, its spec ran past it, and every retry was told to split
+// into smaller tool calls at the same 8192 cap: four failed attempts before a shorter sample fit.
+
+/** The spec step fails at Claude Code's output cap while its limit is below `fits`. */
+class SpecCapExecutor extends FixtureExecutor {
+  specCalls: { cap: number; effort: string | undefined; notice: string | undefined }[] = [];
+  fits = 16384;
+  override async execute(request: ExecutionRequest) {
+    if (request.profile.output === "spec") {
+      const cap = request.profile.maxOutputTokens;
+      this.specCalls.push({
+        cap,
+        effort: request.effort,
+        notice: request.prompt.match(/The host raised this step's output limit[^.]*\./)?.[0],
+      });
+      if (cap < this.fits)
+        throw new Error(
+          `API Error: Claude's response exceeded the ${cap} output token maximum. To configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.`,
+        );
+    }
+    return super.execute(request);
+  }
+}
+
+async function specify(fits: number, effort = "high") {
+  const fixture = workflowFixture({ executor: (root) => new SpecCapExecutor(root) });
+  cleanups.push(fixture.dispose);
+  fixture.executor.fits = fits;
+  const author = builtinProfiles.find((profile) => profile.id === "spec-author");
+  const agents = join(fixture.root, "baked", "agents");
+  mkdirSync(agents, { recursive: true });
+  writeFileSync(join(agents, "spec-author.json"), JSON.stringify({ ...author, maxOutputTokens: 8192, effort }));
+  const run = await fixture.start();
+  const done = await fixture.service.drive(run.runId, new AbortController().signal);
+  return { fixture, done };
+}
+
+describe("scenario: a spec past the output cap (#2961, R103 md-site)", () => {
+  test("the retry doubles the cap at the same effort, so the step ends after one failed attempt", async () => {
+    const { fixture, done } = await specify(16384);
+    expect(done.status).not.toBe("failed");
+    expect(fixture.executor.specCalls).toEqual([
+      { cap: 8192, effort: "high", notice: undefined },
+      { cap: 16384, effort: "high", notice: "The host raised this step's output limit from 8192 to 16384 tokens." },
+    ]);
+  }, 60000);
+
+  test("a spec still too long gets a second doubling, and no more than the retry budget", async () => {
+    const { fixture } = await specify(1_000_000);
+    expect(fixture.executor.specCalls.slice(0, 3).map((call) => call.cap)).toEqual([8192, 16384, 32768]);
+  }, 60000);
+});
+
+describe("raisedOutputCap", () => {
+  test("doubles a document step's cap up to the ceiling and leaves implementation steps alone", () => {
+    expect(raisedOutputCap({ output: "spec", maxOutputTokens: 8192 })).toBe(16384);
+    expect(raisedOutputCap({ output: "review", maxOutputTokens: 20000 })).toBe(OUTPUT_LIMIT_CEILING);
+    expect(raisedOutputCap({ output: "plan", maxOutputTokens: OUTPUT_LIMIT_CEILING })).toBeNull();
+    expect(raisedOutputCap({ output: "implementation", maxOutputTokens: 8192 })).toBeNull();
+  });
 });
 
 describe("isOutputLimit", () => {

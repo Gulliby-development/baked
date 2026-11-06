@@ -259,7 +259,7 @@ function usageTotals(): MockRun {
           writes: graph.tasks.flatMap((t) => t.writes),
           executionMode: "worktree",
           worktree: {
-            path: `.baked/worktrees/${runId}/main`,
+            path: `.baked/worktrees/${runId.replaceAll("-", "").slice(0, 8)}/main`,
             branch: `baked/wf/${runId}`,
             userChangesInScope: [],
           },
@@ -845,7 +845,7 @@ function localeValidation(): MockRun {
 }
 
 const worktreeOf = (runId: string): RunWorktree => ({
-  path: `.baked/worktrees/${runId}/main`,
+  path: `.baked/worktrees/${runId.replaceAll("-", "").slice(0, 8)}/main`,
   branch: `baked/wf/${runId}`,
   present: true,
 });
@@ -1303,7 +1303,7 @@ function worktreeRows() {
       const bytes = (index + 1) * 48_000_000;
       return {
         runId: r.runId,
-        path: `.baked/worktrees/${r.runId}`,
+        path: `.baked/worktrees/${r.runId.replaceAll("-", "").slice(0, 8)}`,
         bytes,
         worktrees: [{ name: "main", bytes }],
         status: r.status,

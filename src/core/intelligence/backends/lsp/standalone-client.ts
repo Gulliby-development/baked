@@ -22,6 +22,7 @@ import {
   type LspTextEdit,
   type LspTypeHierarchyItem,
   type LspWorkspaceEdit,
+  uriToFilePath,
 } from "./protocol.js";
 import { excludeServerFiles, type LspServerConfig, serverProjectState } from "./server-registry.js";
 import { spawnLspServer } from "./spawn.js";
@@ -72,9 +73,10 @@ export class StandaloneLspClient {
   private openDocuments = new Map<string, { version: number; content: string }>();
   private diagnostics = new Map<string, LspDiagnostic[]>();
   /**
-   * Open documents whose cached diagnostics predate the last change sent to the server. A change
-   * to one file can change the errors of every file that imports it, so a didChange marks all
-   * open documents until the server publishes for them again.
+   * Documents whose cached diagnostics predate the last change sent to the server. A change to one
+   * file can change the errors of every file that imports it, so a didChange marks all open
+   * documents, and every closed one a workspace-wide server has published for, until the server
+   * publishes for them again.
    */
   private staleDiagnostics = new Set<string>();
   private diagnosticWaiters = new Map<string, Array<() => void>>();
@@ -245,6 +247,7 @@ export class StandaloneLspClient {
         existing.version++;
         existing.content = text;
         for (const open of this.openDocuments.keys()) this.staleDiagnostics.add(open);
+        for (const published of this.diagnostics.keys()) this.staleDiagnostics.add(published);
         this.notify("textDocument/didChange", {
           textDocument: { uri, version: existing.version },
           contentChanges: [{ text }],
@@ -595,7 +598,7 @@ export class StandaloneLspClient {
   getRecentDiagnostics(limit = 20): Array<{ file: string; message: string; severity: number }> {
     const results: Array<{ file: string; message: string; severity: number }> = [];
     for (const [uri, diags] of this.diagnostics) {
-      const file = uri.replace("file://", "");
+      const file = uriToFilePath(uri);
       for (const d of diags) {
         if (results.length >= limit) return results;
         results.push({ file, message: d.message, severity: d.severity ?? 1 });
@@ -609,63 +612,24 @@ export class StandaloneLspClient {
     return this.config.args;
   }
 
-  /** Graceful shutdown */
+  /**
+   * Stops the server and resolves once its process has exited. A ready server is asked to shut
+   * down and gets SIGTERM, then its process tree SIGKILL after up to {@link STOP_GRACE_MS}; a
+   * server still starting may never answer shutdown and is killed at once, so it does not keep
+   * its working directory busy (#2268). The wait for the exit is what reaps the process: a
+   * worker that exits before it sees the exit leaves a zombie, and its fallback timer never runs.
+   */
   async stop(): Promise<void> {
-    if (!this.process) return;
-    // A server still starting may never answer shutdown, and a fallback timer may not run in a
-    // worker being torn down: it is killed at once, so it does not keep its working directory
-    // busy (#2268).
+    const proc = this.process;
+    if (!proc) return;
     const starting = !this.initialized;
     if (!starting) {
       try {
-        await this.request("shutdown", null);
+        await withinMs(this.request("shutdown", null), STOP_GRACE_MS);
         this.notify("exit", null);
       } catch {
         // Best effort
       }
-    }
-    // Kill the entire process tree (not just the direct child).
-    // Some LSP wrappers (e.g. biome's Mason shim) use spawnSync to launch
-    // a native binary as a grandchild. SIGTERM to the wrapper doesn't propagate
-    // to the grandchild, leaving orphaned processes. Killing by negative PID
-    // targets the entire process group.
-    const proc = this.process;
-    const pid = proc?.pid;
-    if (pid) {
-      const signal = starting ? "SIGKILL" : "SIGTERM";
-      if (IS_WIN) {
-        try {
-          platformKillTree(pid, signal);
-        } catch {}
-      } else {
-        try {
-          process.kill(-pid, signal);
-        } catch {
-          try {
-            proc.kill(signal);
-          } catch {}
-        }
-      }
-      // SIGKILL after 2s as fallback — but also schedule an immediate
-      // SIGKILL if the process is still alive after a short grace period.
-      // The setTimeout may not fire during process.exit(), so killSync()
-      // and the PID tracker act as the real safety net.
-      setTimeout(() => {
-        if (IS_WIN) {
-          try {
-            platformKillTree(pid, "SIGKILL");
-          } catch {}
-        } else {
-          try {
-            process.kill(-pid, "SIGKILL");
-          } catch {
-            try {
-              proc.kill("SIGKILL");
-            } catch {}
-          }
-        }
-      }, 2000);
-      untrackLspPid(pid);
     }
     this.process = null;
     this.initialized = false;
@@ -674,7 +638,67 @@ export class StandaloneLspClient {
     // A start awaiting its handshake fails now instead of waiting forever.
     for (const pending of this.pending.values()) pending.reject(new Error("LSP server stopped"));
     this.pending.clear();
+    const pid = proc.pid;
+    if (!pid) return;
+    killServerTree(proc, pid, starting ? "SIGKILL" : "SIGTERM");
+    if (!starting) {
+      await exitedWithin(proc, STOP_GRACE_MS);
+      // Also reaches a grandchild that outlived its wrapper's exit on SIGTERM.
+      killServerTree(proc, pid, "SIGKILL");
+    }
+    await exitedWithin(proc, STOP_GRACE_MS);
+    untrackLspPid(pid);
   }
+}
+
+/** How long a stopping server gets for each step: its shutdown answer, its exit after a signal. */
+const STOP_GRACE_MS = 2000;
+
+/**
+ * Kills the server's whole process tree, not just the direct child: some LSP wrappers (biome's
+ * Mason shim) launch the native binary as a grandchild with spawnSync, and a signal to the wrapper
+ * does not reach it. On POSIX the server leads its own process group (`spawnLspServer`).
+ */
+function killServerTree(proc: ChildProcess, pid: number, signal: "SIGTERM" | "SIGKILL"): void {
+  if (IS_WIN) {
+    try {
+      platformKillTree(pid, signal);
+    } catch {}
+    return;
+  }
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    try {
+      proc.kill(signal);
+    } catch {}
+  }
+}
+
+/** Resolves true once `proc` has exited (and been reaped), false after `ms` without an exit. */
+function exitedWithin(proc: ChildProcess, ms: number): Promise<boolean> {
+  if (proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => {
+      proc.off("exit", onExit);
+      resolve(false);
+    }, ms);
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    proc.once("exit", onExit);
+  });
+}
+
+function withinMs<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 function isResponse(msg: JsonRpcMessage): msg is JsonRpcResponse {

@@ -6,7 +6,7 @@ import { startApiServer } from "../src/core/api/server.js";
 import type { SettingsSecretStore } from "../src/core/api/settings-routes.js";
 import { mergeConfigs, DEFAULT_CONFIG } from "../src/config/index.js";
 import { SETTING_PAGES, SETTINGS, writeSettingPath } from "../src/core/settings/schema.js";
-import { planSettingsChange, SettingsChangeError, settingValueSchema, settingsView, type SettingsView } from "../src/core/settings/values.js";
+import { planSettingsChange, SettingsChangeError, settingValueSchema, settingsView, type SettingsView, worktreeRootCheck } from "../src/core/settings/values.js";
 import { describeLibraryDocs, parseToolArgs } from "../src/core/commands/library-docs-editor.js";
 import { removeTempDir } from "./helpers/temp-dir.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
@@ -190,6 +190,43 @@ describe("settings API", () => {
     expect(removed.values.libraryDocs).toMatchObject({ value: null, source: "default" });
     expect(removed.checks?.libraryDocs).toBeUndefined();
     expect(JSON.parse(readFileSync(join(fixture.root, ".baked", "config.json"), "utf8"))).toEqual({});
+  });
+
+  test("the worktree folder is saved, checked like the doctor checks it, and removed with null (#2461)", async () => {
+    const { fixture, patch } = await setup();
+    const short = mkdtempSync(join(tmpdir(), "wtr-"));
+    cleanups.push(() => removeTempDir(short));
+    const set = await patch({ scope: "global", set: { "workflows.worktreeRoot": short } });
+    expect(set.status).toBe(200);
+    const view = (await set.json()) as SettingsView;
+    expect(view.values["workflows.worktreeRoot"]).toMatchObject({ value: short, source: "global" });
+    expect(view.checks?.["workflows.worktreeRoot"]).toMatchObject({ status: "ok" });
+    expect(view.checks?.["workflows.worktreeRoot"]?.detail).toContain(join(short, "00000000", "T0001"));
+    expect(fixture.service.config.workflows?.worktreeRoot).toBe(short);
+    // A folder inside the project is refused by the run, and the check says so.
+    const inside = (await (
+      await patch({ scope: "global", set: { "workflows.worktreeRoot": join(fixture.root, "wt") } })
+    ).json()) as SettingsView;
+    expect(inside.checks?.["workflows.worktreeRoot"]).toMatchObject({ status: "warn" });
+    expect(inside.checks?.["workflows.worktreeRoot"]?.detail).toContain("inside the project");
+    expect((await patch({ scope: "global", set: { "workflows.worktreeRoot": "" } })).status).toBe(400);
+    const removed = (await (await patch({ scope: "global", set: { "workflows.worktreeRoot": null } })).json()) as SettingsView;
+    expect(removed.values["workflows.worktreeRoot"]).toMatchObject({ value: null, source: "default" });
+    expect(fixture.service.config.workflows?.worktreeRoot).toBeUndefined();
+  });
+
+  test("the worktree folder check names the setting as the remedy for a Dart project too deep on Windows (#2461)", () => {
+    const deep = join(mkdtempSync(join(tmpdir(), "wtr-")), "x".repeat(80));
+    cleanups.push(() => removeTempDir(join(deep, "..")));
+    mkdirSync(deep, { recursive: true });
+    writeFileSync(join(deep, "pubspec.yaml"), "name: p\n");
+    const check = worktreeRootCheck(deep, null, "win32");
+    expect(check).toMatchObject({ status: "warn" });
+    expect(check?.fix).toContain("Set workflows.worktreeRoot to a short folder such as C:\\.bk");
+    expect(worktreeRootCheck(deep, null, "linux")).toBeNull();
+    const short = mkdtempSync(join(tmpdir(), "r-"));
+    cleanups.push(() => removeTempDir(short));
+    expect(worktreeRootCheck(deep, short, "win32")?.status).toBe("ok");
   });
 
   test("PATCH refuses invalid values and settings outside their scope", async () => {

@@ -37,6 +37,7 @@ import {
   mergeProblem,
   parseBudget,
   parseCount,
+  splitPreviewText,
   splitProblem,
   startBody,
   suggestInitiativeId,
@@ -892,5 +893,48 @@ describe("mock usage export", () => {
     expect(
       (await ask("/v1/workflow/runs/run-usage-totals/usage", "format=md")).markdown,
     ).toContain("run-usage-totals");
+  });
+});
+
+describe("split approval budget preview (#2502)", () => {
+  // R81 ratdec: a 4.0M pool, three features whose lows sum to 8.12M, a $25 cap that pays 11.8M.
+  const preview = {
+    planRevision: 1,
+    lows: { "exact-cli": 4_995_182, representations: 2_681_000, guide: 441_000 },
+    expected: { "exact-cli": 6_400_000, representations: 3_300_000, guide: 700_000 },
+    high: { "exact-cli": 15_235_305, representations: 7_900_000, guide: 1_300_000 },
+    sumLow: 8_117_182,
+    sumExpected: 10_400_000,
+    sumHigh: 24_435_305,
+    limitTokens: 4_000_000,
+    capTokens: 11_848_341,
+    usdPerMillion: 2.11,
+    firstGate: {
+      featureId: "exact-cli",
+      verdict: "park" as const,
+      shareTokens: 3_420_097,
+      need: { low: 4_995_182, high: 15_235_305 },
+      reason: "The shared budget is short",
+    },
+    suggestedTokens: 11_800_000,
+    notice: "At the estimates so far ... (baked workflow initiative extend ratdec --tokens 11800000).",
+  };
+
+  test("the approval screen shows the lows, the expected tokens, the cap's pool, the first gate and the amount", () => {
+    const view = initiativeView({ budget: { ...initiativeView().budget, preview } });
+    expect(splitPreviewText(view)).toBe(
+      "Budget before approval: lows 8.1M, expected 10.4M, high 24.4M; the dollar cap pays for about 11.8M at $2.11 per million. At the 4.0M pool the first share gate would park exact-cli (share 3.4M, need 5.0M-15.2M). Extend to 11.8M before approving.",
+    );
+    const fits = { ...preview, suggestedTokens: null, firstGate: { ...preview.firstGate, verdict: "pass" as const } };
+    expect(splitPreviewText(initiativeView({ budget: { ...initiativeView().budget, preview: fits } }))).toBe(
+      "Budget before approval: lows 8.1M, expected 10.4M, high 24.4M; the dollar cap pays for about 11.8M at $2.11 per million. At the 4.0M pool the first share gate would start exact-cli (share 3.4M, need 5.0M-15.2M).",
+    );
+  });
+
+  test("no line outside a split approval or from an older backend", () => {
+    expect(splitPreviewText(initiativeView())).toBeNull();
+    expect(
+      splitPreviewText(initiativeView({ status: "active", budget: { ...initiativeView().budget, preview } })),
+    ).toBeNull();
   });
 });

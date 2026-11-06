@@ -25,6 +25,8 @@ export interface SastFinding {
   severity: "error" | "warning" | "info";
   message: string;
   blocking: boolean;
+  /** On a line the request gives verbatim: a note (#2489). */
+  supplied?: true;
 }
 
 export interface SastResult {
@@ -88,6 +90,7 @@ export async function runSast(
   }
   const added = new Map(files.map((f) => [f.path, addedLines(f.before, f.content)]));
   const known = new Map(files.map((f) => [f.path, f.before !== undefined]));
+  const supplied = new Map(files.map((f) => [f.path, f.supplied]));
   const findings: SastFinding[] = [];
   for (const match of output.results ?? []) {
     const path = (match.path ?? "").replaceAll("\\", "/").replace(/^\.\//, "");
@@ -95,13 +98,15 @@ export async function runSast(
     if (!added.get(path)?.has(line - 1)) continue;
     const raw = (match.extra?.severity ?? "").toUpperCase();
     const severity = raw === "ERROR" ? "error" : raw === "WARNING" ? "warning" : "info";
+    const verbatim = supplied.get(path)?.has(line - 1) === true;
     findings.push({
       rule: match.check_id ?? "semgrep",
       file: path,
       line,
       severity,
       message: (match.extra?.message ?? match.check_id ?? "Semgrep match").trim().slice(0, 500),
-      blocking: severity === "error" && known.get(path) === true,
+      blocking: severity === "error" && known.get(path) === true && !verbatim,
+      ...(verbatim ? { supplied: true as const } : {}),
     });
   }
   const errors = (output.errors ?? []).map((e) => e.message ?? "").filter(Boolean);

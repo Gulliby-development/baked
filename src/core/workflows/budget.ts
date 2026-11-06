@@ -107,10 +107,13 @@ export function budgetUsage(store: WorkflowStore, row: RunRow): BudgetUsage {
 
 /**
  * The extension offered after a budget stop: every limit that is used up, or at least 80% used,
- * doubles; the tokens double when nothing else explains the stop. Limits at their ceiling stay.
- * Returns null when no limit can be raised any further.
+ * doubles; the tokens double when nothing else explains the stop. Limits at or above their
+ * ceiling stay: the uncapped tokens of a `checkpoints` run (1e9) were "raised" to the 50M ceiling,
+ * and the extension was refused as a lowering (#2667). Returns null when no limit can be raised.
  */
 export function proposeExtension(current: BudgetLimits, usage: BudgetUsage): BudgetLimits | null {
+  const double = (value: number, ceiling: number): number =>
+    Math.max(value, Math.min(value * 2, ceiling));
   const taken = usage.tokens + usage.heldTokens + usage.inFlightTokens;
   const callsOut = usage.calls >= current.maxAgentCalls;
   const timeOut = usage.activeMs >= current.maxActiveMs;
@@ -119,14 +122,12 @@ export function proposeExtension(current: BudgetLimits, usage: BudgetUsage): Bud
   const raiseTokens = taken >= 0.8 * current.maxTotalTokens || (!callsOut && !timeOut);
   const next: BudgetLimits = {
     maxTotalTokens: raiseTokens
-      ? Math.min(current.maxTotalTokens * 2, MAX_EXTENDED_TOKENS)
+      ? double(current.maxTotalTokens, MAX_EXTENDED_TOKENS)
       : current.maxTotalTokens,
     maxAgentCalls: raiseCalls
-      ? Math.min(current.maxAgentCalls * 2, MAX_EXTENDED_CALLS)
+      ? double(current.maxAgentCalls, MAX_EXTENDED_CALLS)
       : current.maxAgentCalls,
-    maxActiveMs: raiseTime
-      ? Math.min(current.maxActiveMs * 2, MAX_EXTENDED_MS)
-      : current.maxActiveMs,
+    maxActiveMs: raiseTime ? double(current.maxActiveMs, MAX_EXTENDED_MS) : current.maxActiveMs,
   };
   return next.maxTotalTokens > current.maxTotalTokens ||
     next.maxAgentCalls > current.maxAgentCalls ||
@@ -436,8 +437,10 @@ export function growCostCapToForecast(
  * Called when a model call would pass the token budget. A run whose policy declares a ceiling
  * (`sizing.maxRunTokens`) grows its budget toward it, instead of stopping for an operator, while
  * it is making progress: at least one task is implemented or verified. The new budget covers the
- * call and is at least half again the old one, never above the ceiling; the growth is recorded as
- * a policy revision. Returns whether `policy.maxTotalTokens` now covers `projected`.
+ * call and is at least half again the old one, never above the ceiling nor, for an initiative's
+ * feature run, above what its pool leaves after the other runs (`WorkflowStore.tokenHold`, #2468);
+ * the growth is recorded as a policy revision. Returns whether `policy.maxTotalTokens` now covers
+ * `projected`.
  */
 export function growBudgetOnProgress(
   store: WorkflowStore,
@@ -450,25 +453,39 @@ export function growBudgetOnProgress(
   // Another worker of this run may have grown the stored budget already.
   adoptStoredLimits(store, runId, policy);
   if (projected <= policy.maxTotalTokens) return true;
-  if (policy.maxTotalTokens >= ceiling) return extendUnderAssume(store, runId, policy, projected);
+  const hold = store.tokenHold?.(runId) ?? null;
+  if (policy.maxTotalTokens >= ceiling)
+    return extendUnderAssume(store, runId, policy, projected, hold);
   const finished = store
     .tasks(runId)
     .filter((t) => t.status === "implemented" || t.status === "verified").length;
-  if (finished === 0) return growWhilePlanning(store, runId, policy, projected, ceiling);
+  if (finished === 0) return growWhilePlanning(store, runId, policy, projected, ceiling, hold);
   const next = Math.min(
     ceiling,
+    hold ?? Number.POSITIVE_INFINITY,
     Math.max(projected, Math.ceil(policy.maxTotalTokens * (1 + GROWTH_STEP))),
   );
   if (next <= policy.maxTotalTokens) return false;
   recordGrowth(store, runId, policy, next, "auto-growth", {
     projectedTokens: projected,
     finishedTasks: finished,
+    ...heldBy(hold),
   });
   if (projected <= policy.maxTotalTokens) return true;
   // A call that reaches the ceiling from below and still falls short extends past it now, under
   // the same rules: md-site eaeb51d6 grew to 6,000,000 for an attempt that needed 6,039,774 and
   // stopped `budget_exhausted` with the 9,000,000 hard limit unused (#1187).
-  return policy.maxTotalTokens >= ceiling && extendUnderAssume(store, runId, policy, projected);
+  return (
+    policy.maxTotalTokens >= ceiling && extendUnderAssume(store, runId, policy, projected, hold)
+  );
+}
+
+/**
+ * The pool hold a host growth of an initiative's feature run stayed under (`WorkflowStore.tokenHold`,
+ * #2468), as the revision records it; nothing for a run of no initiative.
+ */
+function heldBy(hold: number | null): { poolHoldTokens?: number } {
+  return hold === null ? {} : { poolHoldTokens: hold };
 }
 
 /**
@@ -481,6 +498,13 @@ export function growBudgetOnProgress(
  * failing does not grow it. The same holds once a revise or a rejected tests-first task has
  * invalidated every finished task: the run re-plans with no task finished, and without this the
  * budget did not grow again until one re-finished (#1431).
+ *
+ * Tokens the open attempts used since the last such growth count as progress too, as they do for
+ * an auto-extend (#2590), while more than one open attempt spent them and the step stays under the
+ * ceiling, the pool hold and what the dollar cap pays for. One attempt spending alone still stops
+ * on the run budget (#1298). A first wave of parallel writers finishes no task and completes no
+ * attempt before the budget runs out, so the growth one writer's step made left the others to fail
+ * `BUDGET_EXHAUSTED` with the ceiling unused (#2607).
  */
 function growWhilePlanning(
   store: WorkflowStore,
@@ -488,6 +512,7 @@ function growWhilePlanning(
   policy: RunPolicy,
   projected: number,
   ceiling: number,
+  hold: number | null,
 ): boolean {
   const completedAttempts = store
     .attempts(runId)
@@ -502,21 +527,68 @@ function growWhilePlanning(
         JSON.parse(store.readArtifact(runId, a.id)) as {
           kind?: string;
           completedAttempts?: number;
+          openAttemptTokens?: Record<string, number>;
         },
     )
     .filter((r) => r.kind === "planning-growth")
     .at(-1);
-  if (completedAttempts <= (last?.completedAttempts ?? 0)) return false;
+  const { openAttemptTokens, inFlightTokens } = inFlightSince(
+    store,
+    runId,
+    last?.openAttemptTokens,
+  );
+  const affordable = affordableTokens(store, runId, policy);
+  // Work in flight is progress only where the step fits under the ceiling, the pool hold and what
+  // the dollar cap pays for, as for an auto-extend (#2590), and only for parallel writers: one
+  // attempt spending alone with nothing finished is not progress, so it still stops on the run
+  // budget (#1298).
+  const spending = Object.entries(openAttemptTokens).filter(
+    ([id, used]) => used > (last?.openAttemptTokens?.[id] ?? 0),
+  ).length;
+  const inFlightProgress =
+    spending > 1 &&
+    inFlightTokens > 0 &&
+    projected <= Math.min(ceiling, hold ?? Number.POSITIVE_INFINITY) &&
+    (affordable === null || projected <= affordable);
+  if (completedAttempts <= (last?.completedAttempts ?? 0) && !inFlightProgress) return false;
   const next = Math.min(
     ceiling,
+    hold ?? Number.POSITIVE_INFINITY,
     Math.max(projected, Math.ceil(policy.maxTotalTokens * (1 + GROWTH_STEP))),
   );
   if (next <= policy.maxTotalTokens) return false;
   recordGrowth(store, runId, policy, next, "planning-growth", {
     projectedTokens: projected,
     completedAttempts,
+    ...heldBy(hold),
+    inFlightTokens,
+    openAttemptTokens,
+    ...(affordable !== null ? { affordableTokens: affordable } : {}),
   });
   return projected <= policy.maxTotalTokens;
+}
+
+/**
+ * The tokens each open attempt has used (`openAttemptTokens`) and what they used since `before`,
+ * the same map as a previous growth recorded it (`inFlightTokens`): work in flight that no finished
+ * task or completed attempt counts yet (#2590, #2607).
+ */
+function inFlightSince(
+  store: WorkflowStore,
+  runId: string,
+  before: Record<string, number> | undefined,
+): { openAttemptTokens: Record<string, number>; inFlightTokens: number } {
+  const openAttemptTokens = Object.fromEntries(
+    store
+      .attempts(runId)
+      .filter((a) => a.status === "running")
+      .map((a) => [a.id, a.used_tokens ?? 0]),
+  );
+  const inFlightTokens = Object.entries(openAttemptTokens).reduce(
+    (sum, [id, used]) => sum + Math.max(0, used - (before?.[id] ?? 0)),
+    0,
+  );
+  return { openAttemptTokens, inFlightTokens };
 }
 
 /** Share of the sizing ceiling one extension past it adds, at least: about one review round. */
@@ -577,18 +649,33 @@ function affordableTokens(store: WorkflowStore, runId: string, policy: RunPolicy
  * still pays for (`affordableTokens`): the cap then stops the run, as a cost stop. Each extension
  * covers the call and adds at least a quarter of the ceiling, about one review round, and is
  * recorded as `kind: "auto-extend"`. junitdigest 3e5be74b stopped twice at the ceiling and was
- * cleared both times by an operator `extend` with no other choice to make (#747).
+ * cleared both times by an operator `extend` with no other choice to make (#747). An initiative's
+ * feature run grows no further than its pool leaves after the other runs (`hold`, from
+ * `WorkflowStore.tokenHold`): R79 deltaglue's chunks extended to 12.0M on a $25.51 bound that paid
+ * for 35.8M while the other features had used 1.86M of the 12.0M pool (#2468).
+ *
+ * Tokens the open attempts used since the last extension count as progress too, while the
+ * extension stays under the hard ceiling, the pool hold and what the dollar cap pays for: with
+ * several writers in flight none may finish before the limit runs out, and their tokens are the
+ * work not yet counted. R84 md-site 2361845b extended at 6.0M to 7.5M, then failed two of its
+ * three in-flight writers `BUDGET_EXHAUSTED` with $6.6 of its $12 cap and a 17.6M hard ceiling
+ * left, and spent their 1.44M again (#2590). Each attempt is bounded by its own cap, and a new
+ * attempt is checked against its cap before it starts, so one writer alone rarely reaches this.
  */
 function extendUnderAssume(
   store: WorkflowStore,
   runId: string,
   policy: RunPolicy,
   projected: number,
+  hold: number | null,
 ): boolean {
   const tokenHard = extendToOf(policy);
   const ceiling = policy.sizing?.maxRunTokens ?? null;
   if (tokenHard === null || ceiling === null || policy.clarification !== "assume") return false;
-  const hard = Math.max(tokenHard, affordableTokens(store, runId, policy) ?? 0);
+  // An initiative's feature run grows no further than its pool leaves after the other runs: the
+  // run's dollar bound pays for more than the pool the person set (#2468).
+  const affordable = affordableTokens(store, runId, policy);
+  const hard = Math.min(Math.max(tokenHard, affordable ?? 0), hold ?? Number.POSITIVE_INFINITY);
   if (policy.maxTotalTokens >= hard || projected > hard) return false;
   const progress = progressOf(store, runId);
   const last = store
@@ -603,6 +690,7 @@ function extendUnderAssume(
           taskCompletions?: number;
           continuedAttempts?: number;
           resolvedFindings?: number;
+          openAttemptTokens?: Record<string, number>;
         },
     )
     .filter((r) => r.kind === "auto-extend")
@@ -612,12 +700,19 @@ function extendUnderAssume(
     continuedAttempts: last?.continuedAttempts ?? 0,
     resolvedFindings: last?.resolvedFindings ?? 0,
   };
-  if (
-    progress.taskCompletions <= before.taskCompletions &&
-    progress.continuedAttempts <= before.continuedAttempts &&
-    progress.resolvedFindings <= before.resolvedFindings
-  )
-    return false;
+  const { openAttemptTokens, inFlightTokens } = inFlightSince(
+    store,
+    runId,
+    last?.openAttemptTokens,
+  );
+  const finishedProgress =
+    progress.taskCompletions > before.taskCompletions ||
+    progress.continuedAttempts > before.continuedAttempts ||
+    progress.resolvedFindings > before.resolvedFindings;
+  // Work in flight is progress only inside what the dollar cap pays for: past it the cap stops
+  // the run, as it does for finished work, rather than a token extension the run cannot pay for.
+  const inFlightProgress = inFlightTokens > 0 && (affordable === null || projected <= affordable);
+  if (!finishedProgress && !inFlightProgress) return false;
   const next = Math.min(
     hard,
     Math.max(projected, policy.maxTotalTokens + Math.ceil(ceiling * EXTEND_STEP)),
@@ -625,7 +720,11 @@ function extendUnderAssume(
   recordGrowth(store, runId, policy, next, "auto-extend", {
     projectedTokens: projected,
     hardCeiling: hard,
+    ...heldBy(hold),
     ...progress,
+    inFlightTokens,
+    openAttemptTokens,
+    ...(affordable !== null ? { affordableTokens: affordable } : {}),
   });
   return projected <= policy.maxTotalTokens;
 }
@@ -712,8 +811,9 @@ export function raiseToStartEstimate(
   }
   const ceiling = policy.sizing?.maxRunTokens ?? null;
   if (ceiling === null || estimateHigh === null || store.tasks(runId).length > 0) return false;
-  const target = Math.min(ceiling, Math.ceil(estimateHigh));
+  const hold = store.tokenHold?.(runId) ?? null;
+  const target = Math.min(ceiling, hold ?? Number.POSITIVE_INFINITY, Math.ceil(estimateHigh));
   if (target <= policy.maxTotalTokens) return false;
-  recordGrowth(store, runId, policy, target, "planning-floor", { estimateHigh });
+  recordGrowth(store, runId, policy, target, "planning-floor", { estimateHigh, ...heldBy(hold) });
   return true;
 }

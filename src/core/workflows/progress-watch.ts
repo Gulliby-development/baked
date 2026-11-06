@@ -3,7 +3,8 @@
  * a stuck loop. The step controller turns a first signal into one steering message and a repeat
  * into an early, reasoned stop, instead of letting the attempt burn its step or token cap.
  */
-import { canonical } from "../specs/hash.js";
+import { canonical, hashJson } from "../specs/hash.js";
+import { normalizeCheckOutput } from "./repeated-failure.js";
 
 export type WatchSignal =
   | "repeated-reads"
@@ -20,7 +21,7 @@ export interface WatchStep {
   /** The step's own text, where a worker says what it cannot do. */
   text?: string;
   toolCalls?: readonly { toolName: string; input?: unknown }[];
-  toolResults?: readonly { toolName: string; output?: unknown }[];
+  toolResults?: readonly { toolName: string; input?: unknown; output?: unknown }[];
 }
 
 const READ_TOOLS = new Set(["read", "navigate", "bake_find", "bake_impact"]);
@@ -32,8 +33,21 @@ export const EDIT_TOOLS = new Set([
   "write_test",
   "apply_fix",
   "restore_file",
+  "place_rows",
 ]);
-const CHECK_TOOLS = new Set(["request_check", "run_probe", "run_repro", "replay_rows"]);
+/**
+ * The tools whose result is a check result the watcher compares (`checkResultKey`); `apply_fix`
+ * also returns one, as its `check` part. A tool added here adds its real result shape to the
+ * fixtures of `tests/workflow-progress-watch.test.ts`, which fails without it (#2437).
+ */
+export const CHECK_TOOLS: ReadonlySet<string> = new Set([
+  "request_check",
+  "run_probe",
+  "run_repro",
+  "replay_rows",
+]);
+/** An edit tool whose result carries the check it ran after the edit (`check`). */
+const FIX_TOOL = "apply_fix";
 /** The same read since the last edit, this many times. */
 export const REPEATED_READS = 3;
 /** Steps with tool calls and no edit, for an attempt that must edit. */
@@ -55,6 +69,79 @@ const short = (value: unknown): string => {
   return text.length > 120 ? `${text.slice(0, 117)}...` : text;
 };
 
+const field = (value: unknown, key: string): unknown =>
+  value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)[key]
+    : undefined;
+
+/**
+ * Whether the step made an edit (#2981): an edit tool call (`isEdit`) whose result is no failure.
+ * A failed edit changes nothing, so it neither clears the repeated-call and no-edit rules nor
+ * counts as progress after the steering: R106 tokenpare filters T005 ran one `edit_file` that
+ * could not match 17 times, then 10 more in its restart, and the watcher never steered. A call
+ * whose result the step does not hold counts as an edit.
+ */
+function editedIn(
+  step: WatchStep,
+  isEdit: (name: string) => boolean = (name) => EDIT_TOOLS.has(name),
+): boolean {
+  const calls = (step.toolCalls ?? []).filter((call) => isEdit(call.toolName));
+  if (!calls.length) return false;
+  const results = (step.toolResults ?? []).filter((result) => isEdit(result.toolName));
+  if (results.length < calls.length) return true;
+  return results.some((result) => field(result.output, "success") !== false);
+}
+
+/** A tool whose repeated call with the same input since the last edit is a stuck loop. */
+const repeatable = (name: string) => READ_TOOLS.has(name) || EDIT_TOOLS.has(name);
+
+/**
+ * What two results of one check have in common when they fail the same way: the tool, the check
+ * (its id, or the probe's input), the status and the hash of the output as `normalizeCheckOutput`
+ * reads it. Never the whole result: a `request_check` result carries an `evidenceId` and a
+ * `snapshotId` new for every run, and the output timings (sbt's `elapsed time: 4 s`), so two
+ * identical failures never compared equal and `same-failure` never fired (R77 pairwick, #2437).
+ * The `check` part of an `apply_fix` result counts as a `request_check` result of its check. Null
+ * for a result that is no check result.
+ */
+export function checkResultKey(result: {
+  toolName: string;
+  input?: unknown;
+  output?: unknown;
+}): string | null {
+  const fix = result.toolName === FIX_TOOL;
+  if (!fix && !CHECK_TOOLS.has(result.toolName)) return null;
+  const output = fix ? field(result.output, "check") : result.output;
+  if (fix && output === undefined) return null;
+  const named = field(output, "checkId") ?? field(result.input, "checkId");
+  const checkId = typeof named === "string" ? named : canonical(result.input ?? null);
+  const text = (() => {
+    if (typeof output === "string") return output;
+    const shown = field(output, "output");
+    if (typeof shown === "string") return shown;
+    const findings = field(output, "findings");
+    if (Array.isArray(findings)) return findings.map(String).join("\n");
+    const reason = field(output, "reason") ?? field(output, "note");
+    return typeof reason === "string" ? reason : canonical(output ?? null);
+  })();
+  const status = field(output, "status");
+  return hashJson({
+    tool: fix ? "request_check" : result.toolName,
+    checkId,
+    status: typeof status === "string" ? status : null,
+    output: hashJson(normalizeCheckOutput(text)),
+  });
+}
+
+/** The check results of the steps, keyed by `checkResultKey`, in order. */
+const checkResults = (steps: readonly WatchStep[]): { toolName: string; key: string }[] =>
+  steps.flatMap((step) =>
+    (step.toolResults ?? []).flatMap((result) => {
+      const key = checkResultKey(result);
+      return key === null ? [] : [{ toolName: result.toolName, key }];
+    }),
+  );
+
 /** The first rule the steps break, checked in a fixed order; null while the attempt progresses. */
 export function watchSteps(
   steps: readonly WatchStep[],
@@ -66,32 +153,27 @@ export function watchSteps(
 ): WatchFinding | null {
   let lastEdit = -1;
   steps.forEach((step, index) => {
-    if (step.toolCalls?.some((call) => EDIT_TOOLS.has(call.toolName))) lastEdit = index;
+    if (editedIn(step)) lastEdit = index;
   });
   const since = steps.slice(lastEdit + 1);
   const reads = new Map<string, number>();
   for (const step of since)
     for (const call of step.toolCalls ?? []) {
-      if (!READ_TOOLS.has(call.toolName)) continue;
+      // An edit call here changed nothing (#2981): repeating it is the same loop as a reread.
+      if (!repeatable(call.toolName)) continue;
       const key = `${call.toolName} ${canonical(call.input ?? null)}`;
       const count = (reads.get(key) ?? 0) + 1;
       reads.set(key, count);
       if (count >= REPEATED_READS)
         return {
           signal: "repeated-reads",
-          detail: `${call.toolName} ${short(call.input)} was called ${count} times with the same input since the last edit`,
+          detail: EDIT_TOOLS.has(call.toolName)
+            ? `${call.toolName} ${short(call.input)} failed ${count} times with the same input since the last edit and changed nothing; the same call fails again, so give oldString as the file now reads at those lines`
+            : `${call.toolName} ${short(call.input)} was called ${count} times with the same input since the last edit`,
         };
     }
-  const checks = steps
-    .flatMap((step) => step.toolResults ?? [])
-    .filter((result) => CHECK_TOOLS.has(result.toolName));
-  const tail = checks.slice(-SAME_FAILURES);
-  if (
-    tail.length === SAME_FAILURES &&
-    tail.every(
-      (r) => r.toolName === tail[0]?.toolName && canonical(r.output) === canonical(tail[0]?.output),
-    )
-  )
+  const tail = checkResults(steps).slice(-SAME_FAILURES);
+  if (tail.length === SAME_FAILURES && tail.every((r) => r.key === tail[0]?.key))
     return {
       signal: "same-failure",
       detail: `${tail[0]?.toolName} returned the same result ${SAME_FAILURES} times in a row`,
@@ -191,8 +273,13 @@ export function stillStuck(
           after.filter((step) => (step.toolCalls ?? []).length > 0).length >= minimum
         ? "stuck"
         : "waiting";
-  if (after.some((step) => step.toolCalls?.some((call) => EDIT_TOOLS.has(call.toolName))))
-    return "progress";
+  // An `apply_fix` is an edit, but for `same-failure` its result is one more run of the check: a
+  // fixer that cannot change the failure is the loop itself (R77 pairwick, #2437).
+  const edits =
+    finding.signal === "same-failure"
+      ? (name: string) => EDIT_TOOLS.has(name) && name !== FIX_TOOL
+      : (name: string) => EDIT_TOOLS.has(name);
+  if (after.some((step) => editedIn(step, edits))) return "progress";
   if (later.length < 1) return "waiting";
   if (finding.signal === "no-edits")
     return after.filter((step) => (step.toolCalls ?? []).length > 0).length >= minimum
@@ -204,28 +291,19 @@ export function stillStuck(
     // A read in the grace step is remembered, so reading it once more after the grace is a stop.
     const seen = new Set(
       [...before, ...after.slice(0, STEER_GRACE_STEPS)].flatMap((step) =>
-        (step.toolCalls ?? []).filter((c) => READ_TOOLS.has(c.toolName)).map(key),
+        (step.toolCalls ?? []).filter((c) => repeatable(c.toolName)).map(key),
       ),
     );
     return later.some((step) =>
-      (step.toolCalls ?? []).some((call) => READ_TOOLS.has(call.toolName) && seen.has(key(call))),
+      (step.toolCalls ?? []).some((call) => repeatable(call.toolName) && seen.has(key(call))),
     )
       ? "stuck"
       : after.length >= stopAfter
         ? "progress"
         : "waiting";
   }
-  const last = before
-    .flatMap((step) => step.toolResults ?? [])
-    .filter((r) => CHECK_TOOLS.has(r.toolName))
-    .at(-1);
-  return later.some((step) =>
-    (step.toolResults ?? []).some(
-      (r) =>
-        r.toolName === last?.toolName &&
-        canonical(r.output ?? null) === canonical(last?.output ?? null),
-    ),
-  )
+  const last = checkResults(before).at(-1);
+  return last !== undefined && checkResults(later).some((r) => r.key === last.key)
     ? "stuck"
     : after.length >= stopAfter
       ? "progress"

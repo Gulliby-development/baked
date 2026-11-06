@@ -1,4 +1,4 @@
-import { type ConvergenceGate, type ConvergenceGateFinding, convergenceGateDecision, convergenceReproCandidates, type GateFinding, gateFinding, type ReviewGate, reviewGateCandidates, reviewGateDecision } from "../src/core/workflows/review-gate.js";
+import { type ConvergenceGate, type ConvergenceGateFinding, convergenceGateDecision, convergenceGateDocCarries, convergenceGateDocKeeps, convergenceGateDocRepeats, convergenceReproCandidates, type GateFinding, gateFinding, type ReviewGate, reviewGateCandidates, reviewGateDecision, reviewGateDocCarries, reviewGateDocKeeps, reviewGateDocRepeats } from "../src/core/workflows/review-gate.js";
 import { literalPropertyProblems, rowFiles, rowsArtifact } from "../src/core/workflows/acceptance-rows.js";
 import { clearBannedProperties } from "../src/core/verification/initiative-ownership.js";
 import { CALL_COST_MODELS, NEXT_CALL, perCallCostScenario } from "./helpers/per-call-cost-scenario.js";
@@ -6,14 +6,20 @@ import { decoySamples, residualSamples, residualSpec } from "./helpers/criteria-
 import { evaluateAutoApproval, planScopeAdvice } from "../src/core/workflows/auto-approval.js";
 import { proseAfterRefusalScenario, refusalKinds } from "./helpers/prose-after-refusal-scenario.js";
 import { runScanner } from "../src/core/workflows/quality/rules.js";
+import { suppliedLineNumbers } from "../src/core/workflows/supplied-drift.js";
+import { ciCheckDrift, toolCommand } from "../src/core/workflows/ci-check-drift.js";
+import { upstreamSymbolGaps } from "../src/core/workflows/initiatives/upstream-symbols.js";
+import { GATE_PREREQUISITES, pendingPrerequisite } from "../src/core/workflows/gate-prerequisites.js";
 import { suspendClock } from "./helpers/suspend-clock.js";
 import { caseCheck } from "../src/core/verification/criteria-cases.js";
 import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 import { slicedCorrective } from "./helpers/sliced-corrective-scenario.js";
 import { evidencePaths, scopeRecord, stackFrames } from "../src/core/workflows/corrective-scope.js";
 import { cellSamples, cellSpec, omittedCellInput, withoutCellInput } from "./helpers/criteria-cell-fixtures.js";
-import { ProcessScope } from "../src/core/workflows/process-scope.js";
+import { inStreamOrder, ProcessScope, windowsBatchInvocation, windowsProgram } from "../src/core/workflows/process-scope.js";
 import { canRepairRun, type RepairBlock } from "../src/core/workflows/repairable.js";
+import { RepairBlockSchema } from "../src/core/workflows/repairable-schema.js";
+import { failureHash, repeatCheck } from "../src/core/workflows/repeated-failure.js";
 import {
   growthLimit,
   type InitiativeView,
@@ -30,20 +36,24 @@ import type { TestRunner } from "../src/core/verification/output-counts.js";
 import { unrequestedManifestFields } from "../src/core/workflows/quality/dependencies.js";
 import { historyFixture, plannedForecastScenario } from "./helpers/initiative-planned-forecast.js";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { refusalInRunRoot, refusedEditAdvice } from "../src/core/workflows/refused-edit.js";
 import { directoryFixers, directoryFixerScenario } from "./helpers/directory-fixer-scenario.js";
 import { baselineCreatedFilesScenario, FIRST_RUN_OUTPUTS } from "./helpers/baseline-created-files-scenario.js";
 import { sourceManifest, TOOL_CACHES } from "../src/core/verification/snapshot.js";
 import { openTrace, replayInitiativeStarts } from "../src/core/workflows/trace.js";
-import { linkDependencies } from "../src/core/workflows/dependency-dirs.js";
+import { linkDependencies, worktreePathRisks } from "../src/core/workflows/dependency-dirs.js";
 import { spawnSync } from "node:child_process";
+import { captureEndings, restoreEndings } from "../src/core/tools/line-endings.js";
 import {
   chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -51,11 +61,23 @@ import { join } from "node:path";
 import { syntaxErrors } from "../src/core/intelligence/syntax-check.js";
 import { criterionCases, missingCases, testsHold, writtenTestPaths } from "../src/core/verification/criteria-cases.js";
 import { INLINE_HARNESS, type InlineRowTest, inlineRowFile, withInlineRows } from "../src/core/workflows/acceptance-rows-inline.js";
-import { reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
+import { docFindingRepairs, documentationFinding, reproAllows, reproExecutables, rerootRepro } from "../src/core/verification/repro.js";
+import { packageNeeds } from "../src/core/workflows/package-probe.js";
+import { extractFixtures, nodeUnderBun, redirectFixture, writeIntoCopy } from "../src/core/verification/doc-examples.js";
+import { anchorLine, placedWhere, placeRows } from "../src/core/tools/place-rows.js";
+import { joinedRows } from "../src/core/workflows/initiatives/plan.js";
+import { oldStringRange, rangeText } from "../src/core/tools/line-range.js";
+import { watchSteps } from "../src/core/workflows/progress-watch.js";
+import { keepFixerRange } from "../src/core/workflows/range-fixer-scope.js";
+import { measureFileRows, rowMoveDecision } from "../src/core/workflows/row-block-drift.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
-import { executeCheckCommand, exitStatus, ranNoTests, timedOutFailure } from "../src/core/verification/check-runner.js";
+import { CheckRunner, executeCheckCommand, exitStatus, ranNoTests, storedSignatureOutput, timedOutFailure } from "../src/core/verification/check-runner.js";
+import { emptyScriptNote, emptyTestScript } from "../src/core/verification/empty-test-script.js";
+import { FORMAT_FAILURE_READERS, hostDocumentFailure } from "../src/core/verification/host-documents.js";
+import { transcriptDrifts } from "../src/core/workflows/transcript-drift.js";
+import { colour, RUNNER_SUMMARIES } from "./helpers/coloured-runner-output.js";
 import { environmentFault, ENVIRONMENT_SIGNATURES, silentFailure } from "../src/core/verification/environment-faults.js";
 import { SWIFT_COMPILE_ERROR, SWIFT_SYMLINK_WARNING_ONLY, SWIFT_TEST_FATAL_ERROR, SWIFT_TEST_SILENT_EXIT_4, SWIFT_TESTING_FAILURE } from "./fixtures/swiftpm-crash-outputs.js";
 import { testReport } from "../src/core/verification/test-reports.js";
@@ -64,14 +86,19 @@ import { baselineRegression, buildFailure, buildRunner, diagnosticCount, failedT
 import { pwshExecutable, rscriptExecutable } from "../src/core/platform/index.js";
 import { lintrRun, STYLER_CHECK, STYLER_FIX, testthatOn, testthatRun } from "../src/core/workflows/r-tools.js";
 import { PESTER_RUN, pesterOn } from "../src/core/workflows/pester.js";
-import { baselineDebt, baselineKeys } from "../src/core/verification/task-end-check.js";
+import { PS_FORMAT_CHECK, PS_FORMAT_FIX } from "../src/core/workflows/ps-format.js";
+import { baselineDebt, baselineKeys, DIAGNOSTIC_FORMATS, diagnostics } from "../src/core/verification/task-end-check.js";
+import { isNoRow } from "../src/core/intelligence/language-records.js";
+import { fixerPaths } from "../src/core/workflows/fixer-languages.js";
 import { affectedTestCheck, isWrittenTestFile, plannedWrittenTests, writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { detectLanguages, touchesLanguageFiles } from "../src/core/workflows/language.js";
 import { launchedCommand } from "../src/core/workflows/launcher.js";
 import { toolchainCommand } from "../src/core/workflows/toolchain.js";
 import { type HostEdit, hostOnlyEvidence, plannerGraph } from "../src/core/workflows/host-edits.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
-import { sizePlan, splitTestTasks } from "../src/core/workflows/sizing.js";
+import { fixerProbeDecision } from "../src/core/workflows/fixer-run.js";
+import { STOP_REASONS, stopMode } from "../src/core/workflows/stop-reasons.js";
+import { sizePlan, splitTestTasks, suppliedBlocks } from "../src/core/workflows/sizing.js";
 import { withPerTestTimeout } from "../src/core/workflows/test-timeout.js";
 import { detectProfile } from "../src/core/tools/project.js";
 import { formatProbeCommand } from "../src/core/tools/auto-format.js";
@@ -85,7 +112,7 @@ import {
   styleClaimShown,
   wholeUnitFixerCommand,
 } from "../src/core/workflows/check-policy.js";
-import { buildWrapper, cmakeGates, detectGates, executeGate, type GateToolchain } from "../src/core/workflows/gates.js";
+import { buildWrapper, cmakeGates, detectGates, executeGate, type GateToolchain, PSSA_LINT, pssaLint } from "../src/core/workflows/gates.js";
 import { committedTreeChecks } from "../src/core/workflows/committed-tree.js";
 import { fileScopedFormat, formatWrittenChecks, rustFormatWrittenChecks } from "../src/core/workflows/format-written.js";
 import { type LayoutResult, layoutVerdict } from "../src/core/workflows/layout-check.js";
@@ -97,6 +124,7 @@ import {
 } from "../src/core/workflows/quality/mutation-tools.js";
 import { generateMutants, isTestCheck, proposalFiles } from "../src/core/workflows/quality/mutation.js";
 import {
+  checkPropertyTests,
   libraryFiles,
   propertyLibraries,
   propertyTestKind,
@@ -112,7 +140,7 @@ import { ASSERTION_FAILURES } from "./helpers/assertion-failures.js";
 import { failureOwner } from "../src/core/workflows/task-graph.js";
 import { type Check, type RunPolicy, type RuntimeState, type Spec, type TaskGraph, uncontractedBuildCriteria } from "../src/core/workflows/schemas.js";
 import type { TaskRow, WorkflowStore } from "../src/core/workflows/store.js";
-import { scanTestIntegrity, testChanges } from "../src/core/workflows/test-integrity.js";
+import { consolidateTargets, scanTestIntegrity, testChanges } from "../src/core/workflows/test-integrity.js";
 import type { Task } from "../src/core/workflows/types.js";
 import {
   createTaskWorktree,
@@ -136,7 +164,7 @@ test("#1643 initiative ceiling gate uses central stage prices from shared histor
       expect(shareShortfall(over, view.features[1]!)?.message).toContain("above its $37.50 ceiling");
       const at = { ...view, budget: { ...view.budget, cost: { ...view.budget.cost, forecastUsd: 37.5, forecastBinding: true } } };
       expect(shareShortfall(at, view.features[1]!)).toBeNull();
-      const estimate = initiatives.estimate("values", 0);
+      const estimate = initiatives.estimate("values");
       expect(view.budget.cost.forecastUsd).toBeCloseTo(0.72 + estimate.features.slice(1)
         .reduce((sum, f) => sum + (f.costUsd!.low + f.costUsd!.high) / 2, 0), 2);
     } finally { await fixture.dispose(); }
@@ -290,6 +318,9 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
     pest: { harness: "tests/harness.php", test: "tests/RowsTest.php" },
     exunit: { harness: "tests/harness.exs", test: "tests/rows_test.exs" },
     dart: { harness: "tests/harness.dart", test: "tests/rows_test.dart" },
+    kotlin: { harness: "tests/Harness.kt", test: "tests/RowsTest.kt", package: "tests" },
+    scalatest: { harness: "tests/Harness.scala", test: "tests/RowsSuite.scala" },
+    munit: { harness: "tests/Harness.scala", test: "tests/RowsSuite.scala", package: "tests" },
   } as const;
   test.each(Object.keys(layouts) as (keyof typeof layouts)[])("%s retains every case in its JSON data and keeps generated tests out of mutation proposals", async (framework) => {
     const root = mkdtempSync(join(tmpdir(), "baked-row-gate-"));
@@ -307,8 +338,9 @@ describe("host-written acceptance rows in the case-walk and mutation gates (#159
       const check = caseCheck(spec, task, { checks: [] });
       expect(check).toBeDefined();
       expect(await check?.(root)).toEqual([]);
-      // Java, C# and Dart tests hold the rows themselves, and the host refuses any change to that file.
-      if (framework === "junit" || framework === "xunit" || framework === "dart") expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
+      // Java, C#, Dart, Kotlin and Scala tests hold the rows themselves, and the host refuses any
+      // change to that file.
+      if (["junit", "xunit", "dart", "kotlin", "scalatest", "munit"].includes(framework)) expect(files[1]?.content).toMatch(/\b34L?\b.*\b68L?\b/);
       else {
         writeFileSync(join(root, "tests/rows.json"), JSON.stringify(artifact.rows.slice(0, 1)));
         expect((await check?.(root))?.join()).toContain("34");
@@ -355,6 +387,9 @@ describe("gate matrix: inline rows block holds its own cells (#1997)", () => {
     pest: { mode: "inline", framework: "pest", test: "tests/CalcTest.php" },
     exunit: { mode: "inline", framework: "exunit", test: "test/calc_test.exs" },
     dart: { mode: "inline", framework: "dart", test: "test/calc_test.dart" },
+    kotlin: { mode: "inline", framework: "kotlin", package: "com.ex.calc", test: "src/test/kotlin/com/ex/calc/CalcTest.kt" },
+    scalatest: { mode: "inline", framework: "scalatest", test: "src/test/scala/CalcSuite.scala" },
+    munit: { mode: "inline", framework: "munit", test: "src/test/scala/CalcSuite.scala" },
   };
   const shapes: [string, unknown][] = [
     ["two-line CRLF text", ["[a]\r\nb=1\r\n", {}]],
@@ -456,7 +491,7 @@ const FORMAT_FILE: Record<Stack, { path: string; command: string | null }> = {
   npm: { path: "src/sum.js", command: null },
   python: { path: "src/app/sum.py", command: "ruff format --check src/app/sum.py" },
   go: { path: "sum.go", command: "gofmt -l sum.go" },
-  rust: { path: "tests/json.rs", command: "rustfmt --check --edition 2021 tests/json.rs" },
+  rust: { path: "tests/json.rs", command: "rustfmt --check --color=never --edition 2021 tests/json.rs" },
   // Maven formatters run inside `mvn verify`; no gate runs one alone.
   maven: { path: "src/main/java/app/Sum.java", command: null },
   dotnet: { path: "src/App/Sum.cs", command: "dotnet format --verify-no-changes --include src/App/Sum.cs" },
@@ -1600,6 +1635,91 @@ describe("gate matrix: SwiftPM, Mix, Dart, Zig, dune and Bundler (#1753)", () =>
   });
 });
 
+// #2490 (R80 ratdec, Elixir 1.20.4): the Mix gates (#1753) proposed `mix format` and `mix test`, but
+// no format-written check held an `.ex` file to the formatter and ExUnit's summary was not read, so
+// `requireTests` could not tell a run of no test. Measured with Elixir 1.14.0 (Ubuntu 24.04's
+// package): `mix test` and `mix format --check-formatted` below. Elixir 1.19 and 1.20 were not
+// installed; their summaries are built from ExUnit.CLIFormatter and ExUnit.Formatter of v1.19.5 and
+// v1.20.4 (print_summary, format_times), with the "Result: 1 passed", "Result: 0/1 passed" and
+// "Failed: 1 test" lines the R80 records show.
+const EXUNIT_FAILED = ".\n\n  1) test fails on purpose (SumTest)\n     test/sum_test.exs:8\n     Assertion with == failed\n     code:  assert Proj.hello() == :moon\n     left:  :world\n     right: :moon\n     stacktrace:\n       test/sum_test.exs:9: (test)\n\n\nFinished in 0.02 seconds (0.00s async, 0.02s sync)\n2 tests, 1 failure\n\nRandomized with seed 0\n";
+const EXUNIT_GROWN = ".\n\n  1) test fails on purpose (SumTest)\n     test/sum_test.exs:8\n     Assertion with == failed\n     code:  assert Proj.hello() == :moon\n     left:  :world\n     right: :moon\n     stacktrace:\n       test/sum_test.exs:9: (test)\n\n.\nFinished in 0.02 seconds (0.00s async, 0.02s sync)\n3 tests, 1 failure\n\nRandomized with seed 0\n";
+const EXUNIT_FINISHED = "\nFinished in 0.02 seconds (0.00s async, 0.02s sync)\n";
+const exunit20 = (summary: string) => `${EXUNIT_FINISHED}\n${summary}\n`;
+
+describe("gate matrix: Elixir format-written and ExUnit counts (#2490)", () => {
+  const MIX = { "mix.exs": "defmodule Calc.MixProject do\nend\n", ".formatter.exs": '[inputs: ["{mix,.formatter}.exs", "{config,lib,test}/**/*.{ex,exs}"]]\n' };
+  // mix format --check-formatted rejects it: "** (Mix) mix format failed due to --check-formatted."
+  const MISFORMATTED = "defmodule Sum do\n  def sum(a,b), do: a+b\nend\n";
+  const checks = (files: Record<string, string>) => detectGates(project(files)).map((s) => s.check);
+  const resolve = (command: string) => `/usr/bin/${command}`;
+  const shown = (checks: Check[]) => checks.map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix?.executable, ...(c.fix?.args ?? [])].join(" ")]);
+
+  test("a misformatted .ex file a task creates is held to mix format --check-formatted, mix format its fixer", () => {
+    const root = project({ ...MIX, "lib/sum.ex": MISFORMATTED, "test/sum_test.exs": "defmodule SumTest do\n  use ExUnit.Case\nend\n" });
+    expect(shown(formatWrittenChecks(root, [], [{ path: "lib/sum.ex", action: "create" }, { path: "test/sum_test.exs", action: "create" }], resolve))).toEqual([
+      ["mix-format-written", "mix format --check-formatted lib/sum.ex test/sum_test.exs", "mix format"],
+    ]);
+    // mix format formats whole files only: an edited file with code before the run gets no check.
+    expect(formatWrittenChecks(root, [], [{ path: "lib/sum.ex", action: "modify" }], resolve, () => "defmodule Sum do\nend\n", () => true)).toEqual([]);
+    // Without a .formatter.exs there is no mix-format gate, so no check either.
+    expect(formatWrittenChecks(project({ "mix.exs": MIX["mix.exs"], "lib/sum.ex": MISFORMATTED }), [], [{ path: "lib/sum.ex", action: "create" }], resolve)).toEqual([]);
+    // The whole-tree gate in the run's checks covers the file; a timed-out gate is bisected per file.
+    const gate = checks(MIX).find((c) => c.id === "mix-format") as Check;
+    expect(formatWrittenChecks(root, [gate], [{ path: "lib/sum.ex", action: "create" }], resolve)).toEqual([]);
+    expect(fileScopedFormat(gate, root, "lib/sum.ex")).toEqual({ executable: "mix", args: ["format", "--check-formatted", "lib/sum.ex"] });
+  });
+
+  test("ExUnit's summary is counted: Elixir 1.20's Result line and 1.14's tests and failures", () => {
+    // Elixir 1.20: every test passed, one failed, several test types, and the idle ones left out.
+    expect([testCount(exunit20("Result: 1 passed")), testsRan(exunit20("Result: 1 passed"))]).toEqual([{ tool: "exunit", count: 1 }, { tool: "exunit", count: 1 }]);
+    expect(testsRan(exunit20("Result: 0/1 passed\nFailed: 1 test"))).toEqual({ tool: "exunit", count: 1 });
+    const mixed = exunit20("Result: 3/4 passed (1/1 doctest, 2/3 tests), 1 invalid, 1 skipped, 2 excluded\nFailed: 1 test");
+    expect([testCount(mixed), testsRan(mixed)]).toEqual([{ tool: "exunit", count: 8 }, { tool: "exunit", count: 4 }]);
+    // Elixir 1.14.0, measured: a failing run, then excluded, skipped and invalid tests, which the count holds.
+    expect([testCount(EXUNIT_FAILED), testsRan(EXUNIT_FAILED)]).toEqual([{ tool: "exunit", count: 2 }, { tool: "exunit", count: 2 }]);
+    const idle = "\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n1 doctest, 3 tests, 0 failures, 1 excluded, 1 skipped\n\nRandomized with seed 0\n";
+    expect([testCount(idle), testsRan(idle)]).toEqual([{ tool: "exunit", count: 4 }, { tool: "exunit", count: 2 }]);
+    const invalid = "?\n\n  0) SumTest: failure on setup_all callback, all tests have been invalidated\n     ** (RuntimeError) boom\n\n\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n1 test, 0 failures, 1 invalid\n\nRandomized with seed 0\n";
+    expect([testsRan(invalid), failedTests(invalid)]).toEqual([{ tool: "exunit", count: 0 }, { tool: "exunit", names: [] }]);
+    // Elixir 1.19 puts the excluded count in parentheses.
+    expect(testsRan(`${EXUNIT_FINISHED}3 tests, 0 failures (2 excluded)\n`)).toEqual({ tool: "exunit", count: 1 });
+    // An umbrella runs each app's tests: the summaries add up.
+    expect(testsRan(`==> a${EXUNIT_FINISHED}0 failures\n==> b${EXUNIT_FINISHED}2 tests, 1 failure\n`)).toEqual({ tool: "exunit", count: 2 });
+    // RSpec's "Finished in" line is not ExUnit's.
+    expect(testCount("Finished in 0.00714 seconds (files took 0.09504 seconds to load)\n5 examples, 1 failure, 2 pending\n")?.tool).toBe("rspec");
+  });
+
+  test("an ExUnit run of no test is an empty run in both shapes, and fails a check that must run tests", () => {
+    const empty14 = "\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n0 failures\n\nRandomized with seed 0\n";
+    const empty19 = `${EXUNIT_FINISHED}0 tests, 0 failures\n`;
+    const empty20 = exunit20("Result: 0 tests");
+    for (const output of [empty14, empty19, empty20]) {
+      expect(testsRan(output)).toEqual({ tool: "exunit", count: 0 });
+      expect(noTestsCollected(output)).toBe(true);
+      expect(ranNoTests({ requireTests: true }, output)).toBe(true);
+    }
+    // Every test excluded is a narrowed selection, not an empty target.
+    expect(noTestsCollected(`${EXUNIT_FINISHED}\nResult: 0 tests, 3 excluded\n`)).toBe(false);
+    expect(noTestsCollected("\nFinished in 0.02 seconds (0.00s async, 0.02s sync)\n1 doctest, 3 tests, 0 failures, 4 excluded\n")).toBe(false);
+    expect(noTestsCollected(`==> a${empty20}==> b${exunit20("Result: 2 passed")}`)).toBe(false);
+    expect(noTestsCollected(EXUNIT_FAILED)).toBe(false);
+  });
+
+  test("the failed tests are named, a test file that does not compile is a build failure, and one more passing test keeps the signature", () => {
+    expect(failedTests(EXUNIT_FAILED)).toEqual({ tool: "exunit", names: ["test fails on purpose (SumTest)"] });
+    expect(failedTests(`  1) doctest Calc.add/2 (1) (CalcTest)\n     test/calc_test.exs:3\n${exunit20("Result: 0/1 passed\nFailed: 1 doctest")}`)).toEqual({ tool: "exunit", names: ["doctest Calc.add/2 (1) (CalcTest)"] });
+    const broken = "\n== Compilation error in file test/a_test.exs ==\n** (CompileError) test/a_test.exs:5: undefined function sub/2 (expected ATest to define such a function or for it to be imported, but none are available)\n\n";
+    expect([buildRunner(broken), buildFailure(broken), buildRunner(EXUNIT_FAILED)]).toEqual(["exunit", ["== Compilation error in file test/a_test.exs =="], null]);
+    expect(testCount(EXUNIT_GROWN)).toEqual({ tool: "exunit", count: 3 });
+    expect(failureSignature(EXUNIT_GROWN, "/repo")).toBe(failureSignature(EXUNIT_FAILED, "/repo"));
+    expect(failureSignature(`Compiling 2 files (.ex)\nGenerated calc app\n${EXUNIT_FAILED}`, "/repo")).toBe(failureSignature(EXUNIT_FAILED, "/repo"));
+    const failed20 = (passed: number, total: number) => `  1) test fails (CalcTest)\n     test/calc_test.exs:8\n${exunit20(`Result: ${passed}/${total} passed\nFailed: 1 test`)}`;
+    expect(failureSignature(failed20(2, 3), "/repo")).toBe(failureSignature(failed20(1, 2), "/repo"));
+    expect(failureSignature(failed20(1, 3).replace("Failed: 1 test", "Failed: 2 tests"), "/repo")).not.toBe(failureSignature(failed20(1, 2), "/repo"));
+  });
+});
+
 // #1489: `gradle -q check` prints no test total, so a Gradle project's baseline compared nothing,
 // and a Gradle-only project got no language review. The report below is the shape Gradle 8 writes
 // to build/test-results/test/TEST-<class>.xml.
@@ -1619,6 +1739,111 @@ const GRADLE_REPORT = `<?xml version="1.0" encoding="UTF-8"?>
   <system-err><![CDATA[]]></system-err>
 </testsuite>
 `;
+describe("gate matrix: Windows batch tools run by their absolute path (#2432)", () => {
+  // A check's batch tool found on the PATH goes to cmd.exe by its absolute path, sandboxed or not,
+  // so the scripts that find their own files from %~dp0 (sbt's launcher jar, Gradle's and Maven's
+  // homes, npm's node, Composer's phar, LuaRocks' wrappers) read their own folder.
+  const tools = ["sbt.bat", "gradle.bat", "mvn.cmd", "npm.cmd", "npx.cmd", "composer.bat", "busted.bat", "luacheck.bat"];
+  for (const tool of tools)
+    test(`${tool} starts as cmd.exe /c with its absolute path`, () => {
+      const path = `C:\\tools\\${tool.split(".")[0]}\\bin`;
+      const which = (bin: string) => (bin === tool ? `${path}\\${tool}` : null);
+      const program = windowsProgram(tool, path, "C:\\work\\worktree", which);
+      expect(program).toBe(`${path}\\${tool}`);
+      expect(windowsBatchInvocation(program, ["test"], "cmd.exe").args.at(-1)).toBe(`""${path}\\${tool}" "test""`);
+    });
+});
+
+describe("gate matrix: a fixer gets the file only when its command takes one (#2436)", () => {
+  // R77 pairwick: `sbt --server -batch scalafmtAll` got the file appended to its last command and
+  // sbt refused it, exit 1, on every run. A fixer whose command takes no file runs once, as given.
+  const rows: [string, string, string[], string, string[] | "whole"][] = [
+    ["TypeScript", "bunx", ["biome", "check", "--write"], "src/a.ts", ["biome", "check", "--write", "src/a.ts"]],
+    ["Python", "ruff", ["check", "--fix"], "src/app/a.py", ["check", "--fix", "src/app/a.py"]],
+    ["Go", "go", ["fmt"], "a.go", ["-w", "a.go"]],
+    ["Rust", "cargo", ["fmt"], "src/lib.rs", "whole"],
+    ["Java", "mvn", ["spotless:apply"], "src/main/java/A.java", "whole"],
+    ["Kotlin", "./gradlew", ["ktlintFormat"], "src/main/kotlin/A.kt", "whole"],
+    ["C#", "dotnet", ["format"], "src/App/A.cs", ["format", "--include", "src/App/A.cs"]],
+    ["Swift", "swift", ["format", "--in-place"], "Sources/App/A.swift", ["format", "--in-place", "Sources/App/A.swift"]],
+    ["Ruby", "bundle", ["exec", "rubocop", "-a"], "lib/a.rb", ["exec", "rubocop", "-a", "lib/a.rb"]],
+    ["PHP", "vendor/bin/pint", [], "src/A.php", ["src/A.php"]],
+    ["Lua", "stylua", [], "src/a.lua", ["src/a.lua"]],
+    ["Dart", "dart", ["format"], "lib/a.dart", ["format", "lib/a.dart"]],
+    ["R", "Rscript", ["-e", "styler::style_file(commandArgs(TRUE))", "--args"], "R/a.R", ["-e", "styler::style_file(commandArgs(TRUE))", "--args", "R/a.R"]],
+    ["Shell", "shfmt", ["-w"], "bin/a.sh", ["-w", "bin/a.sh"]],
+    ["C/C++", "clang-format", ["-i"], "src/a.cpp", ["-i", "src/a.cpp"]],
+    ["Elixir", "mix", ["format"], "lib/a.ex", ["format", "lib/a.ex"]],
+    ["Zig", "zig", ["fmt"], "src/a.zig", ["fmt", "src/a.zig"]],
+    ["Scala (scalafmtOnly)", "sbt", ["-batch", "scalafmtOnly"], "src/main/scala/A.scala", ["-batch", "scalafmtOnly src/main/scala/A.scala"]],
+    ["Scala (scalafmtAll)", "sbt.bat", ["--server", "-batch", "scalafmtAll"], "src/main/scala/A.scala", "whole"],
+  ];
+  for (const [language, executable, args, path, expected] of rows)
+    test(`${language}: ${[executable, ...args].join(" ")}`, () => {
+      const fix = { executable, args };
+      expect(isWholeUnitFixer(fix)).toBe(expected === "whole");
+      if (expected !== "whole") expect(fixerCommand(fix, path).args).toEqual(expected);
+      else if (executable !== "cargo") expect(fixerCommand(fix, path)).toEqual(fix);
+    });
+});
+
+describe("gate matrix: a path-comment signature listing is not the new file (#2438)", () => {
+  // R77 trailspin: a fenced block named only by its first-line path comment, after prose that does
+  // not say it is the whole file, lists signatures; the host does not write it as the file.
+  const files: [string, string][] = [
+    ["internal/cli/cli.go", "//"], ["src/lib.rs", "//"], ["src/index.ts", "//"], ["src/Main.java", "//"], ["src/Program.cs", "//"],
+    ["src/Main.scala", "//"], ["Sources/App/App.swift", "//"], ["lib/calc.dart", "//"], ["src/calc.zig", "//"], ["src/calc.cpp", "//"],
+    ["src/calc/core.py", "#"], ["lib/calc.rb", "#"], ["lib/calc.ex", "#"], ["bin/run.sh", "#"], ["src/Calc.php", "//"],
+    ["scripts/Run.ps1", "#"], ["src/calc.lua", "--"], ["db/schema.sql", "--"],
+  ];
+  for (const [path, lead] of files)
+    test(`${path}: a ${lead} header block is a listing, and a whole-file one is not`, () => {
+      const block = ["```", `${lead} ${path}`, "signature", "```"];
+      expect(suppliedBlocks(["Shapes (fixed; tests call them):", ...block].join("\n"), [path]).get(path)).toMatchObject([{ kind: "file", listing: true }]);
+      expect(suppliedBlocks(["Write this file verbatim:", ...block].join("\n"), [path]).get(path)?.[0]).not.toHaveProperty("listing");
+    });
+});
+
+describe("gate matrix: a fixer that cannot run is found before the first task (#2442)", () => {
+  // The preflight probe runs each detector fixer's own command line on one file of the base, where
+  // its check passes: exit 0 or a change is usable; a failure that changes nothing is not.
+  test("the probe's decision and its shadow reason", () => {
+    expect(fixerProbeDecision({ exitCode: 1, timedOut: false, changed: false })).toBe("unusable");
+    expect(fixerProbeDecision({ exitCode: 0, timedOut: false, changed: true })).toBe("usable");
+    expect(STOP_REASONS.fixer_unusable.defaultMode).toBe("shadow");
+  });
+});
+
+describe("gate matrix: a test tool that cannot start below a deep worktree (#2454)", () => {
+  // R78 latcell-update: `dart test` on Windows fails to load every test file at a 94-character
+  // working directory. The row says where it was measured; the run records the shadow reason.
+  test("the Dart row, its platform and its shadow reason", () => {
+    const root = mkdtempSync(join(tmpdir(), "gm-wt-"));
+    try {
+      writeFileSync(join(root, "pubspec.yaml"), "name: latcell\n");
+      const deep = join(root, "x".repeat(100));
+      expect(worktreePathRisks(root, deep, "win32").map((r) => [r.language, r.tool, r.limit])).toEqual([["dart", "dart test", 88]]);
+      expect(worktreePathRisks(root, deep, "linux")).toEqual([]);
+      expect(worktreePathRisks(root, root.slice(0, 80), "win32")).toEqual([]);
+      expect(STOP_REASONS.worktree_environment.defaultMode).toBe("shadow");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("gate matrix: a requested literal-row consolidation is no test removal (#2467)", () => {
+  // R79 deltaglue chunks T003: a spec finding asked for literal rows, 10 generated tests became 5
+  // literal tables (66 assertions to 64), and the guard's test-count finding undid the finding.
+  test("the finding's file may merge tests while it keeps a test and nine tenths of its assertions", () => {
+    const before = Array.from({ length: 10 }, (_, i) => `test("c${i}", () => { expect(f(\`\${${i}}\`)).toBe("${i}"); expect(g(${i})).toBe(${i}); });\n`).join("");
+    const after = Array.from({ length: 5 }, (_, t) => `test("t${t}", () => { for (const [a, b] of [["${2 * t}", ${2 * t}], ["${2 * t + 1}", ${2 * t + 1}]] as const) { expect(f(a)).toBe(a); expect(g(b)).toBe(b); } expect(f("")).toBe(""); expect(g(0)).toBe(0); });\n`).join("");
+    const consolidates = consolidateTargets([{ kind: "correctness", file: "chunks.test.ts", claim: "The tests construct inputs rather than using the required literal object rows", suggestedFix: "Use literal rows" }]);
+    expect(scanTestIntegrity([{ path: "chunks.test.ts", before, after }], { consolidates }).map((f) => f.rule)).toEqual([]);
+    expect(scanTestIntegrity([{ path: "chunks.test.ts", before, after }], {}).map((f) => f.rule)).toContain("test-count");
+  });
+});
+
 describe("gate matrix: environment signature (#2273)", () => {
   const loopback = "* What went wrong:\njava.io.IOException: Unable to establish loopback connection\n\tat java.base/sun.nio.ch.PipeImpl.<init>(PipeImpl.java:93)\n";
   // Each toolchain with signatures: its command, a recorded machine failure with what its fix names,
@@ -1887,7 +2112,10 @@ describe("gate matrix: Bundler lint, RSpec and Minitest (#1493)", () => {
     const check = (id: string, args: string[]): Check => ({ id, executable: "bundle", args, cwd: ".", timeoutMs: 600000, required: true, scope: "feature", envNames: [], writes: [] });
     expect(affectedTestCheck([check("rspec", ["exec", "rspec", "--format", "progress"])], ["spec/calc_spec.rb", "lib/calc.rb"])?.args).toEqual(["exec", "rspec", "--format", "progress", "./spec/calc_spec.rb"]);
     expect(affectedTestCheck([check("rake-test", ["exec", "rake", "test"])], ["test/calc_test.rb"])?.args).toEqual(["exec", "rake", "test", "TEST=test/calc_test.rb"]);
-    expect(affectedTestCheck([check("rake-test", ["exec", "rake", "test"])], ["test/a_test.rb", "test/test_helper.rb", "test/test_b.rb"])?.args).toEqual(["exec", "rake", "test", "TEST={test/a_test.rb,test/test_b.rb}"]);
+    // test_helper.rb declares no test: the written-tests selection leaves it out by its content, not its name (#2439).
+    const root = project({ "test/a_test.rb": "class ATest < Minitest::Test\n  def test_a; end\nend\n", "test/test_helper.rb": 'require "minitest/autorun"\n', "test/test_b.rb": 'test "b" do\nend\n' });
+    const writes = ["test/a_test.rb", "test/test_helper.rb", "test/test_b.rb"].map((path) => ({ path, action: "create" }));
+    expect(writtenTestsCheck(root, [check("rake-test", ["exec", "rake", "test"])], writes)?.args).toEqual(["exec", "rake", "test", "TEST={test/a_test.rb,test/test_b.rb}"]);
   });
 
   test("a new Ruby file is held to RuboCop's layout cops when the run leaves the gate out (#1837)", () => {
@@ -2228,6 +2456,42 @@ describe("gate matrix: sbt, munit, ScalaTest and scalafmt (#1496)", () => {
   });
 });
 
+// #2440: sbt 2 (2.0.11, munit, R77 pairwick) runs `test` as `testQuick`, which skips the tests its
+// content-addressed cache has seen pass, even in a fresh directory; `testFull` on a build without
+// a test prints no summary at all. The output lines are the ones the issue records.
+const SBT2_TESTQUICK_ZERO = "[info] Passed: Total 0, Failed 0, Errors 0, Passed 0\n[info] No tests to run for Test / testQuick\n[success] elapsed time: 1 s\n";
+const SBT2_TESTFULL_NONE = "[success] elapsed time: 1 s\n";
+const SBT2_TESTFULL_ONE = "pairwick.XTests:\n  + adds 0.011s\n[info] Passed: Total 1, Failed 0, Errors 0, Passed 1\n[success] elapsed time: 4 s\n";
+describe("gate matrix: sbt 2 test shapes (#2440)", () => {
+  const sbt2Check: Check = { id: "sbt-test", executable: "sbt", args: ["-batch", "testFull"], cwd: ".", timeoutMs: 1200000, required: true, scope: "feature", envNames: [], writes: [] };
+  test("testQuick with zero tests ran none, and says nothing of the tests the build holds", () => {
+    expect([testsRan(SBT2_TESTQUICK_ZERO), noTestsCollected(SBT2_TESTQUICK_ZERO)]).toEqual([{ tool: "sbt", count: 0 }, false]);
+    expect(exitStatus({ ...sbt2Check, requireTests: true }, 0, SBT2_TESTQUICK_ZERO)).toBe("failed");
+    // A narrowed run that selected nothing still reads as no test collected (#1496).
+    expect(noTestsCollected("[info] Passed: Total 0, Failed 0, Errors 0, Passed 0\n[info] No tests to run for Test / testOnly\n")).toBe(true);
+  });
+
+  test("testFull with no test ran none; with one test it ran one", () => {
+    expect([testsRan(SBT2_TESTFULL_NONE), testCount(SBT2_TESTFULL_NONE), noTestsCollected(SBT2_TESTFULL_NONE)]).toEqual([{ tool: "sbt", count: 0 }, null, false]);
+    expect(exitStatus({ ...sbt2Check, requireTests: true }, 0, SBT2_TESTFULL_NONE)).toBe("failed");
+    expect(exitStatus(sbt2Check, 0, SBT2_TESTFULL_NONE)).toBe("passed");
+    expect([testsRan(SBT2_TESTFULL_ONE), testCount(SBT2_TESTFULL_ONE)]).toEqual([{ tool: "sbt", count: 1 }, { tool: "sbt", count: 1 }]);
+    expect(exitStatus({ ...sbt2Check, requireTests: true }, 0, SBT2_TESTFULL_ONE)).toBe("passed");
+    // A suite line without a summary does not tell, and sbt 1's success line reads like sbt 2's.
+    expect(testsRan("pairwick.XTests:\n  + adds 0.011s\n[success] elapsed time: 4 s\n")).toBeNull();
+    expect(testsRan("[success] Total time: 3 s, completed Oct 25, 2026, 2:40:35 AM\n")).toEqual({ tool: "sbt", count: 0 });
+  });
+
+  test("the gate and the agent profile run testFull on sbt 2 and test on sbt 1, and testFull narrows to testOnly", async () => {
+    const gateOf = (version: string) => detectGates(project({ "build.sbt": "", "project/build.properties": `sbt.version=${version}\n` })).map((s) => [s.check.args.join(" "), s.source]);
+    expect(gateOf("2.0.11")).toEqual([["-batch testFull", "project/build.properties"]]);
+    expect(gateOf("1.10.11")).toEqual([["-batch test", "build.sbt"]]);
+    expect((await detectProfile(project({ "build.sbt": "", "project/build.properties": "sbt.version = 2.0.0\n" }))).test).toBe("sbt -batch testFull");
+    expect(affectedTestCheck([sbt2Check], ["src/test/scala/pairwick/XTests.scala"])).toMatchObject({ id: "sbt-test-affected", args: ["-batch", "testOnly *XTests"], requireTests: true });
+    expect(isTestCheck({ ...sbt2Check, id: "unit" })).toBe(true);
+  });
+});
+
 // #1492: a SwiftPM package got its build and test gates (#1753) but no test count, no format gate,
 // no skip markers of XCTest or swift-testing and no language review. The outputs below are pasted
 // from `swift test` and `swift format` of Swift 6.1.3 on Linux.
@@ -2311,7 +2575,8 @@ describe("gate matrix: swift test, XCTest, swift-testing and swift-format (#1492
     expect(fixerCommand(checks[0]!.fix!, "Sources/Calc/Calc.swift")).toEqual({ executable: "swift", args: ["format", "format", "--in-place", "Sources/Calc/Calc.swift"] });
     expect(detectGates(project({ "Package.swift": "" })).map((s) => s.check.id)).toEqual(["swift-build", "swift-test"]);
     const root = project(files);
-    expect(formatWrittenChecks(root, [], [{ path: "Sources/Calc/Calc.swift", action: "create" }], (c) => `/usr/bin/${c}`).map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" ")])).toEqual([
+    // The toolchain bundles swift format (Swift 6): the probe is answered here, not by the runner's swift (#2817).
+    expect(formatWrittenChecks(root, [], [{ path: "Sources/Calc/Calc.swift", action: "create" }], (c) => `/usr/bin/${c}`, undefined, undefined, { packages: () => true }).map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" ")])).toEqual([
       ["swift-format-written", "swift format lint --strict Sources/Calc/Calc.swift", "swift format format --in-place"],
     ]);
   });
@@ -2417,6 +2682,22 @@ describe("gate matrix: shared criterion rows (#1597)", () => {
       expect(missingCases(cases, [rows[index]!])).toEqual([]);
       expect(missingCases(cases, [])).toHaveLength(1);
     }
+  });
+});
+
+describe("gate matrix: a criterion naming another feature's row file cites a file (#2889)", () => {
+  // R95 windowgate AC-008 named the validation feature's `InputRowsTest`: no row's text.
+  for (const [stack, own, other, name] of [
+    ["bun", "tests/options_rows.test.ts", "tests/input_rows.test.ts", "input_rows"],
+    ["python", "tests/test_options_rows.py", "tests/test_input_rows.py", "test_input_rows"],
+    ["rust", "tests/options_rows.rs", "tests/input_rows.rs", "input_rows"],
+  ] as const) cell(stack, `${stack}: the other feature's row file is a name`, () => {
+    const spec = { criteria: [{ id: "AC-008", requirementIds: ["FR-001"], given: "the earlier rows", when: "tests run",
+      then: `the rows in \`${name}\` still pass`, method: "automated" as const }] };
+    const task = { criterionIds: ["AC-008"], writes: [{ path: own, action: "create" as const }] };
+    const cited = (rowFiles: string[]) => criterionCases(spec, task, { checks: [], rowFiles }).find((c) => c.literal === name)?.cited;
+    expect(cited([])).toBeUndefined();
+    expect(cited([own, other])).toBe("name");
   });
 });
 
@@ -2576,12 +2857,14 @@ describe("gate matrix: Pester and PSScriptAnalyzer (#1498)", () => {
     expect(ids({ "tests/Sum.Tests.ps1": TEST })).toEqual([
       ["pester", "tests/*.Tests.ps1", true],
       ["psscriptanalyzer", "tests/*.Tests.ps1", false],
+      ["psformat", "tests/*.Tests.ps1", false],
     ]);
     expect(ids({ "Sum.Tests.ps1": TEST, "PSScriptAnalyzerSettings.psd1": "@{}\n" })).toEqual([
       ["pester", "*.Tests.ps1", true],
       ["psscriptanalyzer", "PSScriptAnalyzerSettings.psd1", true],
+      ["psformat", "PSScriptAnalyzerSettings.psd1", true],
     ]);
-    expect(ids({ "Sum.psd1": "@{ ModuleVersion = '1.0.0' }\n" })).toEqual([["psscriptanalyzer", "Sum.psd1", false]]);
+    expect(ids({ "Sum.psd1": "@{ ModuleVersion = '1.0.0' }\n" })).toEqual([["psscriptanalyzer", "Sum.psd1", false], ["psformat", "Sum.psd1", false]]);
     expect(ids({ "src/deep/Sum.ps1": "function Get-Sum {}\n" })).toEqual([]);
     const [pester] = detectGates(project({ "tests/Sum.Tests.ps1": TEST })).map((s) => s.check);
     expect(pester && [pester.executable, ...pester.args.slice(0, 3)]).toEqual([exe, "-NoProfile", "-NonInteractive", "-Command"]);
@@ -2603,12 +2886,44 @@ describe("gate matrix: Pester and PSScriptAnalyzer (#1498)", () => {
     expect(lint.args.at(-1)).toContain("-Severity ParseError,Error,Warning -EnableExit");
     expect(fixerCommand(lint.fix!, "src/Sum.ps1")).toEqual({
       executable: exe,
-      args: ["-NoProfile", "-NonInteractive", "-Command", "Invoke-ScriptAnalyzer", "-Fix", "-Path", "src/Sum.ps1"],
+      args: ["-NoProfile", "-NonInteractive", "-Command", "Invoke-ScriptAnalyzer", "-Settings", "./PSScriptAnalyzerSettings.psd1", "-Fix", "-Path", "src/Sum.ps1"],
     });
     const covering = (path: string) =>
       coveringChecks({ checks } as RunPolicy, { writes: [{ path, action: "create" }] }).map((c) => c.id);
-    expect(covering("src/Sum.ps1")).toEqual(["psscriptanalyzer"]);
+    expect(covering("src/Sum.ps1")).toEqual(["psscriptanalyzer", "psformat"]);
     expect(covering("README.md")).toEqual([]);
+  });
+
+  test("the psformat gate runs Invoke-Formatter on each script, and its format-written row names the task's files (#2595)", () => {
+    const root = project({ "src/Sum.ps1": "function Get-Sum {}\n", "PSScriptAnalyzerSettings.psd1": "@{}\n" });
+    const format = detectGates(root).find((s) => s.check.id === "psformat")?.check as Check;
+    expect(format.args).toEqual(["-NoProfile", "-NonInteractive", "-Command", PS_FORMAT_CHECK]);
+    expect(fixerCommand(format.fix!, "src/Sum.ps1").args).toEqual(["-NoProfile", "-NonInteractive", "-Command", PS_FORMAT_FIX, "src/Sum.ps1"]);
+    // The project's settings, the CodeFormatting preset without them; UTF-8 with the file's own BOM state.
+    expect(PS_FORMAT_CHECK).toContain("$s.Settings = './PSScriptAnalyzerSettings.psd1'");
+    expect(PS_FORMAT_FIX).toContain("New-Object Text.UTF8Encoding $bom");
+    expect(PS_FORMAT_CHECK).not.toContain("WriteAllText");
+    const [written] = formatWrittenChecks(root, [], [{ path: "src/Sum.ps1", action: "create" }], (c) => `/usr/bin/${c}`, undefined, undefined, { packages: () => true });
+    expect(written && [written.id, written.args.slice(-2), written.fix?.args.at(-1), written.required]).toEqual(["psformat-written", [PS_FORMAT_CHECK, "src/Sum.ps1"], PS_FORMAT_FIX, true]);
+    expect(diagnosticCount("src/Sum.ps1: would be reformatted by Invoke-Formatter\ntests/A.Tests.ps1: would be reformatted by Invoke-Formatter\n")).toEqual({ tool: "invoke-formatter", count: 2, errors: 2 });
+  });
+
+  test("the lint and its fixer name a root settings file, since the analyzer finds it only next to each -Path (#2591)", async () => {
+    const commands = (files: Record<string, string>) => {
+      const lint = detectGates(project(files)).find((s) => s.check.id === "psscriptanalyzer")?.check as Check;
+      return { lint: lint.args.at(-1), fix: fixerCommand(lint.fix!, "src/Foo.ps1").args.slice(3) };
+    };
+    const SCRIPT = { "src/Foo.ps1": "function Get-Foo {}\n", "Foo.psd1": "@{ ModuleVersion = '1.0.0' }\n" };
+    expect(commands({ ...SCRIPT, "PSScriptAnalyzerSettings.psd1": "@{}\n" })).toEqual({
+      lint: pssaLint("PSScriptAnalyzerSettings.psd1"),
+      fix: ["Invoke-ScriptAnalyzer", "-Settings", "./PSScriptAnalyzerSettings.psd1", "-Fix", "-Path", "src/Foo.ps1"],
+    });
+    expect(pssaLint("PSScriptAnalyzerSettings.psd1")).toStartWith("Invoke-ScriptAnalyzer -Settings ./PSScriptAnalyzerSettings.psd1 -Path . -Recurse -Severity ParseError,Error,Warning -EnableExit | ");
+    // Without a settings file both keep the default rules and the current commands.
+    expect(commands(SCRIPT)).toEqual({ lint: PSSA_LINT, fix: ["Invoke-ScriptAnalyzer", "-Fix", "-Path", "src/Foo.ps1"] });
+    expect(PSSA_LINT).toStartWith("Invoke-ScriptAnalyzer -Path . -Recurse ");
+    expect((await detectProfile(project({ ...SCRIPT, "PSScriptAnalyzerSettings.psd1": "@{}\n" }))).lint).toContain("Invoke-ScriptAnalyzer -Settings ./PSScriptAnalyzerSettings.psd1 -Path . -Recurse");
+    expect((await detectProfile(project(SCRIPT))).lint).toContain('"Invoke-ScriptAnalyzer -Path . -Recurse -EnableExit"');
   });
 
   test("the written-tests check runs only the task's Pester files, and leaves a project's own script alone", () => {
@@ -2644,6 +2959,21 @@ describe("gate matrix: testthat, lintr and styler (#1500)", () => {
   const ids = (files: Record<string, string>) =>
     detectGates(project(files)).map((s) => [s.check.id, s.check.args.at(-1), s.source, s.preselected]);
   const TEST = 'test_that("adds", {\n  expect_equal(add_numbers(1, 2), 3)\n})\n';
+  // #2817: a Windows queue runner had Rscript and no styler; the required styler-written check
+  // failed every attempt. Each R gate's command names the package the probe asks about.
+  test("styler-written only where Rscript loads styler; each R gate names its package (#2817)", () => {
+    const files = { "tests/testthat/test-sum.R": TEST };
+    const written = (has: boolean) =>
+      formatWrittenChecks(project(files), [], [{ path: "tests/testthat/test-sum.R", action: "create" }], (c) => `/usr/bin/${c}`, undefined, undefined, { packages: () => has }).map((c) => c.id);
+    expect(written(false)).toEqual([]);
+    expect(written(true)).toEqual(["styler-written"]);
+    const gates = detectGates(project({ DESCRIPTION: "Package: sumr\n", ...files })).map((s) => s.check);
+    expect(gates.map((c) => [c.id, packageNeeds(c).map((n) => n.name)])).toEqual([
+      ["testthat", ["testthat"]],
+      ["lintr", ["lintr"]],
+      ["styler", ["styler"]],
+    ]);
+  });
   test("a package gets testthat on the loaded package, lintr offered, styler offered; a scripts project tests its folder", () => {
     expect(ids({ DESCRIPTION: "Package: sumr\n", "tests/testthat/test-sum.R": TEST })).toEqual([
       ["testthat", testthatRun(true), "tests/testthat", true],
@@ -3003,7 +3333,7 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
   // An edited file: only the lines the run changed against its content before the run (#1837, R57
   // zonevet), by a formatter that formats a range; none where the formatter cannot.
   const edited = (files: Record<string, string>, path: string, before: string) =>
-    formatWrittenChecks(project(files), [], [{ path, action: "modify" }], (c) => `/usr/bin/${c}`, (p) => (p === path ? before : undefined), () => true).map((c) => [
+    formatWrittenChecks(project(files), [], [{ path, action: "modify" }], (c) => `/usr/bin/${c}`, (p) => (p === path ? before : undefined), () => true, { packages: () => true }).map((c) => [
       c.id,
       [c.executable, ...c.args].join(" "),
       c.fix ? [c.fix.executable, ...c.fix.args].join(" ") : null,
@@ -3093,7 +3423,7 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
     const cargoFmt: Check = { id: "cargo-fmt", executable: "cargo", args: ["fmt", "--check"], cwd: ".", timeoutMs: 300000, required: true, scope: "feature", envNames: [], writes: [], fix: { executable: "cargo", args: ["fmt"] } };
     const shown = (checks: Check[]) => checks.map((c) => [c.id, [c.executable, ...c.args].join(" "), [c.fix!.executable, ...c.fix!.args].join(" "), c.fixPaths]);
     // lib.rs declares `mod parser;` (rustfmt would format parser.rs too); old.rs is an edit (no range form).
-    const expected = [["rustfmt-written", "/usr/bin/rustfmt --check --edition 2021 src/parser.rs tests/json.rs", "/usr/bin/rustfmt --edition 2021", ["src/parser.rs", "tests/json.rs"]]];
+    const expected = [["rustfmt-written", "/usr/bin/rustfmt --check --color=never --edition 2021 src/parser.rs tests/json.rs", "/usr/bin/rustfmt --edition 2021", ["src/parser.rs", "tests/json.rs"]]];
     const which = (c: string) => `/usr/bin/${c}`;
     const at = (check: Check) => ({ ...check, executable: "/usr/bin/cargo" });
     expect(shown(rustFormatWrittenChecks(root, [at(cargoFmt)], writes, which, () => "fn o() {}\n"))).toEqual(expected);
@@ -3101,12 +3431,12 @@ describe("gate matrix: format-written check on a dirty repository (#1837)", () =
     expect(formatWrittenChecks(root, [at(cargoFmt)], writes, which, () => "fn o() {}\n")).toEqual([]);
     expect(shown(formatWrittenChecks(root, [at(cargoFmt)], writes, which, () => "fn o() {}\n", () => true, { rust: true }))).toEqual(expected);
     // A file the run created is whole like a new one.
-    expect(shown(rustFormatWrittenChecks(root, [at(cargoFmt)], [{ path: "src/old.rs", action: "modify" }], which, () => null)).map(([id, command]) => [id, command])).toEqual([["rustfmt-written", "/usr/bin/rustfmt --check --edition 2021 src/old.rs"]]);
+    expect(shown(rustFormatWrittenChecks(root, [at(cargoFmt)], [{ path: "src/old.rs", action: "modify" }], which, () => null)).map(([id, command]) => [id, command])).toEqual([["rustfmt-written", "/usr/bin/rustfmt --check --color=never --edition 2021 src/old.rs"]]);
     // No rustfmt on the PATH, or no cargo fmt gate: no check.
     expect(rustFormatWrittenChecks(root, [cargoFmt], writes, () => null)).toEqual([]);
     expect(rustFormatWrittenChecks(project({ "src/a.rs": "fn a() {}\n" }), [], [{ path: "src/a.rs", action: "create" }], which)).toEqual([]);
     // Its file-scoped form, for a check that times out (#2240).
-    expect(fileScopedFormat(rustFormatWrittenChecks(root, [at(cargoFmt)], writes, which)[0]!, root, "tests/json.rs")).toEqual({ executable: "/usr/bin/rustfmt", args: ["--check", "--edition", "2021", "tests/json.rs"] });
+    expect(fileScopedFormat(rustFormatWrittenChecks(root, [at(cargoFmt)], writes, which)[0]!, root, "tests/json.rs")).toEqual({ executable: "/usr/bin/rustfmt", args: ["--check", "--color=never", "--edition", "2021", "tests/json.rs"] });
   });
   cell("maven", "no Maven formatter gate is detected: no check", () => {
     expect(scoped({ "pom.xml": "<project/>", "src/main/java/A.java": "class A {}\n" }, ["src/main/java/A.java"])).toEqual([]);
@@ -3150,6 +3480,14 @@ for (const stack of STACKS) {
       expect(resolved?.entry.name).toBe("tool");
       expect(executables).toContain(resolved!.argv[0]!);
       expect(resolved!.argv.at(-1)).toBe("--help");
+    });
+
+    // R88 pokerank: a bun project's README wrote `node bin/pokerank.js ...` and none of it ran.
+    cell(stack, "a README's node example runs under the checks' runtime (#2678)", () => {
+      const executables = reproExecutables(preselected());
+      const runs = executables.includes("node") || nodeUnderBun(["node", "cli.js"], executables);
+      expect(runs).toBe(stack === "bun" || stack === "npm");
+      expect(nodeUnderBun(["node", "cli.js"], executables)).toBe(stack === "bun");
     });
 
     cell(stack, "edit-profile", async () => {
@@ -3240,6 +3578,18 @@ for (const stack of STACKS) {
       const written = writtenTestsCheck(root, preselected(), writes);
       expect(plannedWrittenTests(preselected(), writes)?.id ?? null).toBe(written?.id ?? null);
       if (written) expect(plannedWrittenTests(preselected(), writes)?.timeoutMs).toBe(written.timeoutMs);
+    });
+
+    // R95 youngkit-update (#2886): an exact patch whose files the request supplies gets no property
+    // finding, in every stack; a test file the run writes itself still needs its property test.
+    cell(stack, "property gate gives way to supplied files (#2886)", () => {
+      const path = fixture.property.path;
+      const criteria = [{ id: "AC-001", property: "numbers" }];
+      const tasks = [{ criterionIds: ["AC-001"], writes: [{ path, action: "create" }] }];
+      const status = (supplied: string[]) =>
+        checkPropertyTests("on", criteria, tasks, () => "no property here\n", undefined, new Set(supplied)).criteria[0]?.status;
+      expect(status([])).toBe("missing");
+      expect(status([path])).toBe("waived");
     });
 
     cell(stack, "test-task-price-and-case-capacity (#1595)", () => {
@@ -4847,6 +5197,68 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     const missing = await executeGate(root, { ...lint, args: ["lint", "tests"] }, new AbortController().signal);
     expect(missingPlannedPaths(missing.outputTail, [{ writes: [{ path: "tests/test_orders.sql", action: "create" }] } as Task])).toEqual(["tests/test_orders.sql"]);
   }, 300000);
+  test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module PSScriptAnalyzer"]]))("pwsh: the psformat gate fails on a mis-indented script, its fixer formats it without a BOM and keeps one a file had (#2595)", async () => {
+    const root = project({
+      // The settings file is formatted too, so it keeps the 4-space indent it asks for.
+      "PSScriptAnalyzerSettings.psd1": "@{\n    IncludeRules = @('PSUseConsistentIndentation')\n    Rules = @{ PSUseConsistentIndentation = @{ Enable = $true; IndentationSize = 4; Kind = 'space' } }\n}\n",
+      "src/Plain.ps1": "function Get-Plain {\n  param([int]$A)\n  $A\n}\n",
+      "src/Marked.ps1": "\uFEFFfunction Get-Marked {\n  param([int]$A)\n  $A\n}\n",
+    });
+    const format = detectGates(root).find((s) => s.check.id === "psformat")?.check;
+    if (!format?.fix) throw new Error("no psformat gate");
+    const signal = new AbortController().signal;
+    const before = await executeGate(root, format, signal);
+    expect(before.status).toBe("failed");
+    expect(diagnosticCount(before.outputTail)).toEqual({ tool: "invoke-formatter", count: 2, errors: 2 });
+    for (const path of ["src/Plain.ps1", "src/Marked.ps1"]) {
+      const fix = fixerCommand(format.fix, path);
+      expect(spawnSync(fix.executable, fix.args, { cwd: root, encoding: "utf8", timeout: 120000 }).status).toBe(0);
+      expect(readFileSync(join(root, path), "utf8")).toContain("\n    param([int]$A)\n");
+    }
+    const bom = (path: string) => readFileSync(join(root, path)).subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]));
+    expect([bom("src/Plain.ps1"), bom("src/Marked.ps1")]).toEqual([false, true]);
+    const after = await executeGate(root, format, signal);
+    expect({ status: after.status, output: after.outputTail }).toEqual({ status: "passed", output: after.outputTail });
+  }, 300000);
+  test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module PSScriptAnalyzer"]]))("pwsh: the analyzer's fixer applies the root settings file's layout rules to a file in src/ (#2591)", async () => {
+    const root = project({
+      "PSScriptAnalyzerSettings.psd1":
+        "@{\n    IncludeRules = @('PSUseConsistentIndentation')\n    Rules = @{ PSUseConsistentIndentation = @{ Enable = $true; IndentationSize = 4; Kind = 'space' } }\n}\n",
+      "src/Foo.ps1": "function Get-Foo {\n  param([int]$A)\n  $A\n}\n",
+    });
+    const lint = detectGates(root).find((s) => s.check.id === "psscriptanalyzer")?.check;
+    if (!lint?.fix) throw new Error("no analyzer gate");
+    const signal = new AbortController().signal;
+    expect((await executeGate(root, lint, signal)).status).toBe("failed");
+    const before = readFileSync(join(root, "src/Foo.ps1"), "utf8");
+    const fix = fixerCommand(lint.fix, "src/Foo.ps1");
+    expect(spawnSync(fix.executable, fix.args, { cwd: root, encoding: "utf8", timeout: 120000 }).status).toBe(0);
+    expect(readFileSync(join(root, "src/Foo.ps1"), "utf8")).not.toBe(before);
+    // The settings file is analyzed too, so it keeps the 4-space indent it asks for. The output is
+    // in the comparison so a failure shows the finding.
+    const after = await executeGate(root, lint, signal);
+    expect({ status: after.status, output: after.outputTail }).toEqual({ status: "passed", output: after.outputTail });
+  }, 300000);
+  test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module PSScriptAnalyzer"]]))("pwsh: the analyzer's fixer through the host keeps each file's BOM state (#2592)", () => {
+    const root = project({
+      // A root module manifest: the analyzer gate is offered for it.
+      "App.psd1": "@{ ModuleVersion = '1.0.0' }\n",
+      "src/Plain.ps1": "function Get-Item2 {\n  gci\n}\n",
+      "src/Marked.ps1": "\uFEFFfunction Get-Item3 {\n  gci\n}\n",
+    });
+    const lint = detectGates(root).find((s) => s.check.id === "psscriptanalyzer")?.check;
+    if (!lint?.fix) throw new Error("no analyzer gate");
+    const bom = (path: string) => readFileSync(join(root, path)).subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]));
+    for (const path of ["src/Plain.ps1", "src/Marked.ps1"]) {
+      const before = captureEndings([join(root, path)]);
+      const fix = fixerCommand(lint.fix, path);
+      expect(spawnSync(fix.executable, fix.args, { cwd: root, encoding: "utf8", timeout: 120000 }).status).toBe(0);
+      restoreEndings(before);
+      expect(readFileSync(join(root, path), "utf8")).toContain("Get-ChildItem");
+    }
+    expect(bom("src/Plain.ps1")).toBe(false);
+    expect(bom("src/Marked.ps1")).toBe(true);
+  }, 300000);
   test.skipIf(!available([[pwshExecutable(), "-NoProfile", "-NonInteractive", "-Command", "Import-Module Pester -MinimumVersion 5.5; Import-Module PSScriptAnalyzer"]]))("pwsh: Pester and PSScriptAnalyzer gates fail on a defect, the analyzer's fixer repairs the file, and a missing path names its task (#1498)", async () => {
     const root = project({
       "PSScriptAnalyzerSettings.psd1": "@{ Severity = @('Error', 'Warning') }\n",
@@ -5245,6 +5657,18 @@ describe("repair-limit decisions (#1577)", () => {
   });
 });
 
+describe("repair-limit decisions: a grant hands the refused pass's findings over (#2878)", () => {
+  // R94 md-site: F2 and SEC-002 were recorded at maxRepairRounds and kept no task after the grant.
+  test("a stop names its stranded findings; an older record without them still offers the grant", () => {
+    const stranded = { limit: "maxRepairRounds", scope: "review", required: 1, taskIds: [], stranded: { pass: "review", findingIds: ["F2", "SEC-002"] } };
+    expect(RepairBlockSchema.parse(stranded).stranded).toEqual({ pass: "review", findingIds: ["F2", "SEC-002"] });
+    const older = RepairBlockSchema.parse({ limit: "maxRepairRounds", scope: "review", required: 1, taskIds: [] });
+    expect(older.stranded).toBeUndefined();
+    expect(canRepairRun({ status: "blocked", reason: "no_progress", repairBlock: older })).toBe(true);
+    expect(RepairBlockSchema.safeParse({ ...stranded, stranded: { pass: "checks", findingIds: ["F1"] } }).success).toBe(false);
+  });
+});
+
 // Ownership is independent of the check program: an initiative's review gate must not ask
 // the current feature to correct a file reserved for a downstream feature (#1590).
 test("review gate keeps sibling-owned missing tests as notes", () => {
@@ -5290,6 +5714,172 @@ test("#1594 review and mutation gates route pathless deliverables without hiding
 
 // #1864: a required test check that collected no test, in a run whose plan writes none, is no
 // failure. Each stack's "no test" output is recognized; a real failure and a skipped-only run are not.
+// #2615: every runner `testCount` reads gives the same count, run count and failed tests on its
+// coloured output as on its plain output. `RUNNER_SUMMARIES` is typed by `TestRunner`, so a runner
+// added to the parsers needs its samples there before this compiles.
+// #2631: the check environment gives plain output for the real tools, under a parent that forces
+// colour as CI does. ruff reads any FORCE_COLOR value as "force", so the environment drops it.
+describe("gate matrix: plain output per tool (#2631)", () => {
+  const ruff = spawnSync("ruff", ["--version"], { stdio: "ignore" }).status === 0;
+  test.skipIf(!ruff)("ruff check and ruff format --check print no escape as checks", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-plain-ruff-"));
+    const saved = process.env.FORCE_COLOR;
+    process.env.FORCE_COLOR = "1";
+    try {
+      writeFileSync(join(root, "a.py"), "import os\nx=1\n");
+      const runner = new CheckRunner(undefined as unknown as WorkflowStore, new ProcessScope());
+      for (const args of [["check", "."], ["format", "--check", "."]]) {
+        const check: Check = { id: "ruff", executable: "ruff", args, cwd: ".", timeoutMs: 60000, required: true, scope: "feature", envNames: [], writes: [] };
+        const result = await runner.measure(check, new AbortController().signal, root, null);
+        expect([args.join(" "), result.status, result.output.includes("\u001b")]).toEqual([args.join(" "), "failed", false]);
+      }
+    } finally {
+      if (saved === undefined) delete process.env.FORCE_COLOR;
+      else process.env.FORCE_COLOR = saved;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// #2830: rustfmt reads neither NO_COLOR nor CARGO_TERM_COLOR and colours its diff under a colour
+// TERM (R90 windowfit). The Rust format gates pass its own switch, and a check command's output
+// comes back plain whatever the tool printed, so the stored result holds no escape codes.
+describe("gate matrix: tools that colour in spite of the plain-output environment (#2830)", () => {
+  cell("rust", "the cargo fmt gate passes rustfmt --color=never", () => {
+    const gate = detectGates(project({ "Cargo.toml": "[package]\nname = 'p'\n" })).find((s) => s.check.id === "cargo-fmt");
+    expect([gate?.check.executable, ...(gate?.check.args ?? [])].join(" ")).toBe("cargo fmt --check -- --color=never");
+    expect(gate?.check.fix).toEqual({ executable: "cargo", args: ["fmt"] });
+  });
+  cell("rust", "a coloured rustfmt diff comes back from the check command without escape codes", async () => {
+    const coloured = "Diff in src/main.rs:3:\n }\n\u001b(B\u001b[m\u001b[31m-\n\u001b[m\u000f\u001b[32m+\n\u001b[0m";
+    const result = await executeCheckCommand(new ProcessScope(), process.execPath, ["-e", `process.stdout.write(${JSON.stringify(coloured)})`], { cwd: tmpdir(), timeoutMs: 60000, signal: new AbortController().signal, sandbox: null });
+    expect(result.output).toBe("Diff in src/main.rs:3:\n }\n-\n+\n");
+  });
+});
+
+describe("gate matrix: coloured runner output (#2615)", () => {
+  for (const [tool, sample] of Object.entries(RUNNER_SUMMARIES))
+    test(`${tool}: the coloured passing and failing summaries read as the plain ones`, () => {
+      expect(testCount(sample.passed)).toEqual({ tool, count: sample.total });
+      expect(testsRan(sample.passed)).toEqual({ tool, count: sample.ran });
+      for (const plain of [sample.passed, sample.failed]) {
+        const coloured = colour(plain);
+        expect(coloured).not.toBe(plain);
+        expect([testCount(coloured), testsRan(coloured), failedTests(coloured), buildFailure(coloured)]).toEqual([testCount(plain), testsRan(plain), failedTests(plain), buildFailure(plain)]);
+      }
+    });
+});
+
+// #2632: a fixer runs only on the code files of the languages it handles, whatever launcher the
+// gate puts in front of it; R86 binlayer ran ruff on `.sql` files and sqlfluff on `.py` files.
+describe("gate matrix: fixer languages (#2632)", () => {
+  const written = ["binlayer.py", "sql/05_layers.sql", "src/app.ts", "main.go", "README.md", "pyproject.toml"];
+  const cases: [string, string[], string[]][] = [
+    ["ruff", ["check", "--fix"], ["binlayer.py"]],
+    ["uv", ["run", "ruff", "format"], ["binlayer.py"]],
+    ["python3", ["-m", "black", "."], ["binlayer.py"]],
+    ["sqlfluff", ["fix"], ["sql/05_layers.sql"]],
+    ["poetry", ["run", "sqlfluff", "fix"], ["sql/05_layers.sql"]],
+    ["bunx", ["biome", "format", "--write"], ["src/app.ts"]],
+    ["pnpm", ["exec", "eslint", "--fix"], ["src/app.ts"]],
+    ["npx", ["prettier@3.6.0", "--write"], ["src/app.ts"]],
+    ["gofmt", ["-w"], ["main.go"]],
+  ];
+  for (const [executable, args, code] of cases)
+    test(`${[executable, ...args].join(" ")} gets ${code.join(", ")} and the non-code files`, () => {
+      expect(fixerPaths({ executable, args }, written)).toEqual(written.filter((path) => code.includes(path) || ["README.md", "pyproject.toml"].includes(path)));
+    });
+  test("a fixer without a row still gets every file", () => {
+    expect(fixerPaths({ executable: "dprint", args: ["fmt"] }, written)).toEqual(written);
+  });
+});
+
+// #2641: a whole-tree formatter check that reports only the documents the host publishes under
+// `specs/` (R87 slk: `prettier --check .` on the five files of the run's plan) is the host's
+// failure, read from each Markdown or JSON formatter's own report; one other file keeps it failed.
+// #2648: a `$` transcript the request says a document must hold exactly is compared with the
+// delivered document; a doubled backslash in one line (R88 pokerank JavaScript, R87 citeseek
+// Python) is a drift, the transcript as given is none.
+describe("gate matrix: transcripts a document must hold exactly (#2648)", () => {
+  const CASES: [string, string, string][] = [
+    ["javascript", "$ printf 'board 2c 7d\\nseat ann 100\\n' > hand.txt", "$ node bin/pokerank.js showdown hand.txt"],
+    ["python", "$ .venv\\Scripts\\activate", "$ python -m citeseek check refs.bib"],
+    ["shell", "$ printf 'a\\tb\\n' | ./cut.sh -f 2", "b"],
+  ];
+  for (const [language, first, second] of CASES)
+    test(`${language}: a doubled backslash is a drift, the transcript as given is none`, () => {
+      const request = `The README must hold this exactly as shown:\n\n\`\`\`console\n${first}\n${second}\n\`\`\`\n`;
+      const graph = { tasks: [{ id: "T002", writes: [{ path: "README.md", action: "create" }] }] } as unknown as Parameters<typeof transcriptDrifts>[1];
+      const doc = (line: string) => `# Tool\n\n\`\`\`console\n${line}\n${second}\n\`\`\`\n`;
+      expect(transcriptDrifts(request, graph, () => doc(first))).toEqual([]);
+      const doubled = first.replaceAll("\\", "\\\\");
+      expect(transcriptDrifts(request, graph, () => doc(doubled))).toMatchObject([{ problem: "differs", expected: first, actual: { line: 4, text: doubled } }]);
+    });
+});
+
+describe("gate matrix: host-published documents in a formatter report (#2641)", () => {
+  const DOCS = ["specs/slk/plan.md", "specs/slk/spec.json"];
+  const REPORTS: Record<string, (files: string[]) => string> = {
+    prettier: (files) => ["$ prettier --check .", "Checking formatting...", ...files.map((f) => `[warn] ${f}`), `[warn] Code style issues found in ${files.length} files. Run Prettier with --write to fix.`, 'error: script "format:check" exited with code 1'].join("\n"),
+    "bun fmt": (files) => [...files, `${files.length} files need formatting. Run bun fmt to fix them.`].join("\n"),
+    biome: (files) => [...files.flatMap((f) => [`${f} format ━━━━━━━━━━━━━━━━━━━━`, "", "  × Formatter would have printed the following content:", ""]), `Checked 9 files in 4ms. No fixes applied.`, `Found ${files.length} errors.`, "format ━━━━━━━━━━━━━━━━━━━━", "  × Some errors were emitted while running checks."].join("\n"),
+    dprint: (files) => [...files.flatMap((f) => [`from ${f}:`, "  1 | -# Plan", "  1 | +# Plan", ""]), `Error: Found ${files.length} not formatted files.`].join("\n"),
+    "deno fmt": (files) => [...files.flatMap((f) => [`from /work/slk/${f}:`, "1 | -{\"a\":1}", "1 | +{ \"a\": 1 }", ""]), `error: Found ${files.length} not formatted files in 12 files`].join("\n"),
+  };
+  const gate = { id: "format", executable: "bun", args: ["run", "format:check"] };
+  for (const [tool, report] of Object.entries(REPORTS))
+    test(`${tool}: only the documents is the host's; a task file with them is a failure`, () => {
+      expect(hostDocumentFailure(gate, colour(report(DOCS)), "/work/slk")).toEqual(DOCS);
+      expect(hostDocumentFailure(gate, report([...DOCS, "src/App.vue"]), "/work/slk")).toBeNull();
+      expect(hostDocumentFailure(gate, report(["docs/specs/slk/plan.md"]), "/work/slk")).toBeNull();
+    });
+  test("a parse error, a count that does not match and a test check stay failures", () => {
+    expect(hostDocumentFailure(gate, `[warn] ${DOCS[0]}\n[error] src/a.ts: SyntaxError: Unexpected token\n[warn] Code style issues found in 1 file.`)).toBeNull();
+    expect(hostDocumentFailure(gate, `[warn] ${DOCS[0]}\n[warn] Code style issues found in 3 files.`)).toBeNull();
+    expect(hostDocumentFailure({ id: "tests", executable: "bun", args: ["test"] }, REPORTS.prettier?.(DOCS) ?? "")).toBeNull();
+  });
+  // The formatters that read Markdown or JSON and run on the published documents, live where installed.
+  // Each with the probe that shows it is installed: a Bun before 1.4.4 has no `bun fmt`.
+  const LIVE: [string, string[], string[]][] = [
+    ["prettier", ["prettier", "--check", "."], ["--version"]],
+    ["biome", [join(process.cwd(), "node_modules/.bin/biome"), "format", "."], ["--version"]],
+    ["bun fmt", [process.execPath, "fmt", "--no-script", "--check", "."], ["fmt", "--help"]],
+  ];
+  const installed = (program: string, probe: string[]): boolean => {
+    const run = spawnSync(program, probe, { encoding: "utf8" });
+    return run.status === 0 && (probe[0] !== "fmt" || run.stdout.includes("--check"));
+  };
+  for (const [tool, command, probe] of LIVE)
+    test.skipIf(!installed(command[0] ?? "", probe))(`${tool}: its real report on the published documents`, () => {
+      const root = mkdtempSync(join(tmpdir(), "baked-host-docs-"));
+      try {
+        mkdirSync(join(root, "specs/slk"), { recursive: true });
+        writeFileSync(join(root, "package.json"), "{}\n");
+        writeFileSync(join(root, "specs/slk/spec.json"), '{\n  "ids": [\n    "a",\n    "b"\n  ],\n    "x":1}\n');
+        const run = spawnSync(command[0] ?? "", command.slice(1), { cwd: root, encoding: "utf8", env: { ...process.env, NO_COLOR: "1" } });
+        expect(run.status).not.toBe(0);
+        expect(hostDocumentFailure(gate, `${run.stdout}\n${run.stderr}`, root)).toEqual(["specs/slk/spec.json"]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  test("every Markdown or JSON formatter the gates detect has a report reader", () => {
+    expect(Object.keys(FORMAT_FAILURE_READERS).sort()).toEqual(["biome", "bun fmt", "dprint, deno fmt", "prettier"]);
+  });
+});
+
+// #2616: the task-end whole-unit check reads a located diagnostic from every language's compiler
+// output in `DIAGNOSTIC_FORMATS`, coloured as the check printed it.
+describe("gate matrix: task-end diagnostic formats (#2616)", () => {
+  for (const [language, row] of Object.entries(DIAGNOSTIC_FORMATS))
+    if (!isNoRow(row))
+      test(`${language} (${row.tool}): a coloured error names its file and message`, () => {
+        const found = diagnostics(colour(row.example));
+        expect(found.length).toBeGreaterThan(0);
+        for (const d of found) expect([d.path.length > 0, /^\d/.test(d.text), d.path.includes(" ")]).toEqual([true, false, false]);
+      });
+});
+
 describe("gate matrix: no tests collected (#1864)", () => {
   const NO_TESTS: [string, string][] = [
     ["Python (pytest, exit 5)", "collected 0 items\n\n============ no tests ran in 0.01s ============"],
@@ -5308,6 +5898,10 @@ describe("gate matrix: no tests collected (#1864)", () => {
     ["C# (dotnet test, no test in the project)", "Starting test execution, please wait...\nA total of 1 test files matched the specified pattern.\nNo test is available in /work/Lib.Tests/bin/Debug/net8.0/Lib.Tests.dll. Make sure that test discoverer & executors are registered and platform & framework version settings are appropriate and try again.\n"],
     // mix test, Elixir 1.14, on a test module with no test: no test count in the summary.
     ["Elixir (mix test, a module without tests)", "\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n0 failures\n\nRandomized with seed 441790\n"],
+    // #2490: Elixir 1.19 counts zero tests, and 1.20 prints its Result line (ExUnit.CLIFormatter
+    // print_summary of v1.19.5 and v1.20.4).
+    ["Elixir 1.19 (mix test, a module without tests)", "\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n0 tests, 0 failures\n"],
+    ["Elixir 1.20 (mix test, a module without tests)", "\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n\nResult: 0 tests\n"],
     // dune test 3.14 on an empty OUnit2 2.2 suite and an empty Alcotest 1.7 suite (path shortened).
     ["OCaml (dune test, OUnit2)", "\nRan: 0 tests in: 0.00 seconds.\nOK\n"],
     ["OCaml (dune test, Alcotest)", "Testing `lib'.\nThis run has ID `SP3Q9ASA'.\n\n\nFull test results in `/work/_build/default/test/_build/_tests/lib'.\nTest Successful in 0.000s. 0 test run.\n"],
@@ -5320,6 +5914,24 @@ describe("gate matrix: no tests collected (#1864)", () => {
   ];
   for (const [stack, output] of NO_TESTS)
     test(`${stack}: no test collected`, () => expect(noTestsCollected(output)).toBe(true));
+  // #2778: one part's "no tests" line beside another part that ran tests. go 1.24.7 (`go test
+  // ./...` failing, and passing from the test cache), Elixir 1.14 (umbrella `mix test`), and a
+  // Gradle multi-project build in its documented console output.
+  test("a part without tests beside a part that ran or failed tests is not 'no tests'", () => {
+    expect(noTestsCollected("--- FAIL: TestF (0.00s)\n    a_test.go:3: \nFAIL\nFAIL\texample.com/m/a\t0.003s\n?   \texample.com/m/b\t[no test files]\nFAIL")).toBe(false);
+    expect(noTestsCollected("FAIL\texample.com/m/a [build failed]\n?   \texample.com/m/b\t[no test files]\nFAIL")).toBe(false);
+    expect(noTestsCollected("ok  \texample.com/m/a\t(cached)\nok  \texample.com/m/c\t0.003s [no tests to run]")).toBe(false);
+    expect(noTestsCollected("==> a\n  1) test x (ATest)\n     apps/a/test/a_test.exs:3\n\nFinished in 0.01 seconds (0.00s async, 0.01s sync)\n1 test, 1 failure\n\nRandomized with seed 60860\n==> b\nThere are no tests to run")).toBe(false);
+    expect(noTestsCollected("> Task :lib:test FAILED\n\nLibTest > adds() FAILED\n    org.opentest4j.AssertionFailedError at LibTest.java:9\n\n2 tests completed, 1 failed\n\n> Task :app:test FAILED\nThere are test sources present and no filters are applied, but the test task did not discover any tests to execute.")).toBe(false);
+    // Every Go package without tests, or filtered to none, is still "no tests".
+    expect(noTestsCollected("?   \texample.com/m/b\t[no test files]\nok  \texample.com/m/a\t(cached) [no tests to run]")).toBe(true);
+  });
+  // #2778: `testsRan` takes a package's cached result as a package that ran tests.
+  test("go: a cached package beside one without test files did not run zero tests", () => {
+    expect(testsRan("ok  \texample.com/m/a\t(cached)\n?   \texample.com/m/b\t[no test files]")).toBeNull();
+    expect(testsRan("ok  \texample.com/m/a\t0.004s\tcoverage: 100.0% of statements\n?   \texample.com/m/b\t[no test files]")).toBeNull();
+    expect(testsRan("ok  \texample.com/m/a\t(cached) [no tests to run]\n?   \texample.com/m/b\t[no test files]")).toEqual({ tool: "go", count: 0 });
+  });
   test("a failing test and a passing run are not 'no tests'", () => {
     expect(noTestsCollected("FAILED tests/test_tags.py::test_wheel - AssertionError\n1 failed in 0.02s")).toBe(false);
     expect(noTestsCollected(" 3 pass\n 0 fail\nRan 3 tests across 1 file.")).toBe(false);
@@ -5344,6 +5956,31 @@ describe("gate matrix: no tests collected (#1864)", () => {
     expect(noTestsCollected("Test Successful in 0.000s. 0 test run.\n1 failure! in 0.001s. 3 tests run.")).toBe(false);
     expect(noTestsCollected("0 successes / 0 failures / 1 error / 0 pending : 0.0002 seconds\nError -> spec/a_spec.lua:3: <name> expected near 'end'")).toBe(false);
     expect(noTestsCollected("Discovery found 0 tests in 222ms.\nTests Passed: 0, Failed: 0, Skipped: 0, Inconclusive: 0, NotRun: 0\nContainer failed: 1\n  - /w/tests/Fold.Tests.ps1")).toBe(false);
+  });
+
+  // #2611: a test check that runs one test script with its interpreter prints nothing a counter
+  // reads, so a script holding no code (php-wordcount's 0-byte `tests/run.php`) fails the check, and
+  // its note reads as no test collected. One row per language whose interpreter runs a test script.
+  test("a plain test script that holds no code ran no test, in every language that runs one", () => {
+    const SCRIPTS: [string, string[], string, string][] = [
+      ["php", ["tests/run.php"], "tests/run.php", "<?php\n// later\n"],
+      ["python3", ["tests/run.py"], "tests/run.py", "# later\n"],
+      ["node", ["tests/run.js"], "tests/run.js", "'use strict';\n"],
+      ["bun", ["run", "tests/run.ts"], "tests/run.ts", "// later\n"],
+      ["bash", ["tests/run.sh"], "tests/run.sh", "set -eu\n"],
+      ["ruby", ["tests/run.rb"], "tests/run.rb", "# later\n"],
+      ["perl", ["t/run.t"], "t/run.t", "use strict;\n"],
+      ["Rscript", ["tests/run.R"], "tests/run.R", "# later\n"],
+      ["lua", ["tests/run.lua"], "tests/run.lua", "-- later\n"],
+      ["pwsh", ["-File", "tests/run.ps1"], "tests/run.ps1", "<# later #>\n"],
+    ];
+    for (const [executable, args, path, text] of SCRIPTS) {
+      const check: Check = { id: "tests", executable, args, cwd: ".", timeoutMs: 30000, required: true, scope: "feature", envNames: [], writes: [] };
+      const root = project({ [path]: text });
+      expect([executable, emptyTestScript(check, root), exitStatus(check, 0, "", root)]).toEqual([executable, path, "failed"]);
+      expect(exitStatus(check, 0, "", project({ [path]: `${text}x\n` }))).toBe("passed");
+    }
+    expect(noTestsCollected(emptyScriptNote({ id: "php-tests" }, "tests/run.php"))).toBe(true);
   });
 });
 
@@ -5417,6 +6054,152 @@ describe("review gate: a finding its reviewer marked noRepro (#2194)", () => {
   });
 });
 
+describe("review and converge gates: a documentation finding marked noRepro (#2835, shadow)", () => {
+  // R91 stopcut docs F1: correctness, medium, confidence 1, basis spec, README.md, noRepro "README
+  // wording". `reproAllows` keeps it a note (repaired: []) where the same defect called `partial`
+  // repairs; `doc_finding_unrepaired` records what `docFindingRepairs` would repair instead.
+  const doc = (over: Partial<GateFinding> = {}): GateFinding => ({
+    id: "F1",
+    severity: "medium",
+    kind: "correctness",
+    basis: "spec",
+    confidence: 1,
+    repro: false,
+    sibling: false,
+    outcome: null,
+    noRepro: true,
+    doc: true,
+    ...over,
+  });
+  const gate = (findings: GateFinding[]): ReviewGate => ({
+    reviewer: "correctness",
+    required: true,
+    blocking: ["critical", "high", "medium"],
+    severities: ["critical", "high", "medium"],
+    minConfidence: 0.7,
+    reproAvailable: true,
+    findings,
+  });
+  const convergence = (findings: GateFinding[]): ConvergenceGate => ({
+    severities: ["critical", "high", "medium"],
+    minConfidence: 0.7,
+    checksPass: true,
+    reproAvailable: true,
+    canRepro: true,
+    criteria: [{ criterionId: "AC-001", verdict: "pass", evidence: 1 }],
+    failing: [],
+    findings: findings.map((f) => ({ ...f, testOrDoc: f.doc === true, criterionIds: ["AC-001"] })),
+  });
+
+  for (const [name, finding, keeps] of [
+    ["README correctness with noRepro (R91 stopcut F1)", doc(), ["F1"]],
+    ["the same claim on a source file", doc({ doc: undefined }), []],
+    ["README correctness without noRepro", doc({ noRepro: false }), []],
+    ["README correctness below the minimum confidence", doc({ confidence: 0.5 }), []],
+    ["README correctness on an inferred basis", doc({ basis: "inferred" }), []],
+    ["README correctness whose repro the host refuted", doc({ repro: true, outcome: "refuted" }), []],
+    ["README partial with noRepro (already repaired)", doc({ kind: "partial" }), []],
+    ["README correctness below the repaired severities", doc({ severity: "low" }), []],
+  ] as const)
+    test(`${name}: would repair ${JSON.stringify(keeps)}`, () => {
+      expect(reviewGateDocKeeps(gate([finding]))).toEqual([...keeps]);
+      expect(convergenceGateDocKeeps(convergence([finding]))).toEqual([...keeps]);
+    });
+
+  test("shadow: the live decisions are unchanged", () => {
+    expect(reviewGateDecision(gate([doc()]))).toEqual([]);
+    expect(reviewGateDecision(gate([doc({ kind: "partial" })]))).toEqual(["F1"]);
+    expect(convergenceGateDecision(convergence([doc()])).verdicts).toEqual([{ id: "F1", verdict: "repro" }]);
+    expect(reproAllows({ kind: "correctness", severity: "medium" }, undefined, true)).toBe(false);
+  });
+
+  // #2868, R92 tailclose: F1 (correctness, noRepro, README) stayed out of the corrective that F3
+  // (missing, the same README) opened, and its medium repeat after that correction recorded nothing.
+  test("a kept documentation finding rides a correction the gate starts, and only then", () => {
+    const missing = doc({ id: "F3", kind: "missing", noRepro: false });
+    const source = doc({ id: "F4", kind: "partial", doc: undefined, noRepro: false });
+    expect(reviewGateDecision(gate([doc(), missing]))).toEqual(["F3"]);
+    expect(reviewGateDocCarries(gate([doc(), missing]))).toEqual(["F1"]);
+    expect(reviewGateDocCarries(gate([doc(), source]))).toEqual(["F1"]);
+    expect(reviewGateDocCarries(gate([doc()]))).toEqual([]);
+    expect(reviewGateDocCarries(gate([doc({ doc: undefined }), missing]))).toEqual([]);
+    const converge = convergence([doc(), missing]);
+    converge.failing = ["AC-002"];
+    converge.findings[1].criterionIds = ["AC-002"];
+    converge.criteria.push({ criterionId: "AC-002", verdict: "fail", evidence: 1 });
+    expect(convergenceGateDocCarries(converge)).toEqual(["F1"]);
+    expect(convergenceGateDocCarries(convergence([doc()]))).toEqual([]);
+  });
+
+  test("a repeat kept out only by a later round's severity floor would open one more correction", () => {
+    const later = (findings: GateFinding[]): ReviewGate => ({ ...gate(findings), severities: ["critical", "high"] });
+    const repeat = doc({ id: "F1-2" });
+    expect(reviewGateDocKeeps(later([repeat]))).toEqual([]);
+    expect(reviewGateDocRepeats(later([repeat]), new Set(["F1-2"]))).toEqual(["F1-2"]);
+    // Not a repeat, not documentation, a partial repeat (decided live in a first round), or already kept.
+    expect(reviewGateDocRepeats(later([repeat]), new Set())).toEqual([]);
+    expect(reviewGateDocRepeats(later([doc({ id: "F1-2", doc: undefined })]), new Set(["F1-2"]))).toEqual([]);
+    expect(reviewGateDocRepeats(later([doc({ id: "F1-2", kind: "partial" })]), new Set(["F1-2"]))).toEqual([]);
+    expect(reviewGateDocRepeats(gate([repeat]), new Set(["F1-2"]))).toEqual([]);
+    const converge = { ...convergence([repeat]), severities: ["critical", "high"] };
+    expect(convergenceGateDocRepeats(converge, new Set(["F1-2"]))).toEqual(["F1-2"]);
+    expect(convergenceGateDocRepeats(converge, new Set())).toEqual([]);
+  });
+
+  // #2866, R92 tailclose: `enforce` is a mode of the reason, and under it the gates repair the
+  // README finding with the documentation rule.
+  test("enforce: the gates repair the README finding", () => {
+    expect(STOP_REASONS.doc_finding_unrepaired.modes).toContain("enforce");
+    const enforced = stopMode({ stopModes: { doc_finding_unrepaired: "enforce" } }, "doc_finding_unrepaired") === "enforce";
+    expect(reviewGateDecision(gate([doc(), doc({ id: "F2", doc: undefined })]), { doc: enforced })).toEqual(["F1"]);
+    expect(convergenceGateDecision(convergence([doc()]), { doc: enforced }).verdicts).toEqual([{ id: "F1", verdict: "repair" }]);
+  });
+
+  // #2931, R99 cronwhen guide: under enforce the first round repairs F1, the repeat F1-2 at medium
+  // stays out of a later round's floor and is its own shadow rule, whatever the first rule's mode.
+  test("a repeat below a later round's floor under enforce: kept out of the decision, listed for doc_finding_repeat", () => {
+    const later = (findings: GateFinding[]): ReviewGate => ({ ...gate(findings), severities: ["critical", "high"] });
+    const repeat = doc({ id: "F1-2" });
+    expect(reviewGateDecision(later([repeat]), { doc: true })).toEqual([]);
+    expect(reviewGateDocRepeats(later([repeat]), new Set(["F1-2"]))).toEqual(["F1-2"]);
+    const converge = { ...convergence([repeat]), severities: ["critical", "high"] };
+    expect(convergenceGateDecision(converge, { doc: true }).verdicts.some((v) => v.verdict === "repair")).toBe(false);
+    expect(convergenceGateDocRepeats(converge, new Set(["F1-2"]))).toEqual(["F1-2"]);
+    expect(STOP_REASONS.doc_finding_repeat.modes).toEqual(["shadow", "advisory"]);
+    expect(stopMode({ stopModes: { doc_finding_unrepaired: "enforce" } }, "doc_finding_repeat")).toBe("shadow");
+  });
+
+  // Promotion after R92-R93 (3 true would-stops, no false one): a policy that names no mode
+  // repairs the README finding in both gates; an explicit `shadow` keeps the old note.
+  test("default enforce: a policy without stopModes repairs; explicit shadow keeps the note", () => {
+    expect(STOP_REASONS.doc_finding_unrepaired.defaultMode).toBe("enforce");
+    const byDefault = stopMode({}, "doc_finding_unrepaired") === "enforce";
+    expect(byDefault).toBe(true);
+    expect(reviewGateDecision(gate([doc()]), { doc: byDefault })).toEqual(["F1"]);
+    expect(convergenceGateDecision(convergence([doc()]), { doc: byDefault }).verdicts).toEqual([{ id: "F1", verdict: "repair" }]);
+    const shadowed = stopMode({ stopModes: { doc_finding_unrepaired: "shadow" } }, "doc_finding_unrepaired") === "enforce";
+    expect(reviewGateDecision(gate([doc()]), { doc: shadowed })).toEqual([]);
+  });
+
+  test("docFindingRepairs and gateFinding read documentation files", () => {
+    const labels = { kind: "correctness" as const, severity: "medium" as const, basis: "spec" as const, confidence: 1, noRepro: true };
+    for (const [file, repairs] of [
+      ["README.md", true],
+      ["docs/x.md", true],
+      ["CHANGELOG.rst", true],
+      ["README", true],
+      ["src/escapes.ts", false],
+      ["src/main.cpp", false],
+    ] as const) {
+      expect([file, docFindingRepairs({ ...labels, doc: documentationFinding(file) }, undefined, 0.7)]).toEqual([file, repairs]);
+      const finding = { id: "F1", severity: "medium", kind: "correctness", file, noRepro: "README wording", criterionIds: [] } as unknown as Parameters<typeof gateFinding>[0];
+      expect([file, gateFinding(finding, false, undefined).doc]).toEqual([file, repairs ? true : undefined]);
+    }
+    expect(docFindingRepairs({ ...labels, doc: true }, "inconclusive", 0.7)).toBe(true);
+    expect(docFindingRepairs({ ...labels, doc: true }, "refuted", 0.7)).toBe(false);
+  });
+});
+
 describe("convergence gate: a low note on a file the request gives verbatim (#2332)", () => {
   // R74 ewvet-update: F1 (low, partial, README.md) said the README's printf example doubled a
   // backslash the request's verbatim diff has once; AC-005 and AC-006 were `fail` because of it,
@@ -5457,4 +6240,511 @@ describe("convergence gate: a low note on a file the request gives verbatim (#23
       expect(verdictOf(gate([finding({ kind, supplied: true })], "pass"))).toBe("note");
     });
   }
+});
+
+describe("case walk gate: generated test inputs where literal examples are asked for (#2469)", () => {
+  // R79 deltaglue chunks: the brief asked for literal object rows and the tests interpolated them;
+  // the shadow walk recorded `generated_case` and review's corrective cost 8.28M tokens. Enforced,
+  // the walk refuses the submission naming each generated line; a literal twin passes, and so does
+  // an expected value built from a temporary path (R78 deltaglue's false record).
+  const criterion = { ...fixtureSpec.criteria[0]!, id: "AC-001", given: "three backslashes as a literal example", when: "the user runs `escape`", then: "it prints `ok-7`" };
+  const LANGUAGES: [path: string, generated: string, literal: string][] = [
+    ["tests/test_escape.py", 'def test_escape():\n    slashes = "\\\\" * 3\n    assert run("escape", slashes) == "ok-7"\n', 'def test_escape():\n    assert run("escape", "\\\\\\\\\\\\") == "ok-7"\n'],
+    ["tests/escape.test.ts", 'test("escape", () => {\n  const slashes = "\\\\".repeat(3);\n  expect(run("escape", slashes)).toBe("ok-7");\n});\n', 'test("escape", () => {\n  expect(run("escape", "\\\\\\\\\\\\")).toBe("ok-7");\n});\n'],
+    ["escape_test.go", 'func TestEscape(t *testing.T) {\n\tslashes := strings.Repeat("\\\\", 3)\n\tif run("escape", slashes) != "ok-7" {\n\t\tt.Fail()\n\t}\n}\n', 'func TestEscape(t *testing.T) {\n\tif run("escape", "\\\\\\\\\\\\") != "ok-7" {\n\t\tt.Fail()\n\t}\n}\n'],
+  ];
+  /** Per file, a second test whose expected value interpolates a temporary path, and the same with a counter. */
+  const RUNTIME: Record<string, [runtime: string, counter: string]> = {
+    "tests/test_escape.py": ['def test_check(tmp_path):\n    p = tmp_path / "in.txt"\n    assert run("check", str(p)) == f"escape: {p}: ok"\n', 'def test_check():\n    assert run("check", "a") == f"escape: {n}: ok"\n'],
+    "tests/escape.test.ts": ['test("check", () => {\n  const dir = mkdtempSync(join(tmpdir(), "esc-"));\n  expect(run("check", dir)).toBe(`escape: ${dir}: ok`);\n});\n', 'test("check", () => {\n  expect(run("check", "a")).toBe(`escape: ${n}: ok`);\n});\n'],
+    "escape_test.go": ['func TestCheck(t *testing.T) {\n\tdir := t.TempDir()\n\tif run("check", dir) != fmt.Sprintf("escape: %s: ok", dir) {\n\t\tt.Fail()\n\t}\n}\n', 'func TestCheck(t *testing.T) {\n\tif run("check", "a") != fmt.Sprintf("escape: %d: ok", n) {\n\t\tt.Fail()\n\t}\n}\n'],
+  };
+  for (const [path, generated, literal] of LANGUAGES)
+    test(`${path}: refused by its line when enforced, recorded only in shadow, a literal twin passes`, async () => {
+      const root = mkdtempSync(join(tmpdir(), "baked-generated-case-cell-"));
+      try {
+        const task = { id: "T001", criterionIds: ["AC-001"], writes: [{ path, action: "create" as const }], dependsOn: [] };
+        const check = (refuseGenerated: boolean) =>
+          caseCheck({ criteria: [criterion] }, task, { checks: [], tasks: [task], generatedKinds: new Set(["repeat", "format", "interpolate"] as const), refuseGenerated })!(root);
+        mkdirSync(join(root, path, ".."), { recursive: true });
+        writeFileSync(join(root, path), generated);
+        const [refusal, ...rest] = await check(true);
+        expect(rest).toEqual([]);
+        expect(refusal).toContain(`${path}:2 (repeat)`);
+        expect(await check(false)).toEqual([]);
+        writeFileSync(join(root, path), literal);
+        expect(await check(true)).toEqual([]);
+        // #2469: a path made at run time cannot be written as a literal; a counter can.
+        const [runtime, counter] = RUNTIME[path]!;
+        writeFileSync(join(root, path), `${literal}\n${runtime}`);
+        expect(await check(true)).toEqual([]);
+        writeFileSync(join(root, path), `${literal}\n${counter}`);
+        expect((await check(true))[0]).toMatch(new RegExp(`${path.replaceAll(".", "\\.")}:\\d+ \\((?:format|interpolate)\\)`));
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+});
+
+describe("rule pack gate: lines the request gives verbatim are notes (#2489)", () => {
+  // R80 deltaglue cli: the brief's verbatim `src/main.ts` returned its sentinel from `catch`, the
+  // rule pack blocked it and corrective T025 needed a person to say "the brief controls".
+  const SAMPLES: [path: string, fence: string, code: string][] = [
+    ["src/main.ts", "ts", "try {\n  return parse(text);\n} catch {\n  return null;\n}\n"],
+    ["app/run.py", "python", "try:\n    run()\nexcept ValueError:\n    pass\n"],
+    ["lib/run.rb", "ruby", "begin\n  run\nrescue StandardError\nend\n"],
+  ];
+  for (const [path, fence, code] of SAMPLES)
+    test(`${path}: a match on the brief's block is a note, the same code in the run's own file blocks`, () => {
+      const brief = `Write \`${path}\` with exactly this content:\n\`\`\`${fence}\n${code.trimEnd()}\n\`\`\`\n`;
+      const own = path.replace(/(\.\w+)$/, "_own$1");
+      const findings = checkBuiltinRules(
+        [
+          { path, content: code, before: null, supplied: suppliedLineNumbers(brief, path, code) },
+          { path: own, content: code, before: null, supplied: suppliedLineNumbers(brief, own, code) },
+        ],
+        {},
+      ).filter((f) => f.severity === "error");
+      const of = (file: string) => findings.filter((f) => f.file === file).map((f) => [f.blocking, f.supplied ?? false]);
+      expect(of(path).length).toBeGreaterThan(0);
+      expect(of(path).every(([blocking, supplied]) => !blocking && supplied)).toBe(true);
+      expect(of(own).length).toBeGreaterThan(0);
+      expect(of(own).every(([blocking]) => blocking)).toBe(true);
+    });
+});
+
+describe("format-written gate: a created file the request supplies whole is never rewritten (#2504)", () => {
+  // R81 seqmill-update: the fixer of `ruff-format-written` rewrapped a 51-line create diff to 87.
+  const PY = { "pyproject.toml": "[project]\nname = 'seqmill'\nversion = '0.1.0'\n\n[tool.ruff]\nline-length = 100\n", "tests/test_new.py": "x=1\n" };
+  const GO = { "go.mod": "module example.com/seqmill\n\ngo 1.22\n", "seq_test.go": "package seq\n" };
+  for (const [name, files, path] of [["python ruff", PY, "tests/test_new.py"], ["go gofmt", GO, "seq_test.go"]] as const)
+    test(`${name}: required with a fixer when the model writes it, advisory without one when supplied`, () => {
+      const root = mkdtempSync(join(tmpdir(), "baked-format-supplied-cell-"));
+      try {
+        for (const [p, text] of Object.entries(files)) {
+          mkdirSync(join(root, p, ".."), { recursive: true });
+          writeFileSync(join(root, p), text);
+        }
+        const writes = [{ path, action: "create" }];
+        const which = (c: string) => `/usr/bin/${c}`;
+        const [own] = formatWrittenChecks(root, [], writes, which);
+        expect(own).toMatchObject({ required: true, fixPaths: [path] });
+        expect(own?.fix).toBeDefined();
+        const [supplied, ...rest] = formatWrittenChecks(root, [], writes, which, undefined, undefined, { supplied: (p) => p === path });
+        expect(rest).toEqual([]);
+        expect(supplied?.id).toBe(own?.id.replace(/-written$/, "-supplied"));
+        expect(supplied).toMatchObject({ required: false, args: own?.args });
+        expect(supplied?.fix).toBeUndefined();
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+});
+
+describe("prerequisite gate: a build gate run before configure in a fresh worktree (#2526)", () => {
+  // R82 tinyflate: `cmake-build` before `cmake-configure` failed "build is not a directory" 12 times.
+  test("every prerequisite names a gate the same detector offers, pending only while its marker is missing", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-prerequisite-cell-"));
+    try {
+      writeFileSync(join(root, "CMakeLists.txt"), "project(x C)\nenable_testing()\nadd_test(NAME t COMMAND t)\n");
+      writeFileSync(join(root, ".clang-tidy"), "Checks: '-*'\n");
+      writeFileSync(join(root, "main.c"), "int main(void) { return 0; }\n");
+      const offered = detectGates(root).map((g) => g.check);
+      for (const [id, row] of Object.entries(GATE_PREREQUISITES)) {
+        const check = offered.find((c) => c.id === id);
+        expect(check, id).toBeDefined();
+        expect(offered.map((c) => c.id), id).toContain(row.checkId);
+        if (check) expect(pendingPrerequisite(check, offered, root)?.check.id).toBe(row.checkId);
+      }
+      mkdirSync(join(root, "build"));
+      writeFileSync(join(root, "build/CMakeCache.txt"), "");
+      for (const check of offered) {
+        const row = GATE_PREREQUISITES[check.id];
+        expect(pendingPrerequisite(check, offered, root)?.check.id ?? null, check.id).toBe(row && !row.marker ? row.checkId : null);
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  // R83 pnmforge: `ctest` in a configured, unbuilt tree found no test executable (3 of 39), and after
+  // an edit ran the earlier build's binaries (#2565).
+  test("ctest before build: its prerequisite is the build, pending even in a built tree, and the build's is configure", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-prerequisite-cell-"));
+    try {
+      writeFileSync(join(root, "CMakeLists.txt"), "project(x C)\nenable_testing()\nadd_test(NAME t COMMAND t)\n");
+      const offered = detectGates(root).map((g) => g.check);
+      const ctest = offered.find((c) => c.id === "ctest");
+      const build = offered.find((c) => c.id === "cmake-build");
+      if (!ctest || !build) throw new Error("CMake gates not offered");
+      expect(pendingPrerequisite(ctest, offered, root)?.check.id).toBe("cmake-build");
+      expect(pendingPrerequisite(build, offered, root)?.check.id).toBe("cmake-configure");
+      mkdirSync(join(root, "build"));
+      writeFileSync(join(root, "build/CMakeCache.txt"), "");
+      expect(pendingPrerequisite(ctest, offered, root)?.check.id).toBe("cmake-build");
+      expect(pendingPrerequisite(build, offered, root)).toBeNull();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("ci check drift gate: a README's fixer form and globs over the check's files (#2567)", () => {
+  // R83 pnmforge docs: `clang-format -i src/*.cpp ...` and `clang-format --dry-run --Werror src/*.cpp ...`
+  // against the detected check listing its files were 2 false drifts.
+  test("the detected clang-format gate: its fixer and its globbed form are no drift, a narrower glob is", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-drift-cell-"));
+    try {
+      writeFileSync(join(root, ".clang-format"), "BasedOnStyle: LLVM\n");
+      writeFileSync(join(root, "CMakeLists.txt"), "project(x CXX)\n");
+      for (const path of ["src/codec.cpp", "src/codec.hpp", "tests/scaffold_test.cpp"]) {
+        mkdirSync(join(root, path, ".."), { recursive: true });
+        writeFileSync(join(root, path), "int x;\n");
+      }
+      const gate = detectGates(root).map((g) => g.check).find((c) => c.id === "clang-format");
+      if (!gate) throw new Error("clang-format gate not detected");
+      const readme = (line: string) => [{ path: "README.md", text: `\`\`\`sh\n${line}\n\`\`\`\n` }];
+      expect(ciCheckDrift(readme("clang-format -i src/*.cpp src/*.hpp tests/*.cpp"), [gate])).toEqual([]);
+      expect(ciCheckDrift(readme("clang-format --dry-run --Werror src/*.cpp src/*.hpp tests/*.cpp"), [gate])).toEqual([]);
+      expect(ciCheckDrift(readme("clang-format --dry-run --Werror src/*.cpp"), [gate])).toHaveLength(1);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("format-written range: the lines a supplied modify diff adds keep their bytes (#2596)", () => {
+  // R84 keeplint-update: `ruff format --range=66-67` rewrapped a supplied assert, then supplied_drift fired.
+  test("Python: the ruff range check leaves the supplied line out and keeps the model's", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-range-supplied-"));
+    try {
+      writeFileSync(join(root, "pyproject.toml"), "[project]\nname = 'keeplint'\nversion = '0.1.0'\n\n[tool.ruff]\nline-length = 100\n");
+      const before = "def test_readme():\n    readme = ''\n";
+      const after = `${before}    assert "keeplint FILE... [--format text|json] [--exit-zero] [--quiet] [--disable RULE]... [--only RULE]..." in readme\n    x=1\n`;
+      mkdirSync(join(root, "tests"), { recursive: true });
+      writeFileSync(join(root, "tests/test_readme.py"), after);
+      const writes = [{ path: "tests/test_readme.py", action: "modify" }];
+      const which = (command: string) => `/usr/bin/${command}`;
+      const ranges = (suppliedLines?: () => Set<number>) =>
+        formatWrittenChecks(root, [], writes, which, () => before, () => true, suppliedLines ? { suppliedLines } : {})
+          .filter((c) => c.id.startsWith("ruff-format-lines"))
+          .map((c) => c.args.find((a) => a.startsWith("--range")));
+      expect(ranges()).toEqual(["--range=3-5"]);
+      expect(ranges(() => new Set([3]))).toEqual(["--range=4-5"]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("ci check drift gate: the PowerShell gates' cmdlets and the project's own program (#2593)", () => {
+  // R84 wrapsmith docs: README `Invoke-Pester`, `Invoke-ScriptAnalyzer -Path . -Recurse`, the
+  // fixer form and `pwsh bin/wrapsmith.ps1 ...` against the detected `pwsh -Command` gates: 4 false drifts.
+  test("the detected Pester and analyzer gates match the README's cmdlets; a parameter they lack is a drift", () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-drift-pwsh-"));
+    try {
+      writeFileSync(join(root, "PSScriptAnalyzerSettings.psd1"), "@{}\n");
+      mkdirSync(join(root, "tests"), { recursive: true });
+      writeFileSync(join(root, "tests/Wrap.Tests.ps1"), "Describe 'x' { It 'y' { 1 | Should -Be 1 } }\n");
+      const gates = detectGates(root).map((g) => g.check);
+      expect(gates.map((c) => c.id)).toEqual(["pester", "psscriptanalyzer", "psformat"]);
+      const readme = (...lines: string[]) => [{ path: "README.md", text: `\`\`\`powershell\n${lines.join("\n")}\n\`\`\`\n` }];
+      expect(ciCheckDrift(readme("Invoke-Pester", "Invoke-ScriptAnalyzer -Path . -Recurse", "Invoke-ScriptAnalyzer -Fix -Path FILE", "pwsh bin/wrapsmith.ps1 fill -w 60 < in.txt"), gates)).toEqual([]);
+      expect(ciCheckDrift(readme("Invoke-ScriptAnalyzer -Path . -Recurse -IncludeDefaultRules"), gates).map((d) => d.missing)).toEqual([["-includedefaultrules"]]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  // #2620: an untagged README block of sample data or program output names no tool; a console
+  // block's output lines under a prompted command are not commands either.
+  test("README sample data and output lines are no commands (#2620)", () => {
+    const readme = (lang: string, ...lines: string[]) => [{ path: "README.md", text: `\`\`\`${lang}\n${lines.join("\n")}\n\`\`\`\n` }];
+    const gate = { id: "verify", executable: "mvn", args: ["-B", "-q", "verify"], cwd: ".", timeoutMs: 600000, required: true, scope: "feature" as const, envNames: [], writes: [] };
+    expect(ciCheckDrift(readme("", "42.5 tests/test_db.py", "1500ms", "shardplan: 3 shards", "tests/test_db.py"), [gate])).toEqual([]);
+    expect(ciCheckDrift(readme("console", "$ mvn -B -q verify", "[INFO] BUILD SUCCESS"), [gate])).toEqual([]);
+    // The subcommand after leading flags is the tool (#2982): `mvn -B -q package` is no verify run.
+    expect(ciCheckDrift(readme("", "mvn -B -q -Pstrict verify"), [gate]).map((d) => d.tool)).toEqual(["mvn verify"]);
+  });
+
+  // #2634: a README command on a folder inside the check's broader path (`sqlfluff lint sql`
+  // against `sqlfluff lint .`) runs nothing the check does not; a folder outside it is a drift.
+  test("a README path inside the check's broader path is no drift (#2634)", () => {
+    const readme = (line: string) => [{ path: "README.md", text: `\`\`\`sh\n${line}\n\`\`\`\n` }];
+    const gate = (executable: string, ...args: string[]) => ({ id: "gate", executable, args, cwd: ".", timeoutMs: 600000, required: true, scope: "feature" as const, envNames: [], writes: [] });
+    expect(ciCheckDrift(readme("python -m sqlfluff lint sql"), [gate("python", "-m", "sqlfluff", "lint", ".")])).toEqual([]);
+    expect(ciCheckDrift(readme("eslint src"), [gate("eslint", ".")])).toEqual([]);
+    expect(ciCheckDrift(readme("go vet ./cmd/..."), [gate("go", "vet", "./...")])).toEqual([]);
+    expect(ciCheckDrift(readme("ruff check lib"), [gate("ruff", "check", "src")]).map((d) => d.missing)).toEqual([["lib"]]);
+  });
+});
+
+describe("baseline gate: a check's signature does not depend on the order its pipes arrived in (#2859)", () => {
+  // The CI queue ejected #2805 when a Biome stand-in's stdout summary arrived before its stderr diagnostic.
+  const err = "biome.json format ━━━━━━━━━━\n  × Formatter would have printed the following content:\n";
+  const out = "Checked 2 files in 3ms. No fixes applied.\nFound 1 error.\n";
+  test("stdout first and stderr first sign alike; notes around the output stay", () => {
+    const ordered = err + out;
+    const before = inStreamOrder(`${out}${err}`, { arrival: out + err, ordered });
+    const after = inStreamOrder(`${ordered}\n\nNote: biome timed out.`, { arrival: ordered, ordered });
+    expect(failureSignature(before, "/w")).toBe(failureSignature(after.replace("\n\nNote: biome timed out.", ""), "/w"));
+    expect(after.endsWith("Note: biome timed out.")).toBe(true);
+    // A scripted process without streams keeps its output.
+    expect(inStreamOrder(out, undefined)).toBe(out);
+  });
+});
+
+describe("repeated-failure gate: two stored runs of one failure hash alike whatever order their pipes arrived in (#2861)", () => {
+  // The sibling of #2859: the unfinished-task hash and the corrective repeat chain read stored artifacts.
+  const err = "src/duration.ts format ━━━━━━━━━━\n  × Formatter would have printed the following content:\n";
+  const out = "Checked 2 files in 3ms. No fixes applied.\nFound 1 error.\n";
+  const hash = (output: string) => failureHash([repeatCheck("biome", output, ["src/duration.ts"])]);
+  test("an orderedTail is read in place of the arrival-ordered output; without one the output is", () => {
+    const outOfOrder = { output: out + err, orderedTail: err + out };
+    const inOrder = { output: err + out };
+    expect(hash(outOfOrder.output)).not.toBe(hash(inOrder.output));
+    expect(hash(storedSignatureOutput(outOfOrder))).toBe(hash(storedSignatureOutput(inOrder)));
+    expect(storedSignatureOutput({})).toBe("");
+  });
+});
+
+describe("upstream symbol gate: a dotted test namespace and an unchanged helper are no gap (#2837)", () => {
+  // R91 dagwalk: `Dagwalk.Tests` and "the unchanged Rows helper" were 2 of 2 false would-stops.
+  const spec = (text: string) => ({ requirements: [{ id: "FR-001", text, priority: "must" as const, verification: "automated" as const, sourceRefs: [] }], criteria: [] });
+  test("csharp: no gap; a helper the file lacks still is one", () => {
+    const upstream = [
+      { featureId: "core", path: "src/Dagwalk/Api.cs", text: "namespace Dagwalk;\npublic static class Api {}\n" },
+      { featureId: "core", path: "tests/Dagwalk.Tests/Rows.cs", text: "namespace Dagwalk.Tests;\npublic static class Rows {}\n" },
+    ];
+    expect(upstreamSymbolGaps(spec("namespace Dagwalk.Tests; use the unchanged Rows helper."), upstream)).toEqual([]);
+    expect(upstreamSymbolGaps(spec("Rows gain a public Rows helper."), upstream)).toHaveLength(1);
+  });
+});
+
+describe("upstream symbol gate: a helper the request supplies is no missing member (#2566)", () => {
+  // R83 bytemerge training: "the given Rows helper" read as a gap of the supplied Rows.java.
+  const spec = (text: string) => ({ requirements: [{ id: "FR-001", text, priority: "must" as const, verification: "automated" as const, sourceRefs: [] }], criteria: [] });
+  for (const [language, path, text] of [
+    ["java", "src/test/java/bytemerge/Rows.java", "final class Rows { static String row(String s) { return s; } }\n"],
+    ["cpp", "tests/rows.hpp", "#pragma once\nstruct Rows { static int row(); };\n"],
+    ["python", "tests/rows.py", "def row(s):\n    return s\n"],
+  ] as const)
+    test(`${language}: given is no gap, an indefinite helper is`, () => {
+      const upstream = [{ featureId: "cli", path, text }];
+      expect(upstreamSymbolGaps(spec("Tests build rows with the given Rows helper."), upstream)).toEqual([]);
+      expect(upstreamSymbolGaps(spec("Rows gain a public Rows helper."), upstream)).toHaveLength(1);
+    });
+});
+
+describe("documented-example fixture gate: a printf or echo line that writes the next example's input (#2693)", () => {
+  // R88 pokerank: `printf '...' > hand.txt` then `node bin/pokerank.js showdown hand.txt`.
+  const cases: [string, ReturnType<typeof redirectFixture>][] = [
+    ["printf 'board 2c 7d\\nseat ann\\n' > hand.txt", { path: "hand.txt", content: "board 2c 7d\nseat ann\n", append: false }],
+    ["printf 'a\\\\nb' > in/raw.txt", { path: "in/raw.txt", content: "a\\nb", append: false }],
+    ["printf '\\101\\t%%\\n' >> data.csv", { path: "data.csv", content: "A\t%\n", append: true }],
+    ['echo "seat ann" > seats.txt', { path: "seats.txt", content: "seat ann\n", append: false }],
+    ["printf '%s' x > out.txt", null],
+    ["echo -n x > out.txt", null],
+    ["printf 'x' > ../escape.txt", null],
+  ];
+  for (const [command, expected] of cases)
+    test(command, () => {
+      expect(redirectFixture(command)).toEqual(expected);
+    });
+});
+
+describe("documented-example fixture gate: no write through a folder the copy links (#2947)", () => {
+  // R101 dieodds-update: a sentence naming `src/Dieodds/bin/Release/net10.0/dieodds.exe` made the
+  // next block a fixture, written through the linked `bin` (EEXIST on Windows, host_error).
+  const named: [string, string, string[]][] = [
+    ["a built program under bin", "src/App/bin/Release/net10.0/app.exe", []],
+    ["a Rust binary under target", "target/release/tool.exe", []],
+    ["a Swift binary under .build", ".build/release/tool.o", []],
+    ["an Elixir beam under _build", "_build/dev/lib/x.beam", []],
+    ["a Zig binary under zig-out", "zig-out/bin/tool.exe", []],
+    ["a Dart kernel under .dart_tool", ".dart_tool/build/tool.dill", []],
+    ["a source input", "data/input.txt", ["data/input.txt"]],
+  ];
+  for (const [name, path, fixtures] of named)
+    test(`${name}: ${path}`, () => {
+      const readme = [`The program is \`${path}\`, run it:`, "```sh", `${path} --help`, "```"].join("\n");
+      expect(extractFixtures(readme).map((f) => f.path)).toEqual(fixtures);
+    });
+
+  test("a write through a link is refused with a reason, a failing write gives a reason", () => {
+    const outside = mkdtempSync(join(tmpdir(), "baked-gate-2947-"));
+    const copy = mkdtempSync(join(tmpdir(), "baked-gate-2947-"));
+    try {
+      symlinkSync(outside, join(copy, "bin"), process.platform === "win32" ? "junction" : "dir");
+      writeFileSync(join(copy, "data"), "a file");
+      expect(writeIntoCopy(copy, "bin/out.txt", "x")).toContain("is in bin");
+      expect(readdirSync(outside)).toEqual([]);
+      expect(writeIntoCopy(copy, "data/in.txt", "x")).toStartWith("the host could not write data/in.txt");
+      expect(writeIntoCopy(copy, "in/ok.txt", "x")).toBeNull();
+    } finally {
+      rmSync(copy, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("place_rows anchor: a quoted line survives an earlier insert (#2956)", () => {
+  // R102 tailcut filters T002: two calls on a two-list C++ file, the second line computed first.
+  const path = "tests/two_test.cpp";
+  const targets = new Map([[path, ['{"a", 1}', '{"b", 2}']]]);
+  const frame = "static const std::vector<Row> rows = {\n};\nstatic const std::vector<Row> totals = {\n};\n";
+  const cases: [string, { line?: number; after?: string }, string][] = [
+    ["absolute line, stale after the first insert", { line: 2 }, "rows"],
+    ["after the second list's opening line", { after: "static const std::vector<Row> totals = {" }, "totals"],
+  ];
+  for (const [name, where, list] of cases)
+    test(name, () => {
+      const first = placeRows({ path, line: 1, rows: [1] }, targets, frame);
+      if ("refusal" in first) throw new Error(first.refusal);
+      const second = placeRows({ path, rows: [2], ...where }, targets, first.content);
+      if ("refusal" in second) throw new Error(second.refusal);
+      expect(second.list?.text).toBe(`static const std::vector<Row> ${list} = {`);
+      expect(placedWhere(second)).toContain(list === "rows" ? "in the list opened at line 1" : "which opens their list");
+    });
+});
+
+describe("format-written gate: a range fixer's change outside its range is put back (#2970)", () => {
+  // R104 logslice-update: `ruff format --range` rewrote the `--summary` call below the new one.
+  const before = ["a(", "  1)", "b(2,", "  3)", "c(4,", "  5)", ""].join("\n");
+  const cases: [string, string, [number, number][], string][] = [
+    ["the next statement, split at the range's code", ["a(1)", "b(2, 3)", "c(4,", "  5)", ""].join("\n"), [[1, 2]], ["a(1)", "b(2,", "  3)", "c(4,", "  5)", ""].join("\n")],
+    ["a change in its own hunk", ["a(", "  1)", "b(2,", "  3)", "c(4, 5)", ""].join("\n"), [[1, 2]], before],
+    ["a change inside the range stays", ["a(1)", "b(2,", "  3)", "c(4,", "  5)", ""].join("\n"), [[1, 2]], ["a(1)", "b(2,", "  3)", "c(4,", "  5)", ""].join("\n")],
+  ];
+  for (const [name, after, ranges, kept] of cases)
+    test(name, () => {
+      expect(keepFixerRange(before, after, ranges).text).toBe(kept);
+    });
+});
+
+describe("row_block_drift gate: a row the file held before the run is not added (#2969)", () => {
+  // R104 netfold core: the scaffold's placeholder rows of a second list, left for feature styles.
+  const fileRow = (line: number, base?: true) => ({ line, literals: 2, matches: [], replaces: null, ...(base ? { base } : {}) });
+  const cases: [string, Parameters<typeof rowMoveDecision>[0], number[]][] = [
+    ["an unmatched row the base held", [fileRow(9, true), fileRow(10, true)], []],
+    ["an unmatched row the run wrote", [fileRow(11)], [11]],
+    ["both", [fileRow(9, true), fileRow(11)], [11]],
+  ];
+  for (const [name, rows, added] of cases)
+    test(name, () => {
+      expect(rowMoveDecision(rows).added).toEqual(added);
+    });
+});
+
+describe("place_rows anchor: a repeated opening line is named by its occurrence (#2977)", () => {
+  // R105 cutpick2 bars T003: two PHP lists open with `return [`; 19 calls with absolute lines.
+  const lines = ["return [", "];", "return [", "];"];
+  const cases: [string, { after: string; occurrence?: number; line?: number }, number | string][] = [
+    ["no occurrence: refused, naming the occurrences", { after: "return [" }, "lines 1, 3 all read"],
+    ["occurrence 2", { after: "return [", occurrence: 2 }, 3],
+    ["occurrence over line", { after: "return [", occurrence: 1, line: 4 }, 1],
+    ["occurrence past the last match", { after: "return [", occurrence: 3 }, "only 2 lines"],
+  ];
+  for (const [name, input, want] of cases)
+    test(name, () => {
+      const got = anchorLine(input, lines);
+      if (typeof want === "number") expect(got).toBe(want);
+      else expect(String(got)).toStartWith(want);
+    });
+});
+
+describe("feature rows gate: one gapped entry reads as its runs in separate entries (#2978)", () => {
+  // R103-R105: the decomposer writes one gapped entry per path; joinedRows makes it the same plan.
+  const cases: [string, { path: string; rows: number[] }[]][] = [
+    ["runs in separate entries", [{ path: "t.php", rows: [1, 2] }, { path: "t.php", rows: [5] }, { path: "./t.php", rows: [8] }]],
+    ["runs out of order, one repeated", [{ path: "t.php", rows: [8] }, { path: "t.php", rows: [1, 2, 5] }, { path: "t.php", rows: [2] }]],
+  ];
+  for (const [name, entries] of cases)
+    test(name, () => {
+      expect(joinedRows(entries)).toEqual(joinedRows([{ path: "t.php", rows: [1, 2, 5, 8] }]));
+    });
+});
+
+describe("row_block_drift gate: a base row is matched without its list separator (#2974)", () => {
+  // R105 cidrlist2 core: the kept placeholder `y` became its list's last row and lost its comma.
+  const rows = ['row(["mask", "a"], "1")', 'row(["mask", "b"], "2")'];
+  const base = ["rows = [", '  row(["mask", "a"], "1"),', '  row(["mask", "b"], "2")', "]", "totals = [", '  row(["y"], "c"),', '  row(["z"], "d")', "]", ""].join("\n");
+  const cases: [string, string, boolean][] = [
+    ["kept with its comma", base.replace('  row(["z"], "d")\n', '  row(["y2"], "e")\n'), true],
+    ["kept as the last row, comma lost", base.replace('  row(["y"], "c"),\n  row(["z"], "d")', '  row(["y"], "c")'), true],
+    ["changed", base.replace('  row(["y"], "c"),\n  row(["z"], "d")', '  row(["y"], "changed")'), false],
+  ];
+  for (const [name, file, marked] of cases)
+    test(name, () => {
+      const at = file.split("\n").findIndex((l) => l.includes('["y"]')) + 1;
+      expect(measureFileRows(rows, file, base).find((r) => r.line === at)?.base === true).toBe(marked);
+    });
+});
+
+describe("ci_check_drift gate: a subcommand after leading flags (#2982)", () => {
+  // R106 netsieve: the README's `sbt --server -batch compile` read as the tool `sbt`.
+  const cases: [string, string[], string][] = [
+    ["sbt, flags first", ["--server", "-batch", "compile"], "sbt compile"],
+    ["mvn, a valued flag first", ["-f", "pom.xml", "verify"], "mvn verify"],
+    ["go -C", ["-C", "sub", "test", "./..."], "go test"],
+    ["no subcommand after the flags", ["--version"], "sbt"],
+  ];
+  for (const [name, args, tool] of cases)
+    test(name, () => {
+      const program = tool.split(" ")[0] ?? "";
+      expect(toolCommand(program, args)?.tool).toBe(tool);
+    });
+});
+
+describe("place_rows twin gate: a repeated row's twin in another list is not the row (#2980)", () => {
+  // R106 tokenpare bars T003: row 12 repeats row 4; list 2 placed first, then row 4 was refused.
+  const path = "tests/twin_test.cpp";
+  const targets = new Map([[path, ['{"a", 1}', '{"b", 2}', '{"c", 3}', '{"t", 0}', '{"b", 2}', '{"u", 9}']]]);
+  const frame = 'rows = {\n  {"a", 1},\n  {"c", 3},\n};\ntotals = {\n  {"t", 0},\n  {"b", 2},\n  {"u", 9},\n};\n';
+  const cases: [string, { move?: true }, string][] = [
+    ["plain: row 2 is placed", {}, "placed"],
+    ["move: row 2 is not held, nothing moves", { move: true }, "does not hold row 2 yet"],
+  ];
+  for (const [name, extra, want] of cases)
+    test(name, () => {
+      const got = placeRows({ path, after: '{"a", 1},', rows: [2], ...extra }, targets, frame);
+      expect("refusal" in got ? got.refusal : "placed").toContain(want);
+    });
+});
+
+describe("edit range gate: an oldString that ends in a newline takes its line break (#2981)", () => {
+  // R106 tokenpare filters T005: lineStart 11 with two rows and a final newline never matched.
+  const lines = ["a", "b", "c", "d"];
+  const cases: [string, string, number, string | null][] = [
+    ["two lines and their newline", "b\nc\n", 2, "b\nc\n"],
+    ["two lines, no newline", "b\nc", 2, "b\nc"],
+    ["one line and its newline", "a\n", 1, "a\n"],
+    ["the last line has no newline to take", "d\n", 4, null],
+  ];
+  for (const [name, oldStr, lineStart, text] of cases)
+    test(name, () => {
+      const range = oldStringRange(lines, oldStr, lineStart);
+      expect(range ? rangeText(lines, range) : null).toBe(text);
+    });
+});
+
+describe("progress watch gate: a failed edit is no edit (#2981)", () => {
+  const input = { path: "a.cs", oldString: "x\n", newString: "", lineStart: 1 };
+  const step = (success: boolean) => ({
+    toolCalls: [{ toolName: "edit_file", input }],
+    toolResults: [{ toolName: "edit_file", input, output: { success, output: "" } }],
+  });
+  const cases: [string, boolean, string | null][] = [
+    ["three failed edits with one input", false, "repeated-reads"],
+    ["three successful edits", true, null],
+  ];
+  for (const [name, success, signal] of cases)
+    test(name, () => {
+      expect(watchSteps([step(success), step(success), step(success)], { mustEdit: true })?.signal ?? null).toBe(signal);
+    });
+});
+
+describe("refused-edit gate: accept-workspace only for a refusal in the run root (#2928)", () => {
+  // R99 skillseek T004: three refusals in the batch worker `.baked/worktrees/fb6cd52c/T004`.
+  const state = { worktree: { path: ".baked/worktrees/fb6cd52c/main" } } as Parameters<typeof refusalInRunRoot>[0];
+  const cases: [string, string, string[]][] = [
+    ["the run root", ".baked/worktrees/fb6cd52c/main", ["accept-workspace"]],
+    ["a batch worker", ".baked/worktrees/fb6cd52c/T004", ["resume", "revise"]],
+    ["a best-of-N candidate", ".baked/worktrees/fb6cd52c/T004-c1", ["resume", "revise"]],
+  ];
+  for (const [name, root, remedies] of cases)
+    test(name, () => {
+      const runRoot = refusalInRunRoot(state, root);
+      const advice = refusedEditAdvice({ runId: "fb6cd52c", attemptId: "e9f80a4b", path: "spec/cli_spec.rb", count: 3, root, runRoot });
+      expect(advice.remedies.map((r) => r.action)).toEqual(remedies);
+      expect(advice.message.includes("--accept-workspace")).toBe(runRoot);
+    });
+  test("an inline run's root is the run root", () => {
+    expect(refusalInRunRoot({ worktree: null } as unknown as Parameters<typeof refusalInRunRoot>[0], "")).toBe(true);
+  });
 });

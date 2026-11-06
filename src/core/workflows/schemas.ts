@@ -119,6 +119,9 @@ const RowFramework = z.enum([
   "pest",
   "exunit",
   "dart",
+  "kotlin",
+  "scalatest",
+  "munit",
 ]);
 const RowPackage = z
   .string()
@@ -163,8 +166,8 @@ export const TaskSchema = z
           .object({
             framework: RowFramework,
             /**
-             * The Go package, Java package, C# namespace or PHP namespace (dots for backslashes) of
-             * the harness and the host's test.
+             * The Go package, Java or Kotlin package, Scala package, C# namespace or PHP namespace
+             * (dots for backslashes) of the harness and the host's test.
              */
             package: RowPackage.optional(),
             harness: RelativePath,
@@ -204,6 +207,11 @@ export const TaskSchema = z
         index: z.number().int().nonnegative(),
         count: z.number().int().positive(),
         share: z.number().positive().max(1),
+        /**
+         * The prescribed rows this slice writes, when the host cut the file by its rows (#2466):
+         * the case walk gives a criterion literal to the slice whose rows hold it.
+         */
+        rows: z.array(Text).max(2000).optional(),
       })
       .strict()
       .optional(),
@@ -250,6 +258,13 @@ export const CheckSchema = z
      * whole (#1837, #1582). Absent means every file of the task.
      */
     fixPaths: z.array(RelativePath).optional(),
+    /**
+     * The lines (1-based, inclusive) of the one `fixPaths` file a range formatter's fixer formats
+     * (#2970): its changes outside them are put back where the check still passes without them.
+     */
+    fixLines: z
+      .array(z.tuple([z.number().int().positive(), z.number().int().positive()]))
+      .optional(),
     fixUnsafe: z
       .object({ executable: z.string().min(1).max(512), args: z.array(z.string().max(2048)) })
       .strict()
@@ -571,6 +586,13 @@ export const PolicySchema = z
      */
     costForecast: z.enum(["ask", "advise", "off"]).optional(),
     /**
+     * Which token mix the cost forecast prices a stage without paid samples of its model at
+     * (#2963): `off` the blended mixes, `shadow` the same and records the forecast at each
+     * model's own provider family mix (with Claude's cache writes) beside it as `providerMix`,
+     * `on` shows that forecast. Absent means `shadow`, so stored policies keep their hash.
+     */
+    providerTokenMix: z.enum(["off", "shadow", "on"]).optional(),
+    /**
      * The mode of each registered stop reason (stop-reasons.ts): `shadow` and `advisory` record a
      * `decision.would_stop` event instead of stopping the run or declining the approval (#1714).
      * Hard limits on money, tokens, time and storage take only `enforce`. Absent keeps every
@@ -641,6 +663,14 @@ export const PolicySchema = z
      * Absent means `off`, so stored policies keep their hash.
      */
     caseSourceProbe: z.enum(["off", "on"]).optional(),
+    /**
+     * `skip` has the task-end case walk not refuse a test task for a criterion literal that
+     * describes rows instead of quoting one (`CriterionCase.cited`: a row count, a test file's
+     * name, a `LINE:COL: MESSAGE` envelope, a described character), and records it in the walk
+     * record; analysis then raises no `SUPPLIED-` finding for such a literal either (#2531).
+     * Absent means `demand`, so stored policies keep their hash.
+     */
+    citedCases: z.enum(["demand", "skip"]).optional(),
     /**
      * `split` has the decomposer of an initiative split a feature that holds more than a third of
      * the critical path into features that run side by side, or say why it stays whole
@@ -718,7 +748,8 @@ export const PolicySchema = z
     /**
      * The sibling probe of a chain rewrite (#1969): `on` asks the `chain-family` profile once per
      * rewrite corrective for a family of inputs around the chain's repros; the host runs them and
-     * a failing case joins the chain's battery as a finding. Needs `chainRewrite`. Absent is off.
+     * a failing case joins the chain's battery as a finding. Needs `chainRewrite`. Absent is off,
+     * except for the second rewrite of one symbol or family, which probes either way (#2568).
      */
     chainProbe: z.literal("on").optional(),
     /**
@@ -730,12 +761,41 @@ export const PolicySchema = z
      */
     misquoteFix: z.literal("on").optional(),
     /**
+     * The host's restore of a prescribed row a delivered test file changed (row-restore.ts, #2522):
+     * `on` lets the host replace the file line that takes a drifting row's place with the row as
+     * the request gives it, at the checks stage and at a row-file task's end (#2529, on the rows
+     * the task owns), and keep the edit when the writing task's required checks pass, instead of a
+     * session copying the row again. Absent means shadow (the decision is
+     * recorded under `row-restores/`, the file stays as written), so stored policies keep their hash.
+     */
+    rowRestore: z.literal("on").optional(),
+    /**
+     * The host's write of a prescribed row file (row-file.ts, host-apply.ts, #2528): `on` lets the
+     * host write a planned task's test file from its shape (the file in the task's base or the
+     * task's `reference`) and the rows the request prescribes, when the host apply decision would
+     * write it, and start no session; the task's checks decide it. A session that still writes
+     * such a file (no row shape for its language, a shape the host cannot read) gets `place_rows`
+     * (`src/core/tools/place-rows.ts`, #2564), which inserts the request's rows as written. Absent
+     * means shadow (the decision is recorded under `host-apply/tasks/`, the tool that would have
+     * been offered under `place-rows/`, the session runs), so stored policies keep their hash.
+     */
+    rowFileWrite: z.literal("on").optional(),
+    /**
      * The host's apply of a task the request gives verbatim (host-apply.ts, #2333): `on` writes
      * the task's files when `hostApplyDecision` would apply them and starts no implementer; its
      * checks decide it. Absent means shadow (the decision is recorded, the implementer runs), so
      * stored policies keep their hash.
      */
     hostApply: z.literal("on").optional(),
+    /**
+     * The host's partial apply of a task (host-apply.ts `hostApplyPartialSplit`, #2937): when the
+     * decision keeps a task whole for an implementer because one write declines, `on` lets the
+     * host write the task's other files (each under its own `hostApply` or `rowFileWrite` "on")
+     * and gives the session only the declined files as writes. `off` records nothing. Absent
+     * means shadow (the split is recorded as the record's `partial`, a session writes every
+     * file), so stored policies keep their hash.
+     */
+    hostApplyPartial: z.enum(["off", "on"]).optional(),
     /**
      * The edge-input probe of a source task (edge-inputs.ts, #1808): `on` asks the `edge-cases`
      * profile once per planned source task that settled without failures for extreme legal inputs
@@ -797,6 +857,53 @@ export const PolicySchema = z
      */
     sourceDefectRoute: z.literal("on").optional(),
     /**
+     * The route of a failing check's correction when a delivered test file counts a long byte run
+     * of a prescribed row differently (row-block-drift.ts `rowRunFindings`, #2515): `on` gives
+     * the correction to the task that writes the test file only, with the line, the byte and both
+     * counts. Absent means shadow (the route is recorded under `row-runs/`, the findings keep their
+     * files and only say it), so stored policies keep their hash.
+     */
+    rowRunRoute: z.literal("on").optional(),
+    /**
+     * The host's answer to a spec conflict about a test file whose rows the request prescribes
+     * (conflict-row-reply.ts, #2493): `on` lets the host compare the file with the rows and, when
+     * it drifts, reply with the row diff and keep the request side, instead of a model settle.
+     * Absent means shadow (the decision and the reply are recorded under `conflicts/rows/`, the
+     * conflict takes the other settles), so stored policies keep their hash.
+     */
+    conflictRowReply: z.literal("on").optional(),
+    /**
+     * The host's restore of a prescribed row whose long byte run a delivered test file counts
+     * differently, outside the checks stage (row-restore.ts `rowRunRestores`, #2543): on resume of
+     * a run blocked `invalid_output` and before a task's session, the host replaces the row's line
+     * with the row as the request gives it and keeps the edit when the writing task's required
+     * checks pass. On by default (absent): the edit is the request's exact text and is checked, and
+     * an opt-in would not reach a blocked run whose policy is frozen. `off` records the decision in
+     * shadow under `row-restores/` and the brief only names the miscount.
+     */
+    rowRunRestore: z.literal("off").optional(),
+    /**
+     * The guard on a session's edit of a prescribed-row test file (row-restore.ts `rowEditBreaks`,
+     * #2558): an edit after which a prescribed row the file held no longer holds (a changed input
+     * run, a changed expected output) is put back and the call answers that the request's rows are
+     * fixed. On by default (absent), as `rowRunRestore`: it only keeps the request's exact rows
+     * that the file already held, and an opt-in would not reach a blocked run whose policy is
+     * frozen. `off` lets the edit stand.
+     */
+    rowEditGuard: z.literal("off").optional(),
+    /**
+     * The check of a restatement of a prescribed row against the request's own text (row-claims.ts,
+     * #2561): a review finding or a skeptic's confirmation, a conflict's settlement, a recorded
+     * decision or settled conflict (checked on resume of a run blocked `invalid_output`) and a
+     * task's description that give a prescribed row's long run another count, or a re-audit that
+     * recomputes another expected value for it, lose to the request: the finding is refuted, the
+     * conflict is settled for the request's rows, the decision is overridden and the brief names
+     * the rows as given. On by default (absent), as `rowRunRestore`: it only keeps the request's
+     * own rows, and an opt-in would not reach a blocked run whose policy is frozen. `off` records
+     * the same under `conflicts/row-claims/` in shadow and changes nothing.
+     */
+    rowClaimCheck: z.literal("off").optional(),
+    /**
      * The host's repair of a required check that fails before any change (baseline-fix.ts, #2215):
      * `on` lets the host run the check's fixer on the files it names, before the first task, when
      * no task writes them, git tracks them and every finding is marked correctable, and keep the
@@ -805,6 +912,13 @@ export const PolicySchema = z
      * their hash.
      */
     baselineFix: z.literal("on").optional(),
+    /**
+     * The implementer's pitfalls (pitfall-notes.ts, #2598): `on` gives an implementer step the
+     * `LANGUAGE_PITFALLS` notes of the languages its task writes and, as one-line rules, the first
+     * error line of the run's other tasks' failing checks. Absent means shadow: each step records
+     * what it would get under `pitfalls/tasks/`, so stored policies keep their hash.
+     */
+    languagePitfalls: z.literal("on").optional(),
     /**
      * The project's choices for the anti-slop rule pack (quality/rules.ts), which is always on:
      * rules turned off, severities changed and ast-grep rule files added. Absent means the
@@ -826,7 +940,7 @@ export const PolicySchema = z
     /**
      * Where the run edits files. Absent means `inline`: the project working copy, as before this
      * field existed, so stored policies keep their hash. `worktree` runs the tasks in the Git
-     * worktree `.baked/worktrees/RUN_ID/main` on the branch `baked/wf/RUN_ID`. Part of the policy,
+     * worktree `.baked/worktrees/RUN/main` (`runWorktreeDir`) on the branch `baked/wf/RUN_ID`. Part of the policy,
      * so the approval digest covers it.
      */
     executionMode: z.enum(["inline", "worktree"]).optional(),
@@ -873,6 +987,31 @@ export const PolicySchema = z
          * it on its file count (`suppliedTaskPrice`, #2002). Absent means off.
          */
         suppliedDiff: z.boolean().optional(),
+        /**
+         * Prices a test task that transcribes rows the request prescribes for its file (a fenced
+         * block whose first line names the file and says it holds rows, `suppliedRows`) at the
+         * rows' characters when above its history price, and has the host split it into
+         * sequential row slices when they need more than one attempt (#2455). Absent means off:
+         * the rows are recorded in `sizing/plan-N.json` (`rowVolume`, mode `shadow`) only.
+         */
+        rowVolume: z.boolean().optional(),
+        /**
+         * Prices a feature that documents the program (`documentsProgram`: a README, `docs/` or
+         * examples, beside legal files) at the commands the request lists times a per-command
+         * rate plus one README correction round, with the high end at the measured actual-to-low
+         * spread (`documentedSurfaceRate`, #2569). Absent means off: the price is recorded on the
+         * feature's estimate (`documentedSurface`, mode `shadow`) only.
+         */
+        documentedSurface: z.boolean().optional(),
+        /**
+         * Prices a feature with fewer paths than its size pool's median, where the pool's tokens
+         * do not follow their paths (no path fit), at the square root of that path share of the
+         * pool's range, and a feature of legal files alone (a `LICENSE`) at the per-path rate
+         * (`fewPathDetail`, #2640), recorded on each estimate (`fewPathShare`, #2869). Documentation
+         * features keep their price. Absent means on (#2893); `false` turns it off, and the size
+         * pool then prices them as features of its usual paths.
+         */
+        fewPathPrice: z.boolean().optional(),
         /**
          * Weighs an initiative estimate's finished features by how recent their initiative is: a
          * feature's weight halves for every this many initiatives started after its own
@@ -1442,13 +1581,15 @@ export const CorrectionSchema = z
     /**
      * `bounded-correction` adds corrective tasks inside the approved tasks' authority;
      * `host-widen` adds one path per finding to an existing corrective's writes when the frozen
-     * policy enforces `corrective_unowned_file` and the run's approved paths hold the path (#2133).
+     * policy enforces `corrective_unowned_file` and the run's approved paths hold the path (#2133);
+     * `host-release` turns a planned task's `create` of a path a planned-ahead run's release
+     * brought in (an accepted upstream feature wrote it) into `modify` (#2514). It has no findings.
      */
-    rule: z.enum(["bounded-correction", "host-widen"]),
+    rule: z.enum(["bounded-correction", "host-widen", "host-release"]),
     newGraphHash: Hash,
-    findingIds: z.array(SafeId).min(1),
+    findingIds: z.array(SafeId),
     taskIds: z.array(TaskId).min(1),
-    roundKind: z.enum(["repair", "review", "convergence"]),
+    roundKind: z.enum(["repair", "review", "convergence", "release"]),
     round: z.number().int().positive(),
     /** The writes a `host-widen` link adds, per corrective. */
     widened: z
@@ -1458,8 +1599,29 @@ export const CorrectionSchema = z
           .strict(),
       )
       .optional(),
+    /**
+     * The writes a `host-release` link converts: a `create` into `modify`, or, with
+     * `action: "create"`, a `modify` into `create` (#2517).
+     */
+    released: z
+      .array(
+        z
+          .object({ taskId: TaskId, path: RelativePath, action: z.literal("create").optional() })
+          .strict(),
+      )
+      .min(1)
+      .optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (c) =>
+      c.rule === "host-release"
+        ? c.released !== undefined && c.findingIds.length === 0 && c.roundKind === "release"
+        : c.findingIds.length > 0 && c.released === undefined && c.roundKind !== "release",
+    {
+      message: "Only a host-release correction lists released writes, and only it has no findings",
+    },
+  );
 /** One literal row of a criterion recomputed from the requirements (derivation-audit.ts). */
 export const DerivationSchema = z
   .object({
@@ -1539,8 +1701,12 @@ export const MAX_PARALLEL_RUNS = 8;
 export const PLAN_PARALLEL_RUNS = 3;
 /** The modes of `workflows.extendWithinDollars` (#2042); see `initiatives/token-pool.ts`. */
 export const EXTEND_WITHIN_DOLLARS_MODES = ["off", "shadow", "on"] as const;
+/** The modes of `workflows.timePoolGrowth` (#2346); see `initiatives/token-pool.ts`. */
+export const TIME_POOL_GROWTH_MODES = ["off", "shadow"] as const;
 /** The modes of `workflows.stageReserve` (#2241); see `initiatives/growth.ts`. */
 export const STAGE_RESERVE_MODES = ["off", "shadow", "on"] as const;
+/** The modes of `workflows.planChargeExpected` (#2534); see `initiatives/token-pool.ts`. */
+export const PLAN_CHARGE_EXPECTED_MODES = ["off", "shadow", "on"] as const;
 export const WorkflowConfigSchema = z
   .object({
     enabled: z.boolean().default(true),
@@ -1581,6 +1747,7 @@ export const WorkflowConfigSchema = z
      * default, records a `decision.would_extend` event and changes nothing; `off` records nothing.
      */
     extendWithinDollars: z.enum(EXTEND_WITHIN_DOLLARS_MODES).optional(),
+    timePoolGrowth: z.enum(TIME_POOL_GROWTH_MODES).optional(),
     /**
      * Whether a feature run that finished its tasks and would stop on its cost ceiling grows its
      * dollar bound by the reserve of its remaining review and convergence, inside the initiative's
@@ -1588,6 +1755,22 @@ export const WorkflowConfigSchema = z
      * event and the run still stops; `on` grows the bound; `off` records nothing.
      */
     stageReserve: z.enum(STAGE_RESERVE_MODES).optional(),
+    /**
+     * Which point of an open feature run's sized plan an initiative's token pool holds while no
+     * plan-to-actual ratio is measured (#2534): `shadow`, the default, holds the high end as before
+     * and records what holding the expected need would free (`budget.planCharge.expected`, and a
+     * `decision.would_release` at a share gate it would turn); `on` holds the expected need, never
+     * below what the run used; `off` records nothing.
+     */
+    planChargeExpected: z.enum(PLAN_CHARGE_EXPECTED_MODES).optional(),
+    /**
+     * The folder that holds new runs' worktrees, `<root>/<run's 8 hex digits>/main` (#2461):
+     * absolute, starting with `~`, or relative to the project. Unset, they live in the project's
+     * `.baked/worktrees`. A short folder such as `C:\.bk` keeps a task's checks under the path
+     * length a toolchain handles on Windows (`WORKTREE_PATH_LIMITS`). It must be on the project's
+     * drive; a run's worktree keeps the folder it was created in.
+     */
+    worktreeRoot: z.string().trim().min(1).max(240).optional(),
     /**
      * Deadlines and stall limits (milliseconds): a tool call that never returns, a model attempt
      * with no progress, and how often a stalled run resumes by itself. Defaults in `stall.ts`.
@@ -1656,9 +1839,11 @@ export const EventType = z.enum([
   "attempt.finished",
   "attempt.advisory",
   "attempt.recovery",
+  "attempt.large_prompt",
   "decision.would_stop",
   "decision.would_resume",
   "decision.would_rerun",
+  "decision.would_finish",
   "task.state_changed",
   "artifact.committed",
   "check.finished",
@@ -1828,6 +2013,22 @@ export const EventSchema = z.discriminatedUnion("type", [
         .strict(),
     })
     .strict(),
+  // A shadow reason would have finished a task from its attempt's green checkpoint (`attempt_green_checkpoint`, #2470).
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("decision.would_finish"),
+      payload: z
+        .object({
+          reason: StopReasonIdSchema,
+          mode: z.enum(["shadow", "advisory"]),
+          key: z.string().max(200),
+          summary: z.string().max(1000),
+          inputs: z.record(z.string(), z.unknown()),
+        })
+        .strict(),
+    })
+    .strict(),
   // A stalled call climbs the recovery ladder: the next attempt runs on this rung (#1877).
   z
     .object({
@@ -1841,6 +2042,36 @@ export const EventSchema = z.discriminatedUnion("type", [
           transport: z.literal("exec").optional(),
           effort: z.string().optional(),
           detail: z.string().max(500),
+        })
+        .strict(),
+    })
+    .strict(),
+  // A task attempt's first prompt was more than three times the median first attempt of the run,
+  // with the section that holds the most bytes (#2597, `largePrompt` in prompt-sections.ts).
+  z
+    .object({
+      ...EventBase,
+      type: z.literal("attempt.large_prompt"),
+      payload: z
+        .object({
+          attemptId: SafeId,
+          taskId: SafeId.nullable(),
+          firstBytes: z.number().int().nonnegative(),
+          medianBytes: z.number().int().nonnegative(),
+          firstAttempts: z.number().int().positive(),
+          largest: z.object({ name: z.string(), bytes: z.number().int().nonnegative() }).strict(),
+          // What the bound on the evidence section cut (#2617, `boundEvidence`).
+          evidence: z
+            .object({
+              budget: z.number().int().nonnegative(),
+              keptChars: z.number().int(),
+              collapsed: z.number().int().nonnegative(),
+              summarized: z.number().int().nonnegative(),
+              cutChars: z.number().int().nonnegative(),
+              cut: z.array(z.string()),
+            })
+            .strict()
+            .optional(),
         })
         .strict(),
     })
@@ -2242,6 +2473,11 @@ export interface StartRequest {
    * without it only the `active` class follows an explicit run model.
    */
   modelStrict?: boolean;
+  /**
+   * The provider accounts this run uses (CLI `--account PROVIDER=ID`, #2303) instead of the
+   * project's; each must exist and be allowed for the project, or the run does not start.
+   */
+  accounts?: import("../llm/provider-accounts.js").AccountChoice;
   /** What blocking questions do in this run (CLI `--clarification MODE`); it overrides the policy. */
   clarification?: ClarificationMode;
   /** What the test-integrity guard does in this run (CLI `--test-integrity MODE`); it overrides the policy. */
@@ -2315,7 +2551,11 @@ export type Decision =
       kind: "recovery";
       effectId: string;
       resolution: "record-applied" | "record-not-applied" | "retry" | "cancel";
-      evidence: string;
+      /**
+       * What the person checked. Optional (#2415): without it the decision records a generated
+       * one-line note (`recoveryNote`), as only manual evidence needs a real file.
+       */
+      evidence?: string;
     };
 export const DecisionSchema: z.ZodType<Decision> = z.discriminatedUnion("kind", [
   z
@@ -2351,7 +2591,7 @@ export const DecisionSchema: z.ZodType<Decision> = z.discriminatedUnion("kind", 
       kind: z.literal("recovery"),
       effectId: SafeId,
       resolution: z.enum(["record-applied", "record-not-applied", "retry", "cancel"]),
-      evidence: Text,
+      evidence: Text.optional(),
     })
     .strict(),
 ]);

@@ -4,10 +4,15 @@
     "Sources/SumTests.m": "#import \"Sum.h\"\n@implementation SumTests\n- (void)testSum { sum(1, 2); }\n@end\n// AC-001 example: (1, 2, 3)\n"
   },
   "generated": {
-    "Tests/GenTests.m": "NSString *b = [NSString stringWithFormat:@\"x%@\", a];\nNSString *lit = @\"\\\\\\\\\\\\\";\n// NSString *d = [NSString stringWithFormat:@\"x%@\", a];\n"
+    "Tests/GenTests.m": "NSString *b = [NSString stringWithFormat:@\"x%@\", a];\nNSString *lit = @\"\\\\\\\\\\\\\";\n// NSString *d = [NSString stringWithFormat:@\"x%@\", a];\n",
+    "Tests/RuntimeTests.m": "NSString *dir = NSTemporaryDirectory();\nNSString *want = [NSString stringWithFormat:@\"bad: %@\", dir];\n"
   },
   "expected": {
+    "rowIndent": null,
+    "languagePitfalls": null,
     "generatedValues": ["Tests/GenTests.m:1 format"],
+    "exampleBuild": null,
+    "runtimePaths": ["Tests/RuntimeTests.m: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
       "Scanner sends [Reader isEncodingToken:] for each token.: [Reader isEncodingToken]"
@@ -59,7 +64,32 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/Calc.m: error: use of undeclared identifier 'sub'"],
     "testClasses": null,
-    "testDeclarations": ["Tests/SumTests.m: 2 tests, per class 2"]
+    "testDeclarations": ["Tests/SumTests.m: 2 tests, per class 2"],
+    "rowFileShapes": [
+      "Tests/HexRowsTests.m",
+      "#import <XCTest/XCTest.h>",
+      "",
+      "#import \"HexCodec.h\"",
+      "",
+      "@interface HexRowsTests : XCTestCase",
+      "@end",
+      "",
+      "@implementation HexRowsTests",
+      "",
+      "- (void)testRows {",
+      "  NSArray<NSArray<NSString *> *> *rows = @[",
+      "    @[ @\"a\\tb\", @\"610962\" ],",
+      "    @[ @\"\\\"q\\\"\", @\"227122\" ],",
+      "  ];",
+      "  for (NSArray<NSString *> *row in rows) {",
+      "    XCTAssertEqualObjects([HexCodec encode:row[0]], row[1]);",
+      "  }",
+      "}",
+      "",
+      "@end",
+      ""
+    ]
   }
 }

@@ -89,8 +89,11 @@ namespace Maskback.Tests
     ).toBe("FullyQualifiedName~Maskback.Tests.CliTests.");
   });
 
-  test("C#: a file whose types hold no test attribute keeps the filter by its name", () => {
-    expect(written({ "Maskback.Tests/ParserTests.cs": "public class ParserTests {}\n" }, dotnet)?.args.at(-1)).toBe("FullyQualifiedName~ParserTests.");
+  test("C#: a file whose tests no class reader finds keeps the filter by its name", () => {
+    const property = "public class ParserTests\n{\n    [Property]\n    public bool Parses(int n) => n == n;\n}\n";
+    expect(written({ "Maskback.Tests/ParserTests.cs": property }, dotnet)?.args.at(-1)).toBe("FullyQualifiedName~ParserTests.");
+    // A file that declares no test is a support file: no check runs it (#2439).
+    expect(written({ "Maskback.Tests/ParserTests.cs": "public class ParserTests {}\n" }, dotnet)).toBeNull();
   });
 
   const JAVA = `package com.example;

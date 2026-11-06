@@ -47,6 +47,9 @@ const frameworks = [
   { framework: "junit", package: "app", test: "src/test/java/app/ExplainTest.java", other: "src/test/java/app/ExplainMoreTest.java" },
   { framework: "rust", test: "tests/explain.rs", other: "tests/explain_more.rs" },
   { framework: "xunit", package: "App.Tests", test: "tests/ExplainTests.cs", other: "tests/ExplainMoreTests.cs" },
+  { framework: "kotlin", package: "app", test: "src/test/kotlin/app/ExplainTest.kt", other: "src/test/kotlin/app/ExplainMoreTest.kt" },
+  { framework: "scalatest", test: "src/test/scala/app/ExplainSuite.scala", other: "src/test/scala/app/ExplainMoreSuite.scala" },
+  { framework: "munit", test: "src/test/scala/app/ExplainSuite.scala", other: "src/test/scala/app/ExplainMoreSuite.scala" },
 ] as const;
 type Framework = (typeof frameworks)[number];
 
@@ -111,6 +114,18 @@ describe("scenario: wheeltags explain, a rows task priced above one attempt (#19
     expect(plannerSizing({ ...policy, rowsAsData: "off" }, history).note).not.toContain(ROWS_TASK_NOTE);
     expect(splitNote(size(graph(task("T002", ["AC-002", "AC-003"], frameworks[1].test)), 40), 3)).not.toContain(ROWS_TASK_NOTE);
   });
+
+  for (const f of frameworks)
+    test(`a rows task whose rows the request also prescribes in a block is never sliced by them (#2455): ${f.framework}`, () => {
+      const g = graph(rowsTask(f, ["AC-001", "AC-002", "AC-003"]));
+      const rows = Array.from({ length: 60 }, (_, i) => `explain py${i}-none-any => ["py${i}", "none", "any", "${"x".repeat(250)}"]`);
+      const request = ["```text", `ExplainTests in ${f.test} (60 rows)`, ...rows, "```"].join("\n");
+      const report = sizePlan({ graph: g, policy: { ...policy, sizing: { ...policy.sizing, rowVolume: true } }, samples: history, spent: 0, spec: spec(40), request });
+      const sized = report.tasks.find((t) => t.taskId === "T002")!;
+      expect(sized).toMatchObject({ oversized: false, rowsTask: { movable: ["AC-002", "AC-003"] } });
+      expect(sized.rowVolume).toBeUndefined();
+      expect(splitTestTasks(g, report, spec(40), [], policy.checks)).toBeNull();
+    });
 
   test("a test task without rows of the same price is still split by the host", () => {
     const g = graph(task("T002", ["AC-002", "AC-003"], frameworks[1].test));

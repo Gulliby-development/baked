@@ -5,6 +5,7 @@ import { LaunchedRefSchema } from "../chat/coordinator-control.js";
 import { ScheduleInputSchema } from "../chat/coordinator-schedules.js";
 import { MAX_IMAGES_PER_MESSAGE } from "../chat/images.js";
 import { CHAT_MODES, PLAN_ACTIONS } from "../chat/sessions.js";
+import { ACCOUNT_ID } from "../llm/provider-accounts.js";
 import { CHAT_EFFORTS } from "../llm/provider-options.js";
 import { PERMISSION_MODES } from "../security/permission-mode.js";
 import { BUDGET_PRESETS } from "../workflows/budget.js";
@@ -60,6 +61,17 @@ export const StartBody = z
     propertyTests: z.enum(["auto", "off"]).optional(),
     /** The run model overrides configured model routes, as `--model-strict`. */
     modelStrict: z.boolean().optional(),
+    /**
+     * The labelled provider accounts the run uses instead of the project's, as `--account`
+     * (#2303): `{ "codex": "work" }`.
+     */
+    accounts: z
+      .object({
+        codex: z.string().regex(ACCOUNT_ID).optional(),
+        "claude-code": z.string().regex(ACCOUNT_ID).optional(),
+      })
+      .strict()
+      .optional(),
     /** The run's OS sandbox, as `--sandbox`; omitted, the policy and the sandbox setting decide. */
     sandbox: z.enum(["off", "auto", "required"]).optional(),
     /** The approval reviewer may approve low-risk plans outside the limits, as `--approval-review`. */
@@ -261,7 +273,8 @@ export const RecoverBody = Command.extend({
   requestId: SafeId,
   effectId: SafeId,
   resolution: z.enum(["record-applied", "record-not-applied", "retry", "cancel"]),
-  evidence: z.string().min(1).max(200_000),
+  /** Optional (#2415): without it the decision records a generated one-line note. */
+  evidence: z.string().min(1).max(200_000).optional(),
 }).strict();
 export const ReviseBody = Command.extend({
   candidate: z.string().regex(/^[0-9a-f]{64}$/),

@@ -20,6 +20,7 @@ import {
 } from "../src/core/workflows/quality/package-contents.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
+import { runWorktreeDir } from "../src/core/workflows/worktree.js";
 
 // Bench round 63 (keeplint, #1984): a Python update added `py.typed` package data to pyproject.toml,
 // and the criterion "the built wheel contains py.typed" ended inconclusive because no check built
@@ -337,7 +338,7 @@ describe("package contents check (#1984)", () => {
       expect(done.status).toBe("completed");
       // The build ran in a copy: the run's tree has no build output and the copy is gone.
       for (const output of [".baked-package", "build", "keeplint.egg-info"]) expect(existsSync(join(root, output))).toBe(false);
-      expect(existsSync(join(root, ".baked/worktrees", run.runId, "quality-package-contents"))).toBe(false);
+      expect(existsSync(join(root, runWorktreeDir(root, run.runId), "quality-package-contents"))).toBe(false);
       const artifact = service.store.latestArtifact(run.runId, QUALITY_PACKAGE_CONTENTS);
       return {
         record: artifact ? (JSON.parse(service.store.readArtifact(run.runId, artifact.id)) as PackageContents) : null,

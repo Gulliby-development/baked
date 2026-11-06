@@ -57,6 +57,7 @@ import {
   initiativeLine,
   initiativeStatus,
   splitApproval,
+  splitPreviewText,
   suggestedExtension,
   type Tone,
 } from "./initiative-model.js";
@@ -764,6 +765,13 @@ function Detail({ projectKey, id }: { projectKey: string; id: string }) {
           </Button>
         )}
       </div>
+      {splitPreviewText(view) && (
+        <p
+          className={`m-0 text-[12px] ${view.budget.preview?.suggestedTokens != null ? "text-[var(--warn)]" : "text-muted-foreground"}`}
+        >
+          {splitPreviewText(view)}
+        </p>
+      )}
       {view.budget.forecastNotice && (
         <p className="m-0 text-[12px] text-[var(--warn)]">
           Token forecast: {view.budget.forecastNotice}

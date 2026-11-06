@@ -1,6 +1,7 @@
 import { type HostApplyRecord, type HostApplyWrite, regionSections } from "./host-apply.js";
 import type { TaskGraph } from "./schemas.js";
 import { type SuppliedBlock, suppliedBlocks } from "./sizing.js";
+import type { Task } from "./types.js";
 
 /**
  * Delivered files compared with the blocks the request gives verbatim (#2332, part 2). Bench round
@@ -59,7 +60,7 @@ function lines(text: string): string[] {
  * file has at most once, or diffs that applied to the task's base.
  */
 export function comparableWrite(write: HostApplyWrite): boolean {
-  if (write.action === "delete") return false;
+  if (write.action === "delete" || write.listing) return false;
   if (write.files === 1 && !write.diffs) {
     if (write.region) return write.region.matches <= 1;
     return write.whole || !write.exists;
@@ -275,7 +276,8 @@ export function suppliedDrifts(
         continue;
       }
       const [block] = blocks;
-      if (blocks.length !== 1 || !block) continue;
+      // A listing is not the file's content (#2438): R77 trailspin's signatures drifted falsely.
+      if (blocks.length !== 1 || !block || (block.kind === "file" && block.listing)) continue;
       const drift = blockDrift(task.id, write.path, block, delivered);
       if (drift) out.push(drift);
     }
@@ -283,8 +285,38 @@ export function suppliedDrifts(
   return out;
 }
 
-/** A drift in the words a stop would use. */
-export function suppliedDriftSummary(drift: SuppliedDrift): string {
+/**
+ * The writes of a host-written task whose plan content leaves the request's verbatim block for the
+ * file (#2472), compared as `suppliedDrifts` compares a delivered file, from the task's apply
+ * inputs (`hostApplyInputs`). R79 trailspin-update: the brief gave `summary_top_test.go` as a new
+ * file's diff, the planner retyped it into T003's `content` with one extra blank line, and the host
+ * wrote that copy with no session; `suppliedDrifts` reads only host apply records and never saw it.
+ */
+export function planContentDrifts(
+  request: string,
+  task: Pick<Task, "id" | "writes">,
+  inputs: HostApplyWrite[],
+  graph: Pick<TaskGraph, "tasks">,
+): SuppliedDrift[] {
+  const content = new Map(task.writes.map((w) => [w.path, w.content ?? null]));
+  const record: HostApplyRecord = {
+    taskId: task.id,
+    mode: "shadow",
+    writes: inputs,
+    wouldApply: false,
+    reason: null,
+  };
+  return suppliedDrifts(request, [record], graph, (path) => content.get(path) ?? null);
+}
+
+/**
+ * A drift in the words a stop would use: of a delivered file, or of a host-written task's plan
+ * content before the host writes it (`planContentDrifts`).
+ */
+export function suppliedDriftSummary(
+  drift: SuppliedDrift,
+  of: "delivered" | "plan" = "delivered",
+): string {
   const source =
     drift.block === "diff"
       ? `the request's verbatim diff (hunk ${drift.hunk ?? 1})`
@@ -297,5 +329,55 @@ export function suppliedDriftSummary(drift: SuppliedDrift): string {
       : drift.problem === "missing" && !drift.actual
         ? `lacks line ${drift.line} of ${source}: ${JSON.stringify(drift.expected)}`
         : `has ${JSON.stringify(drift.actual?.text ?? "")} at line ${drift.actual?.line ?? drift.line} where ${source} gives ${JSON.stringify(drift.expected)}`;
+  if (of === "plan")
+    return `${drift.task}'s plan content for ${drift.path}, which the host writes with no session, ${what}. Under hostApply "on" the host writes the request's bytes instead.`;
   return `${drift.task} delivered ${drift.path}, which ${what}. A repair task would rewrite it from the request's text.`;
+}
+
+/**
+ * The 0-based lines of a delivered file that the request gives verbatim for its path (#2489): a
+ * line whose trimmed text is a line of a fenced block attributed to the path, or an added line of
+ * its diff. A listing is not the file's content (#2438) and supplies nothing; blank lines are
+ * never supplied. Quality findings on these lines (the rule pack, Semgrep, the duplication
+ * ratchet) are notes: nobody may change them, so a corrective for them can only end in a person's
+ * clarification. R80 deltaglue cli: the brief's `src/main.ts` returned its contract's sentinel
+ * from two `catch` clauses, `catch-return-default` blocked line 10, and corrective T025 spent
+ * 313k tokens and a clarification to change nothing.
+ */
+export function suppliedLineNumbers(request: string, path: string, content: string): Set<number> {
+  const out = new Set<number>();
+  if (!request) return out;
+  const pool = new Set<string>();
+  for (const blocks of suppliedBlocks(request, [path]).values())
+    for (const block of blocks) {
+      const lines =
+        block.kind === "diff"
+          ? block.patch
+              .split("\n")
+              .filter((line) => line.startsWith("+") && !line.startsWith("+++ "))
+              .map((line) => line.slice(1))
+          : block.listing
+            ? []
+            : block.content.split("\n");
+      for (const line of lines) if (line.trim()) pool.add(line.trim());
+    }
+  if (!pool.size) return out;
+  content.split("\n").forEach((line, i) => {
+    if (line.trim() && pool.has(line.trim())) out.add(i);
+  });
+  return out;
+}
+
+/**
+ * Whether the request supplies a file whole (#2504): one fenced block attributed to the path that
+ * is not a listing, or its diffs. A created file it supplies keeps the request's bytes: the
+ * format-written check records the project's formatter on it and fixes nothing.
+ */
+export function suppliesWhole(request: string, path: string): boolean {
+  if (!request) return false;
+  const blocks = [...suppliedBlocks(request, [path]).values()].flat();
+  if (!blocks.length) return false;
+  if (blocks.every((b) => b.kind === "diff")) return true;
+  const [block] = blocks;
+  return blocks.length === 1 && block?.kind === "file" && !block.listing;
 }

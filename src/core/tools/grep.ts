@@ -29,8 +29,19 @@ export const grepTool = {
     const searchPath = args.path ?? ".";
     const glob = args.glob;
 
+    // A path that is itself forbidden is refused outright, like read and edit_file do. The
+    // per-line filter below cannot catch it: ripgrep and grep print no file name when the
+    // search path is a single file, so `grep(path: ".env")` returned the secret lines bare.
+    const blocked = isForbidden(resolve(getCwd(), searchPath));
+    if (blocked) {
+      const msg = `Access denied: "${searchPath}" matches forbidden pattern "${blocked}".`;
+      return { success: false, output: msg, error: msg };
+    }
+
     const rgArgs = [
       "--line-number",
+      // Always name the file, so every hit line carries the path the forbidden filter checks.
+      "--with-filename",
       "--color=never",
       "--max-filesize=256K",
       "--max-columns=1000",
@@ -53,6 +64,54 @@ export const grepTool = {
         windowsHide: true,
       });
 
+      // grep -r when ripgrep is missing (spawn error) or fails; settles the search once.
+      let settled = false;
+      let fellBack = false;
+      const settle = (out: string) => {
+        if (settled) return;
+        settled = true;
+        res(out);
+      };
+      const runFallback = () => {
+        // A missing binary emits both "error" and "close"; start grep once.
+        if (settled || fellBack) return;
+        fellBack = true;
+        const fallbackArgs = [
+          "-rnH",
+          ...(glob ? ["--include", glob] : []),
+          "--",
+          pattern,
+          searchPath,
+        ];
+
+        const grepProc = spawn("grep", fallbackArgs, {
+          cwd: getCwd(),
+          timeout: 10_000,
+          stdio: ["ignore", "pipe", "pipe"],
+          detached: true,
+          windowsHide: true,
+        });
+
+        const grepChunks: string[] = [];
+        let grepBytes = 0;
+        grepProc.stdout.on("data", (data: Buffer) => {
+          grepBytes += data.length;
+          if (grepBytes <= MAX_SEARCH_OUTPUT_BYTES) grepChunks.push(data.toString());
+        });
+        grepProc.on("close", () => {
+          let out = grepChunks.join("") || "No matches found.";
+          if (grepBytes > MAX_SEARCH_OUTPUT_BYTES) {
+            out = out.slice(0, MAX_SEARCH_OUTPUT_BYTES);
+            const lastNl = out.lastIndexOf("\n");
+            if (lastNl > 0) out = out.slice(0, lastNl);
+            out += `\n[Output capped at 32KB. Use maxCount=N (default 50) for fewer hits per file, or narrow with glob/path to refine.]`;
+          }
+          settle(out);
+        });
+        grepProc.on("error", () => settle("No matches found."));
+      };
+      proc.on("error", runFallback);
+
       const chunks: string[] = [];
       let totalBytes = 0;
       proc.stdout.on("data", (data: Buffer) => {
@@ -71,35 +130,9 @@ export const grepTool = {
           output += `\n[Output capped at 32KB. Use maxCount=N (default 50) for fewer hits per file, or narrow with glob/path to refine.]`;
         }
         if (code === 0 || code === 1) {
-          res(output || "No matches found.");
+          settle(output || "No matches found.");
         } else {
-          const fallbackArgs = ["-rn", pattern, searchPath];
-          if (glob) fallbackArgs.push("--include", glob);
-
-          const grepProc = spawn("grep", fallbackArgs, {
-            cwd: getCwd(),
-            timeout: 10_000,
-            stdio: ["ignore", "pipe", "pipe"],
-            detached: true,
-            windowsHide: true,
-          });
-
-          const grepChunks: string[] = [];
-          let grepBytes = 0;
-          grepProc.stdout.on("data", (data: Buffer) => {
-            grepBytes += data.length;
-            if (grepBytes <= MAX_SEARCH_OUTPUT_BYTES) grepChunks.push(data.toString());
-          });
-          grepProc.on("close", () => {
-            let out = grepChunks.join("") || "No matches found.";
-            if (grepBytes > MAX_SEARCH_OUTPUT_BYTES) {
-              out = out.slice(0, MAX_SEARCH_OUTPUT_BYTES);
-              const lastNl = out.lastIndexOf("\n");
-              if (lastNl > 0) out = out.slice(0, lastNl);
-              out += `\n[Output capped at 32KB. Use maxCount=N (default 50) for fewer hits per file, or narrow with glob/path to refine.]`;
-            }
-            res(out);
-          });
+          runFallback();
         }
       });
     });

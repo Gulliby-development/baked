@@ -3,12 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
-import { type CaseWalk, caseCheck } from "../src/core/verification/criteria-cases.js";
+import { type CaseWalk, caseCheck, generatedCaseRefusal } from "../src/core/verification/criteria-cases.js";
 import { bannedGeneratedKinds, generatedCaseDecision, generatedValues } from "../src/core/verification/generated-values.js";
-import type { Spec } from "../src/core/workflows/schemas.js";
+import type { RunPolicy, Spec } from "../src/core/workflows/schemas.js";
 import { exportTrace, replayCaseWalks, replayTrace } from "../src/core/workflows/trace.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
-import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
+import { fixturePolicy, fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 
 // Scenario of bench round 74 (#2344). callmend's request said "every test is a literal example: no
 // loops, no interpolation, no generated inputs", and its specs built inputs with `"\\" * 3`, `pack`,
@@ -102,12 +102,57 @@ describe("the task-end case walk records generated values in a file that holds a
   });
 });
 
+// #2469, R78 deltaglue cli T008: the shadow record named `tests/input.test.ts:173` and `:200`, two
+// interpolations in an extra real-process test that wrote files into a `mkdtemp` folder and built
+// the expected stderr from their paths. The criteria's literal rows were held elsewhere in the
+// file, so the record was false. A value built only from a path made at run time is not generated.
+describe("scenario: R78 deltaglue T008, an expected stderr built from a temporary path (#2469)", () => {
+  const T008 = { id: "T008", description: "Write the input tests.", criterionIds: ["AC-001"], writes: [{ path: "tests/input.test.ts", action: "create" as const }], dependsOn: [] };
+  const HELD = 'test("escape", () => {\n  expect(run("escape", "\\\\\\\\\\\\")).toBe("ok-7");\n});\n';
+  const R78 = [
+    'test("real files", () => {',
+    '  const dir = mkdtempSync(join(tmpdir(), "deltaglue-"));',
+    "  for (const item of invalid) {",
+    "    const path = join(dir, item.name);",
+    "    writeFileSync(path, Uint8Array.from(item.bytes));",
+    '    expect(program("check", path)).toEqual({',
+    '      code: 2, out: "", err: `deltaglue: ${path}: input is not valid UTF-8\\n`,',
+    "    });",
+    "  }",
+    '  const doubleBom = join(dir, "double-bom.txt");',
+    '  expect(program("check", doubleBom)).toEqual({ code: 1, out: "", err: `deltaglue: ${doubleBom}: stream ended without [DONE]\\n` });',
+    "});",
+    "",
+  ].join("\n");
+  const walkOf = async (text: string, refuseGenerated: boolean) => {
+    const walks: CaseWalk[] = [];
+    const check = caseCheck({ criteria: [CRITERION] }, T008, { checks: [], tasks: [T008], generatedKinds: bannedGeneratedKinds("Use the literal inputs", ""), refuseGenerated, record: (w) => walks.push(w) });
+    if (!check) throw new Error("no case check");
+    return { refusals: await check(workspace({ "tests/input.test.ts": text })), walk: walks[0] };
+  };
+
+  test("the temporary-path interpolations record nothing and are not refused", async () => {
+    const { refusals, walk } = await walkOf(`${HELD}${R78}`, true);
+    expect(walk?.cases.every((c) => c.held)).toBe(true);
+    expect(walk?.generated).toEqual([]);
+    expect(refusals).toEqual([]);
+  });
+
+  test("the same expected stderr built from a row's value is still refused by its line", async () => {
+    const rows = R78.replace("err: `deltaglue: ${path}:", "err: `deltaglue: ${item.name}:");
+    const { refusals, walk } = await walkOf(`${HELD}${rows}`, true);
+    expect(walk?.generated).toEqual([{ path: "tests/input.test.ts", line: 10, kind: "interpolate" }]);
+    expect(refusals).toEqual([generatedCaseRefusal(walk?.generated ?? [])]);
+  });
+});
+
 // Scripted scenario: the R74 callmend shape through a run. The criterion asks for a literal example
-// and the task's test builds it by repetition: the walk passes, records the `generated_case`
-// would-stop in shadow and opens nothing; the trace replays the walk unchanged.
-test("scenario: R74 callmend, a generated test input records the generated_case would-stop in shadow and opens nothing", async () => {
+// and the task's test builds it by repetition. In shadow the walk passes, records the
+// `generated_case` would-stop and opens nothing; enforced (#2469) the walk refuses the submission
+// naming the line, and the agent's literal rewrite passes. The trace replays the walk unchanged.
+async function callmend(policy?: RunPolicy) {
   const spec: Spec = { ...fixtureSpec, criteria: [CRITERION] };
-  const fixture = workflowFixture();
+  const fixture = workflowFixture(policy ? { policy } : {});
   cleanups.push(fixture.dispose);
   const { executor, root } = fixture;
   const original = executor.execute.bind(executor);
@@ -124,7 +169,13 @@ test("scenario: R74 callmend, a generated test input records the generated_case 
     if (request.profile.output === "implementation" && request.task?.origin === "planned") {
       mkdirSync(join(root, "tests"), { recursive: true });
       writeFileSync(join(root, "tests/test_escape.py"), GENERATED_SPEC);
-      found.push((await request.caseCheck?.(root)) ?? ["no case check"]);
+      const refusals = (await request.caseCheck?.(root)) ?? ["no case check"];
+      found.push(refusals);
+      // The agent answers a refusal by writing the case as a literal row.
+      if (refusals.length) {
+        writeFileSync(join(root, "tests/test_escape.py"), LITERAL_SPEC);
+        found.push((await request.caseCheck?.(root)) ?? ["no case check"]);
+      }
     }
     return out;
   };
@@ -132,11 +183,16 @@ test("scenario: R74 callmend, a generated test input records the generated_case 
   await fixture.service.drive(run.runId, new AbortController().signal);
   await fixture.approve(run.runId);
   const done = await fixture.service.drive(run.runId, new AbortController().signal);
-  expect(done.status).toBe("completed");
-  expect(found).toEqual([[]]);
   const stops = fixture.service.store
     .eventsOfType(run.runId, "decision.would_stop")
     .flatMap((e) => (e.type === "decision.would_stop" && e.payload.reason === "generated_case" ? [e.payload] : []));
+  return { fixture, root, run, done, found, stops };
+}
+
+test("scenario: R74 callmend in shadow, a generated test input records the generated_case would-stop and opens nothing", async () => {
+  const { fixture, root, run, done, found, stops } = await callmend({ ...fixturePolicy, stopModes: { generated_case: "shadow" } });
+  expect(done.status).toBe("completed");
+  expect(found).toEqual([[]]);
   expect(stops.map((s) => [s.mode, s.key, s.inputs])).toEqual([["shadow", "task-T001", { taskId: "T001", generated: [{ path: "tests/test_escape.py", line: 2, kind: "repeat" }] }]]);
   expect(replayCaseWalks(fixture.service.store, run.runId).map((b) => [b.recorded, b.replayed])).toEqual([[["generated_case"], ["generated_case"]]]);
 
@@ -145,4 +201,14 @@ test("scenario: R74 callmend, a generated test input records the generated_case 
   const out = join(dir, "trace.sqlite.gz");
   exportTrace(root, out);
   expect(replayTrace(out).runs.find((r) => r.runId === run.runId)?.newCaseRefusals).toBe(0);
+}, 60_000);
+
+// #2469, R79 deltaglue chunks: the same shape cost 8.28M tokens in correctives after review.
+test("scenario: R74 callmend enforced, the walk refuses the generated input by its line and the literal rewrite passes", async () => {
+  const { done, found, stops } = await callmend();
+  expect(found).toEqual([[generatedCaseRefusal([{ path: "tests/test_escape.py", line: 2, kind: "repeat" }])], []]);
+  expect(found[0]?.[0]).toContain("tests/test_escape.py:2 (repeat)");
+  expect(done.status).toBe("completed");
+  // Enforced, the reason acts instead of recording a would-stop.
+  expect(stops).toEqual([]);
 }, 60_000);

@@ -1,6 +1,8 @@
 import {
+  appendFileSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   statSync,
@@ -8,12 +10,19 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { rowOf, SUPPORTED_LANGUAGES } from "../intelligence/language-records.js";
 import { tmpDir } from "../platform/index.js";
 import type { SandboxRequest } from "../security/sandbox.js";
 import { linkDependencies } from "../workflows/dependency-dirs.js";
 import type { ProcessScope } from "../workflows/process-scope.js";
 import { fileArgs, recordCommandTimeout } from "./command-timeouts.js";
 import { entryPointCommand } from "./entry-points.js";
+import {
+  commandShape,
+  EXAMPLE_BUILD,
+  linkBuildOutput,
+  prepareExampleBuild,
+} from "./example-build.js";
 import { REPRO_TIMEOUT_MS, removeScratch, reproEnv } from "./repro.js";
 
 /** Examples the host runs per review stage; each runs for up to REPRO_TIMEOUT_MS. */
@@ -23,6 +32,18 @@ export const DOC_EXAMPLE_COPY_BYTES = 64 * 1024 * 1024;
 const OUTPUT_LIMIT = 2000;
 /** Directories compilers and bundlers write their output to; a source manifest never lists them. */
 const BUILD_DIRS = new Set(["bin", "obj", "target", "dist", "build", "out"]);
+/**
+ * Every folder name the example runner may link from the workspace into its copy (#2947): the
+ * build directories an example names by path (`linkBuildOutput`), the build directories of the
+ * toolchain rows (`prepareExampleBuild`) and those of the entry points (`linkInto`: `target`,
+ * `build`, `_build`). A file under one of them is build output, never a file a reader saves, and
+ * a write there would go through the link into the workspace's own build.
+ */
+export const LINKED_DIRS: ReadonlySet<string> = new Set([
+  ...BUILD_DIRS,
+  "_build",
+  ...SUPPORTED_LANGUAGES.flatMap((language) => rowOf(EXAMPLE_BUILD, language)?.link ?? []),
+]);
 const SHELL_LANGS = new Set(["", "sh", "bash", "shell", "console", "zsh", "terminal"]);
 const OUTPUT_LANGS = new Set(["", "text", "txt", "output", "plaintext", "console"]);
 
@@ -57,6 +78,12 @@ export interface DocExampleResult {
   status: "match" | "mismatch" | "not_run";
   reason?: string;
   exitCode?: number | null;
+  /**
+   * The files an earlier `printf`/`echo` line of the document wrote that this command names
+   * (#2693): a repro of the example gives them through its `files`, so it does not depend on the
+   * earlier line.
+   */
+  inputs?: { path: string; content: string }[];
   documented: string;
   printed?: string;
   /**
@@ -309,7 +336,9 @@ function fixtureName(block: Fence): string | null {
   );
   const header = /^\s*(?:#|\/\/)\s*([\w./-]+\.\w{1,8})\s*$/.exec(block.lines[0] ?? "")?.[1];
   return (
-    [...spans, ...bare, ...(header ? [header] : [])].find((name) => FIXTURE_PATH.test(name)) ?? null
+    [...spans, ...bare, ...(header ? [header] : [])].find(
+      (name) => FIXTURE_PATH.test(name) && !name.split("/").some((dir) => LINKED_DIRS.has(dir)),
+    ) ?? null
   );
 }
 
@@ -411,6 +440,112 @@ export function extractExamples(file: string, text: string): DocExample[] {
   return examples;
 }
 
+/**
+ * A defect in a document's prose or tables that no example run shows (#2549): a code span that
+ * keeps a source string literal's escapes (`\\{{` where the program reads `\{{`), or a table
+ * cell's code span with a bare `|`, which a Markdown renderer takes as a cell separator.
+ */
+export interface DocTextProblem {
+  file: string;
+  /** 1-based line of the span. */
+  line: number;
+  kind: "escaped_literal" | "table_pipe";
+  /** The code span's content as the document writes it. */
+  span: string;
+  /** What the span should say: the literal decoded, or the span with each bare `|` as `\|`. */
+  suggested: string;
+}
+
+/**
+ * The value of a source string literal's body, for the escapes the supported languages share: a
+ * backslash, a quote, an interpolation sign (`\$` in Dart, Kotlin, PHP and Groovy, `\#` in Ruby)
+ * and a backtick. Other escapes (`\n`, `\t`, `\u`) are left alone: a document may show them as
+ * the syntax its program reads.
+ */
+export const decodeLiteralEscapes = (body: string): string => body.replace(/\\([\\"'$#`])/g, "$1");
+
+/**
+ * The bodies of the escaped string literals a text quotes (`'\\{{'`, `"a\"b"`): a quoted string
+ * whose body decodes to something else. A raw literal (`r'..'`, `@".."`, `#".."#`, a triple
+ * quote) keeps its backslashes, so it is not one, and neither is an apostrophe inside a word.
+ */
+export function escapedLiterals(text: string): string[] {
+  const out = new Set<string>();
+  for (const m of text.matchAll(/(["'])((?:[^"'\\\n]|\\.|(?!\1)["'])*)\1/g)) {
+    const at = m.index ?? 0;
+    const before = text[at - 1] ?? "";
+    const after = text[at + m[0].length] ?? "";
+    const body = m[2] as string;
+    if (/[\w@#]/.test(before) || before === m[1] || after === m[1]) continue;
+    if (body.length >= 2 && decodeLiteralEscapes(body) !== body) out.add(body);
+  }
+  return [...out];
+}
+
+/** The 0-based lines of a text's fenced blocks, fences included. */
+function fencedLines(text: string): Set<number> {
+  const lines = new Set<number>();
+  for (const block of fences(text))
+    for (let i = block.start - 2; i <= block.start - 1 + block.lines.length; i++) lines.add(i);
+  return lines;
+}
+
+/** A Markdown table's separator row: `| --- | :-: |`. */
+const TABLE_SEPARATOR = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+
+/**
+ * The prose and table defects of a document that its example runs cannot show (#2549, R82
+ * slotprompt): a code span outside the fenced blocks that copies the body of an escaped string
+ * literal `sources` quotes (the spec, whose criteria quote values in the project's language)
+ * instead of the value it stands for, and a code span in a table row with an unescaped `|`. A
+ * code span shows its backslashes as they are, so `\\{{` in a span reads as two backslashes; a
+ * bare `|` in a table row splits the cell wherever it stands. Spec readers take their cells
+ * through the lenient `tableCells`, which keeps such a pipe; a reader's renderer does not.
+ */
+export function docTextProblems(file: string, text: string, sources = ""): DocTextProblem[] {
+  const literals = escapedLiterals(sources);
+  const fenced = fencedLines(text);
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const problems: DocTextProblem[] = [];
+  const isRow = (i: number) => !fenced.has(i) && /^\s*\|/.test(lines[i] ?? "");
+  for (let i = 0; i < lines.length; i++) {
+    if (fenced.has(i)) continue;
+    const line = lines[i] as string;
+    // A header or body row of a table: its run of pipe-led lines has a separator row second.
+    let table = false;
+    if (isRow(i)) {
+      let first = i;
+      while (first > 0 && isRow(first - 1)) first--;
+      table = TABLE_SEPARATOR.test(lines[first + 1] ?? "") && i !== first + 1;
+    }
+    for (const m of line.matchAll(/(`+)(?!`)(.+?)(?<!`)\1(?!`)/g)) {
+      const span = m[2] as string;
+      const decoded = decodeLiteralEscapes(span);
+      const bare = span.trim();
+      if (
+        decoded !== span &&
+        bare.length >= 2 &&
+        literals.some(
+          (body) =>
+            (body.includes(bare) || bare.includes(body)) &&
+            // A value whose own text holds an escape (`\${name}` from `"\\${name}"`) is right.
+            !decodeLiteralEscapes(body).includes(bare),
+        )
+      )
+        problems.push({ file, line: i + 1, kind: "escaped_literal", span, suggested: decoded });
+      if (table && /(?<!\\)\|/.test(span))
+        problems.push({
+          file,
+          line: i + 1,
+          kind: "table_pipe",
+          span,
+          suggested: span.replace(/(?<!\\)\|/g, "\\|"),
+        });
+    }
+  }
+  return problems;
+}
+
 const outputLines = (text: string) => {
   const lines = text
     .replace(/\r\n?/g, "\n")
@@ -462,12 +597,141 @@ export function copyWorkspace(root: string, files: readonly string[]): string | 
   return copy;
 }
 
-/** Writes a fixture into the copy unless the workspace already has a file there. */
-function writeFixture(copy: string, fixture: DocFixture): void {
-  const target = join(copy, ...fixture.path.split("/"));
-  if (existsSync(target)) return;
-  mkdirSync(dirname(target), { recursive: true });
-  writeFileSync(target, fixture.content);
+/** The bytes `printf FORMAT` prints for a format with no conversion but `%%`, or null. */
+export function printfText(format: string): string | null {
+  let out = "";
+  for (let i = 0; i < format.length; i++) {
+    const c = format[i] as string;
+    if (c === "%") {
+      if (format[i + 1] !== "%") return null;
+      out += "%";
+      i++;
+      continue;
+    }
+    if (c !== "\\") {
+      out += c;
+      continue;
+    }
+    const next = format[i + 1];
+    if (next === undefined) return null;
+    const octal = /^[0-7]{1,3}/.exec(format.slice(i + 1))?.[0];
+    if (octal) {
+      out += String.fromCharCode(Number.parseInt(octal, 8));
+      i += octal.length;
+      continue;
+    }
+    const escaped = PRINTF_ESCAPES[next];
+    out += escaped ?? `\\${next}`;
+    i++;
+  }
+  return out;
+}
+const PRINTF_ESCAPES: Record<string, string> = {
+  n: "\n",
+  t: "\t",
+  r: "\r",
+  a: "\x07",
+  b: "\b",
+  f: "\f",
+  v: "\v",
+  "\\": "\\",
+  '"': '"',
+  "'": "'",
+};
+
+/**
+ * A `printf 'FORMAT' > path` or `echo WORDS > path` line (`>>` appends) that writes an input of
+ * the examples after it, or null (#2693). R88 pokerank's README wrote its hand with `printf ...
+ * > hand.txt` and the host ran neither that line ("needs a shell") nor the command that read it.
+ * The host writes the file itself, without a shell: one quoted format with no conversion but
+ * `%%`, or plain words without a backslash or an option, which bash and dash echo alike.
+ */
+export function redirectFixture(
+  command: string,
+): { path: string; content: string; append: boolean } | null {
+  let quote: string | null = null;
+  let at = -1;
+  for (let i = 0; i < command.length && at < 0; i++) {
+    const c = command[i] as string;
+    if (quote) {
+      if (c === quote) quote = null;
+      else if (c === "\\" && quote === '"') i++;
+    } else if (c === "'" || c === '"') quote = c;
+    else if (c === "\\") i++;
+    else if (c === ">") at = i;
+  }
+  if (at < 0) return null;
+  const append = command[at + 1] === ">";
+  const path = command.slice(at + (append ? 2 : 1)).trim();
+  if (!FIXTURE_PATH.test(path)) return null;
+  const argv = commandArgv(command.slice(0, at));
+  if (!argv) return null;
+  const [program, ...args] = argv;
+  if (program === "printf" && args.length === 1) {
+    const content = printfText(args[0] as string);
+    return content === null ? null : { path, content, append };
+  }
+  if (program === "echo" && args.every((a) => !a.startsWith("-") && !a.includes("\\")))
+    return { path, content: `${args.join(" ")}\n`, append };
+  return null;
+}
+
+/** The note of an example the host ran under bun in place of node. */
+export const UNDER_BUN = "ran with bun in place of node: the run's checks start bun, not node";
+
+/**
+ * Whether a documented `node` command runs under bun: the run's checks start bun and not node
+ * (#2678). R88 pokerank (plain JavaScript, `bun test` and `bunx eslint` checks) documented every
+ * example as `node bin/pokerank.js ...`, and the host ran none of them ("node is not a program the
+ * run's checks start"), so its README's broken first example passed. Bun runs a Node script as it
+ * is, and the checks already run the project's code with bun, so no program is added.
+ */
+export function nodeUnderBun(argv: readonly string[], executables: readonly string[]): boolean {
+  // `node --version` or `node -e ...` asks about node itself, which bun would answer for itself.
+  if (argv[0] !== "node" || !argv[1] || argv[1].startsWith("-")) return false;
+  return !executables.includes("node") && executables.includes("bun");
+}
+
+/**
+ * Writes a file into the copy, or says why not (#2947). A path through a folder the copy links
+ * from the workspace (a build directory, `node_modules`) would write into the workspace itself,
+ * and on Windows a recursive mkdir through a junction in the temp folder throws EEXIST: R101
+ * dieodds-update's README fixture `src/Dieodds/bin/Release/net10.0/dieodds.exe` ended the review
+ * with host_error. A file-system error is a reason too, never an exception of the review. Every
+ * write of the example runner into its copy goes through here.
+ */
+export function writeIntoCopy(
+  copy: string,
+  path: string,
+  content: string,
+  append = false,
+): string | null {
+  const segments = path.split("/");
+  for (let i = 1; i <= segments.length; i++) {
+    let linked: boolean;
+    try {
+      linked = lstatSync(join(copy, ...segments.slice(0, i))).isSymbolicLink();
+    } catch {
+      break;
+    }
+    if (linked)
+      return `${path} is in ${segments.slice(0, i).join("/")}, a folder of the workspace the copy links, so the host does not write it`;
+  }
+  const target = join(copy, ...segments);
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    if (append) appendFileSync(target, content);
+    else writeFileSync(target, content);
+  } catch (error) {
+    return `the host could not write ${path} into the copy: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  return null;
+}
+
+/** Writes a fixture into the copy unless the workspace already has a file there; why not, or null. */
+function writeFixture(copy: string, fixture: DocFixture): string | null {
+  if (existsSync(join(copy, ...fixture.path.split("/")))) return null;
+  return writeIntoCopy(copy, fixture.path, fixture.content);
 }
 
 /**
@@ -512,12 +776,27 @@ export async function runDocExamples(
 ): Promise<DocExampleResult[]> {
   const results: DocExampleResult[] = [];
   let ran = 0;
+  // A command shape that timed out once (a toolchain building from nothing) is not waited for
+  // again (#2505): R81 hintsieve's eight `swift run` examples each took the 30 s timeout.
+  const timedOut = new Map<string, DocExample>();
   for (const doc of docs) {
     const examples = extractExamples(doc.path, doc.text);
     if (!examples.length) continue;
     const fixtures = extractFixtures(doc.text);
     // Each document starts from the workspace as the change left it, as its reader would.
     let copy: string | null | undefined;
+    // Why the copy could not be made, when copying threw (#2947): every example is not_run then.
+    let copyFailure: string | null = null;
+    const tryCopy = (): string | null => {
+      try {
+        return copyWorkspace(options.root, options.files);
+      } catch (error) {
+        copyFailure = `the host could not copy the workspace to run the examples: ${error instanceof Error ? error.message : String(error)}`;
+        return null;
+      }
+    };
+    // What the document's printf and echo lines wrote so far, by path (#2693).
+    const written = new Map<string, string>();
     try {
       for (const example of examples) {
         const base = {
@@ -527,6 +806,37 @@ export async function runDocExamples(
           documented: example.documented.slice(0, OUTPUT_LIMIT),
         };
         const skip = (reason: string) => results.push({ ...base, status: "not_run", reason });
+        const write = redirectFixture(example.command);
+        if (write) {
+          if (copy === undefined) copy = tryCopy();
+          if (copy === null) {
+            skip(
+              copyFailure ??
+                `The workspace is larger than ${DOC_EXAMPLE_COPY_BYTES / 1024 / 1024} MiB`,
+            );
+            continue;
+          }
+          const refused = writeIntoCopy(copy, write.path, write.content, write.append);
+          if (refused) {
+            skip(refused);
+            continue;
+          }
+          written.set(
+            write.path,
+            (write.append ? (written.get(write.path) ?? "") : "") + write.content,
+          );
+          // The line prints nothing; a document that shows output after it shows wrong output.
+          const difference = firstDifference(example.documented, "");
+          results.push({
+            ...base,
+            status: difference ? "mismatch" : "match",
+            reason: `written by the host without a shell: ${write.path}`,
+            exitCode: 0,
+            printed: "",
+            ...(difference ? { firstDifference: difference } : {}),
+          });
+          continue;
+        }
         const placeholder = placeholderOf(example.command);
         if (placeholder) {
           skip(
@@ -538,15 +848,26 @@ export async function runDocExamples(
           skip("The command needs a shell (a pipe, redirect, variable or glob)");
           continue;
         }
+        // A `node` example of a project whose checks start bun runs under bun (#2678).
+        const underBun = nodeUnderBun(example.argv, options.executables);
+        const argv = underBun ? ["bun", ...example.argv.slice(1)] : example.argv;
         // The project's own command runs through its toolchain (`routeshadow ...` as `cargo run
         // --bin routeshadow -- ...`, #1821).
-        const entry = options.executables.includes(example.argv[0] as string)
+        const entry = options.executables.includes(argv[0] as string)
           ? null
-          : entryPointCommand(options.root, example.argv, options.executables);
-        const [program, ...args] = (entry?.argv ?? example.argv) as [string, ...string[]];
+          : entryPointCommand(options.root, argv, options.executables);
+        const [program, ...entryArgs] = (entry?.argv ?? argv) as [string, ...string[]];
         if (!options.executables.includes(program)) {
           skip(
             `${program} is not a program the run's checks or their toolchains start (${options.executables.join(", ") || "none"})`,
+          );
+          continue;
+        }
+        const shape = commandShape([program, ...entryArgs]);
+        const earlier = timedOut.get(shape);
+        if (earlier) {
+          skip(
+            `an earlier example of ${shape} (${earlier.file}:${String(earlier.line)}) did not finish within ${String(REPRO_TIMEOUT_MS / 1000)} s, so this one is not waited for`,
           );
           continue;
         }
@@ -554,15 +875,36 @@ export async function runDocExamples(
           skip(`Only ${DOC_EXAMPLE_LIMIT} examples run per review`);
           continue;
         }
-        if (copy === undefined) copy = copyWorkspace(options.root, options.files);
+        if (copy === undefined) copy = tryCopy();
         if (copy === null) {
-          skip(`The workspace is larger than ${DOC_EXAMPLE_COPY_BYTES / 1024 / 1024} MiB`);
+          skip(
+            copyFailure ??
+              `The workspace is larger than ${DOC_EXAMPLE_COPY_BYTES / 1024 / 1024} MiB`,
+          );
           continue;
         }
-        for (const dir of entry?.entry.link ?? []) linkInto(options.root, copy, dir);
+        const root = copy;
+        let args: string[];
+        try {
+          for (const dir of entry?.entry.link ?? []) linkInto(options.root, root, dir);
+          // The build the checks made, reused instead of building in the copy (#2505).
+          args = prepareExampleBuild([program, ...entryArgs], options.root, root).slice(1);
+          linkBuildOutput([program, ...args], options.root, root, BUILD_DIRS);
+        } catch (error) {
+          skip(
+            `the host could not link the workspace's build into the copy: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          continue;
+        }
         // The files the document tells its reader to save before this example (#1849).
-        for (const fixture of fixtures)
-          if (fixture.line < example.line) writeFixture(copy, fixture);
+        const refused = fixtures
+          .filter((fixture) => fixture.line < example.line)
+          .map((fixture) => writeFixture(root, fixture))
+          .find((reason) => reason !== null);
+        if (refused) {
+          skip(refused);
+          continue;
+        }
         const unbuilt = missingBuildOutput([program, ...args], copy);
         if (unbuilt) {
           skip(
@@ -587,6 +929,7 @@ export async function runDocExamples(
           );
           continue;
         }
+        if (result.timedOut) timedOut.set(shape, example);
         if (result.timedOut || result.cancelled) {
           // The documented line and the files the command names, recorded like a repro's (#2358).
           skip(
@@ -631,8 +974,13 @@ export async function runDocExamples(
           );
           continue;
         }
+        const inputs = [...written]
+          .filter(([path]) => args.includes(path))
+          .map(([path, content]) => ({ path, content: content.slice(0, OUTPUT_LIMIT) }));
         results.push({
           ...base,
+          ...(inputs.length ? { inputs } : {}),
+          ...(underBun ? { reason: UNDER_BUN } : {}),
           status: difference ? "mismatch" : "match",
           exitCode: result.exitCode,
           printed: result.output.slice(0, OUTPUT_LIMIT),

@@ -14,7 +14,8 @@ import { tmpdir } from "node:os";
 // go test's `0.012s`, bun's `[1.23ms]`, jest's `(5 ms)`, pytest's `in 0.12s`, busted's
 // `: 0.015 seconds`, CTest's `0.01 sec`, Gradle's `BUILD FAILED in 1m 3s`, dotnet's
 // `Duration: 12 ms`, PHPUnit's `Time: 00:00.012`, Minitest's `810.4 runs/s` and seed, Dart's
-// `00:01 +3 -1:`, sbt's `Total time: 3 s, completed Oct 27, 2026, 1:02:03 AM`, busted's Windows
+// `00:01 +3 -1:`, sbt's `Total time: 3 s, completed Oct 27, 2026, 1:02:03 AM` and
+// `elapsed time: 4 s, cache 50%, 106 disk cache hits`, busted's Windows
 // `table: 00000184D28BE670`. A whole number with a unit stays unless a word that introduces a
 // time comes before it (`in`, `after`, `took`, `Time:`, `Duration:`, `elapsed`), since it is as
 // often a value the test asserts (`expected 5s`); line and column positions never match.
@@ -30,6 +31,9 @@ const DART_ELAPSED = /^\d{1,2}:\d{2}(?::\d{2})?(?= [+~-]\d)/gm;
 // sbt's `Total time: 3 s, completed Oct 27, 2026, 1:02:03 AM`; vitest's `Start at  04:42:53`.
 const COMPLETED_AT = /, completed [A-Z][a-z]{2} \d{1,2}, \d{4},? \d{1,2}:\d{2}:\d{2}(?: [AP]M)?/g;
 const STARTED_AT = /\b(Start(?:ed)? at)\s+\d{1,2}:\d{2}:\d{2}\b/g;
+// sbt 2's `[error] elapsed time: 4 s, cache 50%, 106 disk cache hits, 1 onsite task`: the time,
+// the cache share and the counters after it all change between two runs of one failure (#2437).
+const SBT_ELAPSED = /\b(elapsed time:)[^\n]*?, cache \d+%[^\n]*/g;
 // vitest's summary `Duration  1.23s (transform 20ms, setup 0ms, ...)` and file line
 // `❯ a.test.ts (2 tests | 1 failed) 7ms`.
 const VITEST_DURATION = /^(\s*Duration)\s+\d.*$/gm;
@@ -92,6 +96,7 @@ export function normalizeVolatile(input: string): string {
       .replace(DART_ELAPSED, "<time>")
       .replace(COMPLETED_AT, ", completed <time>")
       .replace(STARTED_AT, "$1 <time>")
+      .replace(SBT_ELAPSED, "$1 <duration>")
       .replace(VITEST_DURATION, "$1 <duration>")
       .replace(VITEST_FILE, "$1 <duration>")
       .replace(SWIFT_DURATION, "<duration>")

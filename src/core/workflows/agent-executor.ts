@@ -43,23 +43,32 @@ import { workspacePath } from "../specs/validate.js";
 import { withEditDiagnosticsMode } from "../tools/edit-diagnostics.js";
 import { buildTools } from "../tools/index.js";
 import { captureEndings, restoreEndings } from "../tools/line-endings.js";
+import {
+  PLACE_ROWS,
+  PLACE_ROWS_DIR,
+  PLACE_ROWS_KIND,
+  placedWhere,
+  placeRowForms,
+  placeRowIndents,
+  placeRowNumbers,
+  placeRows,
+  placeRowsDescription,
+  placeRowsInput,
+  placeRowsRecord,
+  placeRowTargets,
+  rowsText,
+} from "../tools/place-rows.js";
 import { contentHash, deriveTool, withoutAstEditHint } from "../tools/tool-utils.js";
-import {
-  buildCheckEnv,
-  CheckRunner,
-  executeCheckCommand,
-  modelCheckOutput,
-} from "../verification/check-runner.js";
-import {
-  PROBE_TRIES,
-  probeTool,
-  reproExecutables,
-  runProbe,
-  writesDocumentation,
-} from "../verification/repro.js";
+import { buildCheckEnv, CheckRunner, modelCheckOutput } from "../verification/check-runner.js";
+import { PROBE_TRIES, probeTool, reproExecutables, runProbe } from "../verification/repro.js";
 import { changedPaths, sourceManifest } from "../verification/snapshot.js";
 import { type ReplayResult, replayProblems } from "./acceptance-rows-replay.js";
 import { affectedTestsFor, taskCaseText, writtenTestsCheck } from "./affected-tests.js";
+import {
+  CheckpointTracker,
+  recordCheckpointWouldFinish,
+  saveCheckpoint,
+} from "./attempt-checkpoint.js";
 import { assertAttemptFits, growBudgetOnProgress } from "./budget.js";
 import {
   cwdPath,
@@ -71,13 +80,16 @@ import {
   wholeUnitFixerCommand,
   writtenCodePaths,
 } from "./check-policy.js";
-import { splitWorkflowContext } from "./context.js";
+import { callStallMs } from "./clean-pace.js";
+import { promptParts, splitWorkflowContext } from "./context.js";
 import { assertForecastFits } from "./cost-forecast.js";
 import { fileHash, rootField } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
 import { addsDoubledEscapes, escapeHintFor } from "./escape-hint.js";
 import { executionClock } from "./execution-clock.js";
-import { keepOutside, restoreOutside } from "./fixer-scope.js";
+import { fixerPaths } from "./fixer-languages.js";
+import { fixerFailed, runFixer } from "./fixer-run.js";
+import { keepOutside, recordPutBack, restoreOutside } from "./fixer-scope.js";
 import { advertisedSchema, withHostConstants } from "./host-constants.js";
 import {
   accountIdentityMessage,
@@ -97,9 +109,11 @@ import {
 } from "./model-recording.js";
 import { ProcessScope } from "./process-scope.js";
 import { EDIT_TOOLS } from "./progress-watch.js";
+import { evidenceCut, largePrompt, promptSections } from "./prompt-sections.js";
+import { putBackOutsideRange } from "./range-fixer-scope.js";
 import { isTargetedRead, outlineLargeReads } from "./read-outline.js";
 import { settleInterruptedEdits } from "./recovery.js";
-import { recoveryAdvice } from "./remedies.js";
+import { refusalInRunRoot, refusedEditAdvice } from "./refused-edit.js";
 import { restorableVersion } from "./restore-file.js";
 import { isOutputLimit, isTransient } from "./retry.js";
 import { RevisionSchema } from "./revision-patch.js";
@@ -131,20 +145,23 @@ import {
   touchProgress,
 } from "./stall.js";
 import {
-  ALL_TOKENS_FACTOR,
   AttemptStepController,
+  type AttemptStepUsage,
   type AttemptUsageRecord,
+  allTokensCapFor,
   DEFAULT_MAX_ATTEMPT_TOKENS,
   KEEP_RECENT_TOOL_MESSAGES,
   MIN_ATTEMPT_STEPS,
   type StepLike,
+  stepOutputGuard,
   stepTokens,
   type ToolBackendCount,
   toolCallName,
 } from "./step-budget.js";
-import { stopFault } from "./stop-reasons.js";
+import { recordWouldStop, type StopMode, stopFault, stopMode } from "./stop-reasons.js";
 import type { EffectRow, WorkflowStore } from "./store.js";
 import { failureOwnerNote } from "./task-graph.js";
+import { toolsOfferedTo } from "./task-tools.js";
 import { recordToolInputSignal } from "./tool-input-health.js";
 import { pureWorkflowTools, WorkflowToolPolicy } from "./tool-policy.js";
 import type { AgentExecutor, ExecutionRequest, ExecutionResponse, Task } from "./types.js";
@@ -273,6 +290,32 @@ export function outputLimitUsage(
   return { inputTokens: Math.ceil(sentBytes / 4), outputTokens: maxOutputTokens };
 }
 
+/**
+ * The usage record of a format-correction attempt (#2777): its model calls as steps, so the run's
+ * cost, the dollar cap, `baked usage` and the bench reports price it like any other model attempt.
+ */
+export function correctionUsage(input: {
+  meta: { profileId: string; taskId: string | null };
+  steps: AttemptStepUsage[];
+  totalTokens: number;
+  maxTokens: number;
+  stopReason: "submitted" | "error" | "aborted";
+  effort?: string | undefined;
+}): AttemptUsageRecord {
+  return {
+    schemaVersion: 1,
+    profileId: input.meta.profileId,
+    taskId: input.meta.taskId,
+    maxSteps: 1,
+    maxTokens: input.maxTokens,
+    stopReason: input.stopReason,
+    finalizedBy: null,
+    totalTokens: input.totalTokens,
+    steps: input.steps,
+    ...(input.effort ? { effort: input.effort } : {}),
+  };
+}
+
 function sumUsage(steps: readonly StepLike[]): Partial<LanguageModelUsage> {
   const add = (a: number | undefined, b: number | undefined) =>
     a === undefined ? b : b === undefined ? a : a + b;
@@ -286,10 +329,20 @@ function sumUsage(steps: readonly StepLike[]): Partial<LanguageModelUsage> {
 }
 
 /** What the stall watchdog of one attempt knows: its progress, its tool in flight, its limits. */
-/** The summed `silentMs` of an attempt's calls for its usage record (#2414); empty when none. */
-function silentOf(calls: readonly CallTiming[]): { silentMs?: number } {
+/**
+ * The summed `silentMs` of an attempt's calls for its usage record (#2414), and the summed stall
+ * part of it (`stallMs`, #2424); each empty when none.
+ */
+function silentOf(calls: readonly CallTiming[]): { silentMs?: number; stallMs?: number } {
   const silentMs = calls.reduce((sum, call) => sum + (call.silentMs ?? 0), 0);
-  return silentMs > 0 ? { silentMs } : {};
+  const stallMs = calls.reduce((sum, call) => sum + (call.stallMs ?? 0), 0);
+  return { ...(silentMs > 0 ? { silentMs } : {}), ...(stallMs > 0 ? { stallMs } : {}) };
+}
+
+/** A call's timing with the stall part of its wait (`callStallMs`, #2424) when there is one. */
+function withStall(call: CallTiming): CallTiming {
+  const stallMs = callStallMs(call);
+  return stallMs > 0 ? { ...call, stallMs } : call;
 }
 
 interface AttemptWatch {
@@ -335,6 +388,12 @@ function openingMessage(prompt: string, ttl: CacheTTL): ModelMessage {
     ],
   };
 }
+
+/** A check result without the host's stream-ordered copy of its output (#2859). */
+const withoutSignature = <T extends { signatureOutput?: string }>({
+  signatureOutput: _signed,
+  ...rest
+}: T): Omit<T, "signatureOutput"> => rest;
 
 export class NativeAgentExecutor implements AgentExecutor {
   private readonly rootContext: SharedRootContext;
@@ -406,6 +465,8 @@ export class NativeAgentExecutor implements AgentExecutor {
         } catch {
           // A failed settlement leaves the effect for the recovery request.
         }
+        // A stall is an unfinished end too: it reads the attempt's checkpoint (#2470, shadow).
+        recordCheckpointWouldFinish(this.store, request.runId, request.attemptId, "stall");
         throw stall.signal.reason;
       }
       throw error;
@@ -445,6 +506,12 @@ export class NativeAgentExecutor implements AgentExecutor {
       if (webSearch) provider.providerOptions = withCodexWebSearch(provider.providerOptions);
       if (request.freshSession || request.transport)
         provider.providerOptions = withCodexRecovery(provider.providerOptions, request);
+      // Codex takes no output limit: its adapter guards the stream in this mode (#2660).
+      if (request.profile.model.startsWith("codex/"))
+        provider.providerOptions = withCodexOutputGuard(
+          provider.providerOptions,
+          stopMode(policy, "stream_output_limit"),
+        );
       // Only a known window stops the attempt here; for a model nothing names, the 128k default is
       // a guess, and the provider's own rejection of an oversized input is handled by the scheduler.
       const window = knownModelContextWindow(request.profile.model);
@@ -498,11 +565,14 @@ export class NativeAgentExecutor implements AgentExecutor {
             watch.abort(
               new WorkflowFault(
                 "INPUT_CHANGED",
-                recoveryAdvice(
-                  `Edits to ${path} were refused ${String(count)} times in attempt ${request.attemptId}: File changed outside this attempt. Keep the file as it is with \`baked workflow resume ${request.runId} --accept-workspace\`, or put back the content the run wrote and resume`,
-                  `Edits to ${path} were refused ${count} times because the file changed outside this attempt. Keep these changes, or restore the content the run wrote before retrying.`,
-                  { action: "accept-workspace", runId: request.runId },
-                ),
+                refusedEditAdvice({
+                  runId: request.runId,
+                  attemptId: request.attemptId,
+                  path,
+                  count,
+                  root: rootPath,
+                  runRoot: refusalInRunRoot(this.store.state(request.runId), rootPath),
+                }),
                 {
                   path,
                   refusals: count,
@@ -566,8 +636,44 @@ export class NativeAgentExecutor implements AgentExecutor {
       // Tool calls of the attempt so far; history compaction keeps only the newest results.
       let toolCalls = 0;
       let edited = false;
+      // The latest state on which every required check of the task passed (#2470, shadow).
+      const checkpoint = request.checkpointChecks?.length
+        ? new CheckpointTracker(
+            {
+              attemptId: request.attemptId,
+              taskId: request.task?.id ?? null,
+              required: request.checkpointChecks,
+            },
+            (record) => {
+              try {
+                saveCheckpoint(this.store, request.runId, record);
+              } catch {
+                // A checkpoint is a shadow record: failing to keep it changes nothing.
+              }
+            },
+          )
+        : null;
+      // The checkpoint's journal position: the attempt's edits that applied, refused ones aside.
+      const journalPosition = () =>
+        this.store
+          .effects(request.runId)
+          .filter(
+            (e) =>
+              e.attempt_id === request.attemptId &&
+              e.kind === "file_patch" &&
+              (e.status === "applied" || e.status === "reconciled"),
+          ).length;
       // Files the attempt's edit tools named, for the tests-written check it requests (#1421).
       const editedPaths = new Set<string>();
+      // A host tool's write on the session's behalf (place_rows, restore_file): through the edit
+      // guard as an edit_file of the path (the task's scope, the file's journal and pre-image, the
+      // prescribed-row guard), and an edit of the attempt as an edit tool's call is (#2585).
+      const hostEdit = (path: string, write: () => Promise<unknown>): Promise<unknown> =>
+        guard.execute("edit_file", { path }, async () => {
+          edited = true;
+          editedPaths.add(path);
+          return write();
+        });
       // Whether an edit added doubled backslash escapes, for the hint of a failed check (#1516).
       let doubledEscapes = false;
       // A tool call is progress while it runs (it has its own deadline); the last one names a stall.
@@ -833,6 +939,13 @@ export class NativeAgentExecutor implements AgentExecutor {
                 request.signal,
                 root,
               );
+              checkpoint?.check(
+                check.id,
+                result.status,
+                result.evidenceId,
+                journalPosition(),
+                budget.consumed(finished),
+              );
               const own =
                 result.status === "failed"
                   ? (request.attributeCheck?.(check, result.output) ?? null)
@@ -841,7 +954,7 @@ export class NativeAgentExecutor implements AgentExecutor {
               const hint =
                 result.status === "failed" ? escapeHintFor(result.output, doubledEscapes) : null;
               const shown = {
-                ...result,
+                ...withoutSignature(result),
                 ...modelCheckOutput(result.output, result.evidenceId),
                 ...(hint ? { escapeHint: hint } : {}),
               };
@@ -877,7 +990,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         request.profile.role === "implementer" &&
         request.profile.allowedTools.includes("run_probe") &&
         request.task &&
-        (request.task.origin !== "planned" || writesDocumentation(request.task.writes)) &&
+        toolsOfferedTo(request.task).has("run_probe") &&
         probeable.length > 0
       ) {
         let probes = 0;
@@ -945,6 +1058,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                   reason: `Only ${PROBE_TRIES} repro runs are allowed per attempt`,
                 };
               const live = await reproCheck(root, request.signal);
+              checkpoint?.reproRan(live.length > 0, journalPosition());
               return live.length
                 ? { status: "reproduced", findings: live }
                 : { status: "fixed", findings: [] };
@@ -1016,24 +1130,27 @@ export class NativeAgentExecutor implements AgentExecutor {
             const codePaths = writtenCodePaths(task).filter(exists);
             const generated = generatedPaths(policy);
             const before = await sourceManifest(root, generated, request.signal);
-            const kept = keepOutside(root, before, new Set(paths));
+            // Every file the task writes is its own, also one that does not exist yet: the
+            // task's parallel edit may create it while the fixer runs, and a put-back would
+            // remove it as a file the fixer created (#2609).
+            const own = new Set(task.writes.map((w) => w.path));
+            const kept = keepOutside(root, before, own);
             const scope = new ProcessScope();
             // Unsignalled, so the put-back also runs after the call was aborted.
             const changedOutside = async () =>
               changedPaths(before, await sourceManifest(root, generated)).filter(
-                (p) => !paths.includes(p),
+                (p) => !own.has(p),
               );
             let reverted: string[] = [];
             try {
-              const outputs: string[] = [];
-              const runFixer = async (
+              // Each fixer run's exit and output tail: a fixer that cannot run says why (#2436).
+              const outputs: { target: string; exitCode: number | null; output?: string }[] = [];
+              const fixOnce = async (
                 command: { executable: string; args: string[] },
                 targets: string[],
               ) => {
-                const executable =
-                  command.executable === "bun" ? process.execPath : command.executable;
                 const once = () =>
-                  executeCheckCommand(scope, executable, command.args, {
+                  runFixer(scope, command, {
                     cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
                     env: buildCheckEnv(check),
                     timeoutMs: check.timeoutMs,
@@ -1047,19 +1164,62 @@ export class NativeAgentExecutor implements AgentExecutor {
                 return [...new Set(paths)].reduceRight<() => Promise<unknown>>(
                   (inner, path) => () => guard.execute("edit_file", { path }, inner),
                   async () => {
+                    // A range fixer's file as it was, to put back its changes outside the range
+                    // (#2970).
+                    const ranged = check.fixLines && targets.length === 1 ? targets[0] : undefined;
+                    const absolute = ranged ? workspacePath(root, ranged) : "";
+                    const rangedBefore =
+                      ranged && existsSync(absolute) ? readFileSync(absolute, "utf8") : null;
                     // A fixer that writes text mode on Windows turns a LF file into CRLF (#2214).
                     const endings = captureEndings(paths.map((path) => workspacePath(root, path)));
                     const result = await once().finally(() => restoreEndings(endings));
-                    outputs.push(`${targets.join(", ")}: exit ${String(result.exitCode)}`);
+                    if (ranged) {
+                      const done = await putBackOutsideRange(
+                        absolute,
+                        ranged,
+                        rangedBefore,
+                        check.fixLines,
+                        async () =>
+                          (
+                            await runFixer(
+                              scope,
+                              { executable: check.executable, args: check.args },
+                              {
+                                cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                                env: buildCheckEnv(check),
+                                timeoutMs: check.timeoutMs,
+                                signal: request.signal,
+                                sandbox: runSandbox(policy, root, {
+                                  gitWrite: root !== this.store.workspace,
+                                }),
+                              },
+                            )
+                          ).exitCode === 0,
+                      );
+                      if (done)
+                        recordPutBack(
+                          this.store,
+                          request.runId,
+                          request.attemptId,
+                          `apply_fix ${check.id} range`,
+                          [done],
+                        );
+                    }
+                    outputs.push({
+                      target: targets.join(", "),
+                      exitCode: result.timedOut ? null : result.exitCode,
+                      ...(fixerFailed(result) && result.output ? { output: result.output } : {}),
+                    });
                   },
                 )();
               };
               try {
                 for (const [tier, fix] of tiers.entries()) {
                   if (isWholeUnitFixer(fix)) {
-                    const code = fixerTierPaths(check, tier, codePaths);
+                    // Only the code files of the languages the fixer handles (#2632).
+                    const code = fixerPaths(fix, fixerTierPaths(check, tier, codePaths));
                     if (!code.length) continue;
-                    await runFixer(
+                    await fixOnce(
                       wholeUnitFixerCommand(
                         fix,
                         code.map((path) => cwdPath(check, path)),
@@ -1069,14 +1229,20 @@ export class NativeAgentExecutor implements AgentExecutor {
                     continue;
                   }
                   // The fixer runs in the check's cwd, so it names the file from there.
-                  for (const path of fixerTierPaths(check, tier, paths))
-                    await runFixer(fixerCommand(fix, cwdPath(check, path)), [path]);
+                  for (const path of fixerPaths(fix, fixerTierPaths(check, tier, paths)))
+                    await fixOnce(fixerCommand(fix, cwdPath(check, path)), [path]);
                 }
               } finally {
                 // Also when a run throws: a whole-crate formatter may already have rewritten
                 // sibling files (bench round 13, mdrefs T010: five files left reformatted).
                 reverted = await changedOutside();
-                restoreOutside(root, kept, reverted);
+                recordPutBack(
+                  this.store,
+                  request.runId,
+                  request.attemptId,
+                  `apply_fix ${check.id}`,
+                  restoreOutside(root, kept, reverted),
+                );
               }
               const outside = await changedOutside();
               if (outside.length)
@@ -1093,7 +1259,10 @@ export class NativeAgentExecutor implements AgentExecutor {
               );
               return {
                 fixed: outputs,
-                check: { ...checked, ...modelCheckOutput(checked.output, checked.evidenceId) },
+                check: {
+                  ...withoutSignature(checked),
+                  ...modelCheckOutput(checked.output, checked.evidenceId),
+                },
                 ...(reverted.length
                   ? {
                       reverted,
@@ -1141,7 +1310,7 @@ export class NativeAgentExecutor implements AgentExecutor {
                 attemptId: request.attemptId,
               });
               if ("reason" in version) return { success: false, output: version.reason };
-              await guard.execute("edit_file", { path }, async () =>
+              await hostEdit(path, async () =>
                 writeFileSync(workspacePath(root, path), version.content),
               );
               broken.delete(path);
@@ -1152,9 +1321,119 @@ export class NativeAgentExecutor implements AgentExecutor {
             }),
         });
       }
+      // The request's prescribed rows go into a row file by the host's text, never retyped (#2564):
+      // with `rowFileWrite: "on"` an implementer whose task writes such a file gets place_rows; in
+      // shadow `place-rows/<task>.json` records what it would have been offered.
+      const placeTask = request.task;
+      const placeTargets =
+        !request.hostTools &&
+        placeTask &&
+        request.profile.role === "implementer" &&
+        request.profile.allowedTools.includes("edit_file") &&
+        policy.allowedTools.includes("edit_file")
+          ? (() => {
+              try {
+                const state = this.store.state(request.runId);
+                return placeRowTargets(state.requestText || state.prompt, placeTask);
+              } catch {
+                return new Map<string, readonly string[]>();
+              }
+            })()
+          : new Map<string, readonly string[]>();
+      if (placeTask && placeTargets.size) {
+        const on = policy.rowFileWrite === "on";
+        // The indentation the request writes its rows with, the default of a placed row (#2618).
+        const placeIndents = (() => {
+          try {
+            const state = this.store.state(request.runId);
+            return placeRowIndents(state.requestText || state.prompt, placeTask);
+          } catch {
+            return new Map<string, string>();
+          }
+        })();
+        // The request's numbers of a feature run's rows, as its prompt names them (#2939 follow-up).
+        const placeNumbers = (() => {
+          try {
+            const state = this.store.state(request.runId);
+            return placeRowNumbers(state.requestText || state.prompt, placeTargets);
+          } catch {
+            return new Map<string, number[]>();
+          }
+        })();
+        const recordPath = `${PLACE_ROWS_DIR}${placeTask.id}.json`;
+        try {
+          if (!this.store.latestArtifact(request.runId, recordPath))
+            this.store.transaction(() =>
+              this.store.artifact(
+                request.runId,
+                PLACE_ROWS_KIND,
+                recordPath,
+                canonical(placeRowsRecord(placeTask.id, placeTargets, on)),
+              ),
+            );
+        } catch {
+          // A shadow record: failing to keep it changes nothing.
+        }
+        // Only rows written as the file language's code are placed (#2583): a task whose rows are
+        // all in the request's notation translates them itself, and is not offered the tool.
+        const placeCode = placeRowForms(placeTargets, placeNumbers).code;
+        if (on && placeCode.size)
+          available[PLACE_ROWS] = tool({
+            description: placeRowsDescription(placeCode, placeNumbers),
+            inputSchema: placeRowsInput,
+            execute: async (input) =>
+              track(PLACE_ROWS, async () => {
+                const path = guard.path(input.path);
+                const asked = { ...input, path };
+                const absolute = workspacePath(root, path);
+                const current = () => {
+                  try {
+                    return readFileSync(absolute, "utf8");
+                  } catch {
+                    return null;
+                  }
+                };
+                // A refused call writes nothing and leaves no edit in the journal.
+                const refused = placeRows(
+                  asked,
+                  placeTargets,
+                  current(),
+                  placeIndents,
+                  placeNumbers,
+                );
+                if ("refusal" in refused) return { success: false, output: refused.refusal };
+                await noteSyntaxBaseline("edit_file", { path });
+                const result = await hostEdit(path, async () => {
+                  const planned = placeRows(
+                    asked,
+                    placeTargets,
+                    current(),
+                    placeIndents,
+                    placeNumbers,
+                  );
+                  if ("refusal" in planned) return { success: false, output: planned.refusal };
+                  writeFileSync(absolute, planned.content);
+                  const [from, to] = planned.lines;
+                  const [first] = planned.placed;
+                  return {
+                    success: true,
+                    output: `${planned.reindented ? "Re-indented" : planned.moved ? "Moved" : "Placed"} ${planned.placed.length === 1 ? `row ${first}` : `rows ${rowsText(planned.placed)}`} of the request's rows for ${path} at lines ${from} to ${to}, as the request writes them.${placedWhere(planned)} Line ${from} now reads ${JSON.stringify(planned.first)}; if its indentation does not fit the file, call place_rows with reindent: true and the indent.`,
+                  };
+                });
+                return withSyntaxNote(result, async () => {
+                  const errors = await syntaxRegressions(path);
+                  if (errors.length) broken.set(path, errors);
+                  else broken.delete(path);
+                  return errors;
+                });
+              }),
+          });
+      }
       const resultSchema = outputSchemas[request.profile.output];
       if (!resultSchema) throw new WorkflowFault("OUTPUT_INVALID", "Unknown profile output schema");
-      const schema = withHostConstants(request.profile.output, resultSchema);
+      const schema = withHostConstants(request.profile.output, resultSchema, {
+        taskId: request.task?.id,
+      });
       // The model sees host fields as optional and validation still fills them (#1929).
       const { validate } = zodSchema(schema);
       const submitSchema = jsonSchema(
@@ -1446,6 +1725,7 @@ export class NativeAgentExecutor implements AgentExecutor {
           return this.store.remainingTokens(request.runId, policy, request.attemptId);
         },
         submitTools,
+        promptSections: (messages) => promptSections(messages, request.prompt),
         fallbackStepTokens:
           request.profile.maxOutputTokens + Math.ceil(Buffer.byteLength(request.prompt) / 2),
         maxOutputTokens: request.profile.maxOutputTokens,
@@ -1476,8 +1756,36 @@ export class NativeAgentExecutor implements AgentExecutor {
       const meta = { profileId: request.profile.id, taskId: request.task?.id ?? null };
       const model = this.attemptModel(request, policy, watch);
       const effort = sentEffort(provider.providerOptions);
-      const writeUsage = (usage: AttemptUsageRecord) =>
-        this.store.transaction(() =>
+      let promptNoticed = false;
+      const writeUsage = (written: AttemptUsageRecord) =>
+        this.store.transaction(() => {
+          // What the bound on the evidence section did travels with the prompt's sizes (#2617).
+          const usage =
+            written.prompt && request.evidenceBound
+              ? { ...written, prompt: { ...written.prompt, evidence: request.evidenceBound } }
+              : written;
+          // A task attempt whose prompt is far larger than the run's first attempts names the
+          // section that holds the bytes (#2597); recording only, nothing else changes.
+          let large: ReturnType<typeof largePrompt> = null;
+          try {
+            if (request.task && !promptNoticed)
+              large = largePrompt(this.store, request.runId, request.attemptId, usage.prompt);
+          } catch {
+            // An unreadable earlier record leaves the notice out; the usage is still written.
+          }
+          if (large) {
+            promptNoticed = true;
+            this.store.emit(request.runId, {
+              type: "attempt.large_prompt",
+              payload: {
+                attemptId: request.attemptId,
+                taskId: request.task?.id ?? null,
+                ...large,
+                ...(request.evidenceBound ? { evidence: evidenceCut(request.evidenceBound) } : {}),
+              },
+            });
+          }
+          recordStreamOutputStops(this.store, request, usage);
           this.store.artifact(
             request.runId,
             "usage",
@@ -1490,8 +1798,8 @@ export class NativeAgentExecutor implements AgentExecutor {
               ...(watch.calls.length ? { calls: watch.calls } : {}),
               ...silentOf(watch.calls),
             }),
-          ),
-        );
+          );
+        });
       // Usage is persisted as each step finishes, so a loop that throws keeps its real spend.
       const finished: Array<
         StepLike & { toolCalls: readonly { toolName: string; input?: unknown }[] }
@@ -1566,6 +1874,7 @@ export class NativeAgentExecutor implements AgentExecutor {
         // automatic one after the newest message, so each step re-reads the earlier ones.
         const cacheTtl = this.config.cache?.ttl ?? "5m";
         let messages: ModelMessage[] = [opening];
+        let guardResumed = false;
         for (let recovery = 0; ; recovery++) {
           const earlier = [...finished];
           const generated = await generateText({
@@ -1634,6 +1943,24 @@ export class NativeAgentExecutor implements AgentExecutor {
             usage: sumUsage(finished),
             messages: [...messages.slice(1), ...generated.response.messages],
           };
+          // A step the enforced stream guard ended (`stream_output_limit`, #2660) has no tool call,
+          // so the loop stopped on it. The attempt goes on once in the same conversation, where the
+          // step controller adds the truncation notice for the `length` step, as for one cut at the
+          // provider's own cap.
+          const last = generated.steps.at(-1);
+          if (
+            !guardResumed &&
+            last &&
+            stepOutputGuard(last)?.decision === "stopped" &&
+            submitted === undefined &&
+            !request.signal.aborted &&
+            finished.length < request.maxSteps &&
+            !budget.overBudget(finished)
+          ) {
+            guardResumed = true;
+            messages = [opening, ...(result.messages ?? [])];
+            continue;
+          }
           // A status report after a refusal still needs work. Replay the exact refusal once with
           // all granted tools, in this attempt and within its original step and token limits.
           if (
@@ -1877,17 +2204,59 @@ export class NativeAgentExecutor implements AgentExecutor {
             .find((a) => a.id === request.attemptId)?.step_id;
           if (!step) throw new WorkflowFault("OUTPUT_INVALID", "Result attempt missing");
           const correctionPrompt = `Reformat this previous result using submit_result. Preserve its claims and evidence IDs. Do not implement or verify anything again.${request.formatHints ? `\n${request.formatHints}` : ""}\n${result.text.slice(0, 256 * 1024)}`;
+          const correctionReserve =
+            Math.ceil(Buffer.byteLength(correctionPrompt) / 2) +
+            request.profile.maxOutputTokens +
+            8192;
           const attempt = this.store.reserve(
             request.runId,
             step,
             request.profile.model,
-            Math.ceil(Buffer.byteLength(correctionPrompt) / 2) +
-              request.profile.maxOutputTokens +
-              8192,
+            correctionReserve,
             policy,
           );
           // Zero until the single correction step reports its usage.
           let correctionTokens = 0;
+          // The correction's model calls, recorded as its own usage.json so every cost view
+          // prices it like any other model attempt (#2777).
+          const correctionSteps: AttemptStepUsage[] = [];
+          const finishCorrection = (
+            status: "completed" | "failed" | "cancelled",
+            error?: unknown,
+          ) =>
+            this.store.transaction(() => {
+              this.store.artifact(
+                request.runId,
+                "usage",
+                `attempts/${attempt}/usage.json`,
+                canonical(
+                  correctionUsage({
+                    meta,
+                    steps: correctionSteps,
+                    totalTokens: correctionTokens,
+                    maxTokens: correctionReserve,
+                    stopReason:
+                      status === "completed"
+                        ? "submitted"
+                        : status === "cancelled"
+                          ? "aborted"
+                          : "error",
+                    effort,
+                  }),
+                ),
+              );
+              if (status === "completed")
+                this.store.finishAttempt(request.runId, attempt, status, correctionTokens);
+              else
+                this.store.finishAttempt(
+                  request.runId,
+                  attempt,
+                  status,
+                  correctionTokens,
+                  false,
+                  error,
+                );
+            });
           const refusalsBefore = refusals;
           try {
             let correctedText = "";
@@ -1908,6 +2277,18 @@ export class NativeAgentExecutor implements AgentExecutor {
                 // Counted per model call so a response that skips the tool is still charged.
                 onLanguageModelCallEnd: ({ usage, content }) => {
                   correctionTokens += stepTokens(usage, request.profile.maxOutputTokens);
+                  const tools = content.flatMap((part) =>
+                    part.type === "tool-call" ? [part.toolName] : [],
+                  );
+                  correctionSteps.push({
+                    inputTokens: usage.inputTokens ?? null,
+                    outputTokens: usage.outputTokens ?? null,
+                    cacheReadTokens: usage.inputTokenDetails?.cacheReadTokens ?? null,
+                    cacheWriteTokens: usage.inputTokenDetails?.cacheWriteTokens ?? null,
+                    toolCalls: tools.length,
+                    ...(tools.length ? { tools } : {}),
+                    compactedBytes: 0,
+                  });
                   correctedText = content
                     .flatMap((part) => (part.type === "text" ? [part.text] : []))
                     .join("");
@@ -1937,28 +2318,23 @@ export class NativeAgentExecutor implements AgentExecutor {
               );
             }
             submitted = schema.parse(submitted ?? JSON.parse(correctedText));
-            this.store.transaction(() =>
-              this.store.finishAttempt(request.runId, attempt, "completed", correctionTokens),
-            );
+            finishCorrection("completed");
           } catch (error) {
-            if (isOutputLimit(error) && !request.signal.aborted)
-              correctionTokens += stepTokens(
-                outputLimitUsage(
-                  Buffer.byteLength(request.prompt),
-                  request.profile.maxOutputTokens,
-                ),
+            if (isOutputLimit(error) && !request.signal.aborted) {
+              const usage = outputLimitUsage(
+                Buffer.byteLength(request.prompt),
                 request.profile.maxOutputTokens,
               );
-            this.store.transaction(() =>
-              this.store.finishAttempt(
-                request.runId,
-                attempt,
-                request.signal.aborted ? "cancelled" : "failed",
-                correctionTokens,
-                false,
-                error,
-              ),
-            );
+              correctionTokens += stepTokens(usage, request.profile.maxOutputTokens);
+              correctionSteps.push({
+                ...usage,
+                cacheReadTokens: null,
+                cacheWriteTokens: null,
+                toolCalls: 0,
+                compactedBytes: 0,
+              });
+            }
+            finishCorrection(request.signal.aborted ? "cancelled" : "failed", error);
             // A provider outage is not invalid output: the scheduler retries or falls back, and
             // retries a response past the output cap at a lower effort.
             if (isTransient(error) || isOutputLimit(error)) throw error;
@@ -2027,6 +2403,8 @@ export class NativeAgentExecutor implements AgentExecutor {
     watch: AttemptWatch,
   ): LanguageModel {
     const calls = policy.modelCalls;
+    // The parts of an implementer's prompt go with its first call's timing (#2470).
+    const parts = request.profile.role === "implementer" ? promptParts(request.prompt) : null;
     const model = () => {
       const resolved = resolveModel(request.profile.model);
       const history = this.firstByteHistory();
@@ -2037,7 +2415,10 @@ export class NativeAgentExecutor implements AgentExecutor {
         firstByteLimit: (ceilingMs, call) =>
           history.decide(ceilingMs, request.profile.model, call, shared),
         timing: (call) => {
-          watch.calls.push(call);
+          const timed = withStall(call);
+          watch.calls.push(
+            watch.calls.length === 0 && parts ? { ...timed, promptParts: parts } : timed,
+          );
           history.record(request.profile.model, call, shared);
         },
         // A call that may reason silently (a CLI adapter, or high effort on a provider whose
@@ -2128,6 +2509,40 @@ export function withCodexWebSearch(options: ProviderOptions): ProviderOptions {
   return { ...options, codex: { ...options.codex, webSearch: true } };
 }
 
+/** The stream guard's mode (`stream_output_limit`), read by the Codex adapter (#2660). */
+export function withCodexOutputGuard(options: ProviderOptions, mode: StopMode): ProviderOptions {
+  return { ...options, codex: { ...options.codex, outputGuard: mode } };
+}
+
+/**
+ * A `decision.would_stop` for each step whose stream guard passed its limit in shadow or
+ * advisory (`stream_output_limit`, #2660), once per attempt and step, with the guard's inputs.
+ * An enforced stop needs no record: the step ended `length` and its usage record says `stopped`.
+ */
+export function recordStreamOutputStops(
+  store: WorkflowStore,
+  request: Pick<ExecutionRequest, "runId" | "attemptId" | "profile">,
+  usage: Pick<AttemptUsageRecord, "steps">,
+): void {
+  for (const [index, step] of usage.steps.entries()) {
+    const guard = step.outputGuard;
+    if (guard?.decision !== "would_stop" || guard.mode === "enforce") continue;
+    recordWouldStop(store, request.runId, {
+      reason: "stream_output_limit",
+      mode: guard.mode,
+      key: `attempt-${request.attemptId}-step-${index}`,
+      summary: `Step ${index + 1} of ${request.profile.id} on ${request.profile.model} streamed about ${guard.streamedTokens} output tokens, past ${guard.factor} times its ${guard.maxOutputTokens}-token limit; enforced, the turn would stop there and the step end as a truncated answer`,
+      inputs: {
+        attemptId: request.attemptId,
+        step: index,
+        profileId: request.profile.id,
+        model: request.profile.model,
+        ...guard,
+      },
+    });
+  }
+}
+
 /** The recovery ladder's session and transport rungs, read by the Codex adapter (#1877). */
 export function withCodexRecovery(
   options: ProviderOptions,
@@ -2164,7 +2579,7 @@ export const attemptCapFault = (
   cap: number,
   totals: { totalTokens: number; allTokensCap: number; ceilingTokens?: number } = {
     totalTokens: tokens,
-    allTokensCap: cap * ALL_TOKENS_FACTOR,
+    allTokensCap: allTokensCapFor(cap),
   },
 ): WorkflowFault => {
   const capKind =

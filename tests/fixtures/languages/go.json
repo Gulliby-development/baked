@@ -11,10 +11,15 @@
     "testsGrown": "=== RUN   TestAdds\n--- PASS: TestAdds (0.00s)\n=== RUN   TestSubtracts\n--- PASS: TestSubtracts (0.00s)\n=== RUN   TestSum\n    sum_test.go:9: got 3, want 4\n--- FAIL: TestSum (0.00s)\nFAIL\nFAIL\texample.com/fixture\t0.015s\n"
   },
   "generated": {
-    "gen_test.go": "package sum\n\nvar a = strings.Repeat(\"\\\\\", 3)\nvar b = fmt.Sprintf(\"x%s\", a)\nvar lit = \"\\\\\\\\\\\\\"\n// var d = strings.Repeat(\"\\\\\", 3)\n"
+    "gen_test.go": "package sum\n\nvar a = strings.Repeat(\"\\\\\", 3)\nvar b = fmt.Sprintf(\"x%s\", a)\nvar lit = \"\\\\\\\\\\\\\"\n// var d = strings.Repeat(\"\\\\\", 3)\n",
+    "runtime_test.go": "package sum\n\nfunc TestRuntime(t *testing.T) {\n\tdir := t.TempDir()\n\twant := fmt.Sprintf(\"bad: %s\", dir)\n\t_ = want\n}\n"
   },
   "expected": {
+    "rowIndent": ["\"\\trow(1),\""],
+    "languagePitfalls": ["Go"],
     "generatedValues": ["gen_test.go:3 repeat","gen_test.go:4 format"],
+    "exampleBuild": null,
+    "runtimePaths": ["runtime_test.go: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
       "Scanner calls reader.IsEncodingToken for each token.: reader.IsEncodingToken"
@@ -88,7 +93,22 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["calc.go: undefined: sub"],
     "testClasses": null,
-    "testDeclarations": ["sum_test.go: 2 tests"]
+    "testDeclarations": ["sum_test.go: 2 tests"],
+    "rowFileShapes": [
+      "cmd/split_rows_test.go",
+      "package main",
+      "",
+      "import \"testing\"",
+      "",
+      "var rows = []struct{ in, out string }{",
+      "\t{\"a,b\", \"a|b\"},",
+      "\t{\"a,,b\", \"a||b\"},",
+      "}",
+      "",
+      "func TestRows(t *testing.T) { checkRows(t, rows) }",
+      ""
+    ]
   }
 }

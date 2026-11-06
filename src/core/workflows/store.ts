@@ -16,6 +16,7 @@ import { costCeilingUsd, costToleranceOf, currentCostCap } from "./cost-toleranc
 import { WorkflowFault } from "./errors.js";
 import type { PastRun } from "./estimate.js";
 import { executionClock } from "./execution-clock.js";
+import { historySnapshot } from "./history-snapshot.js";
 import { migration001 } from "./migrations/001.js";
 import { migration002 } from "./migrations/002.js";
 import { migration003 } from "./migrations/003.js";
@@ -335,6 +336,9 @@ function historyOf(db: Database, only?: string): PastRun[] {
  * only. A store that is missing, unreadable or of another schema gives no runs.
  */
 export function readStoreHistory(path: string): PastRun[] {
+  return [...historySnapshot(`history:${path}`, () => readStoreHistoryNow(path))];
+}
+function readStoreHistoryNow(path: string): PastRun[] {
   if (!existsSync(path)) return [];
   let db: Database | null = null;
   try {
@@ -1855,6 +1859,20 @@ export class WorkflowStore {
    * `NativeWorkflowService`, so every entry point that drives a run has it; unset elsewhere.
    */
   reserveStages: ((runId: string, requestedUsd: number) => void) | undefined;
+  /**
+   * The most tokens a run's limit may reach by the host's own growth (`growBudgetOnProgress`,
+   * `raiseToStartEstimate`): for an initiative's feature run, its pool less what the other runs
+   * used (`InitiativeService.tokenHold`, #2468); null for a run of no initiative. Installed by
+   * `NativeWorkflowService` like `reserveStages`; unset elsewhere.
+   */
+  tokenHold: ((runId: string) => number | null) | undefined;
+  /**
+   * The plan-time share gate (`InitiativeService.planShareGate`, #2488): asked when a started
+   * initiative feature run's own plan sizing needs more than its ceiling, before its first task.
+   * True when the initiative grew the run's ceiling (and its pool), so the plan is sized again.
+   * Installed by `NativeWorkflowService` like `tokenHold`; unset elsewhere.
+   */
+  planShareGate: ((runId: string) => boolean) | undefined;
   /**
    * What the run's open attempts reserve in dollars (`costUsage`), for a run with a cost cap and
    * a reservation: `canExtendRun` measures spent plus reserved against the cap, as the service does.

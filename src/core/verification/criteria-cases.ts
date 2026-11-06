@@ -11,10 +11,12 @@ import { propertyTestKind } from "../workflows/quality/properties.js";
 import type { Spec } from "../workflows/schemas.js";
 import { toolchainCommand } from "../workflows/toolchain.js";
 import type { Check, Task } from "../workflows/types.js";
+import { runsHeld } from "./byte-runs.js";
 import { caseEvidence } from "./criteria-evidence.js";
 import {
   type GeneratedKind,
   type GeneratedValue,
+  generatedCaseDecision,
   generatedValues,
   MAX_GENERATED_VALUES,
 } from "./generated-values.js";
@@ -31,7 +33,9 @@ import {
  * is never demanded of this one: text of a document another task writes, a test name a sibling
  * task's description names, or anything a task limited to a few changed lines does not name
  * (#1771, `ownedElsewhere`); nor is a case a test file another task writes already tests (#1886,
- * `siblingTestPaths`).
+ * `siblingTestPaths`), or one whose row the request prescribes for a file another task writes, or,
+ * for a task that writes only prescribed row files, one no prescribed row holds (#2501,
+ * `casePrescribed`).
  */
 
 /**
@@ -56,6 +60,12 @@ export interface CriterionCase {
    * value out (#2096).
    */
   length?: true;
+  /**
+   * The literal describes rows instead of quoting one (#2524): a count, a file or test name, a
+   * placeholder envelope or a described character (`citedKind`). No prescribed row can hold it,
+   * so a task that writes only prescribed row files is told nothing about it.
+   */
+  cited?: CitedKind;
 }
 
 /** Quoted spans: "...", `...` and the typographic double quotes. */
@@ -143,7 +153,7 @@ const SHAPE_WORDS = /^[A-Z]{2,}(?:[x\u00d7:,/-][A-Z]{2,})+$/;
  * `Msg`, "8 `Test` functions", the token shape `PARTxCOUNT`). A single capitalised word is a case
  * only where the criterion quotes it as a value ("prints `Usage`").
  */
-function literalCase(literal: string, code = false, value = false): boolean {
+export function literalCase(literal: string, code = false, value = false): boolean {
   const concrete = literal.replace(PLACEHOLDER, "");
   if (concrete.replace(/[^\p{L}\p{N}_]/gu, "").length < 2) return false;
   const trimmed = concrete.trim();
@@ -165,6 +175,189 @@ const LENGTH_CONTEXT =
   /\b(?:boundar(?:y|ies)|lengths?|long|limits?|characters?|chars?|sizes?|width|max(?:imum)?|min(?:imum)?|at (?:most|least)|up to|between)\b/i;
 /** A file name a criterion names: `UnitTest1.cs`, `tests/test_fields.py`. */
 const FILE_NAME = /^(?:[\w.-]+[/\\])*[\w-][\w.-]*\.[A-Za-z][A-Za-z0-9]{0,7}$/;
+
+/**
+ * What a cited criterion token is when it is not a row's text (#2524): `count`, a number of rows
+ * (`exactly the supplied \`12\` rows`); `name`, a file or test name of the plan (`filter_args`
+ * for `test/filter_args_test.dart`); `placeholder`, an envelope with upper-case placeholder words
+ * (`slotprompt: LINE:COL: MESSAGE\n`); `description`, a character described rather than written
+ * (`U+0000 and U+001F`, a lone control escape `\u0000` or caret notation `\^@`, `"\n"` followed
+ * by "(backslash followed by letter n)"); `helper`, a single identifier in a code span that a file the
+ * request supplies verbatim or a planned write's content declares (`cellsOf`, #2646); `range`, row
+ * numbers or allowed values (`1–28`, `0–100`, the `20` of "rows `1–17` and `20`"); `scaffold`, a
+ * placeholder handler's stub text (`varprompt: not implemented\n`); `state`, a null value of a
+ * program's model (`null`, `nil`, `None`) not named as output (#2911).
+ */
+export type CitedKind =
+  | "count"
+  | "name"
+  | "placeholder"
+  | "description"
+  | "helper"
+  | "range"
+  | "scaffold"
+  | "state";
+
+/** What `citedKind` reads beside the literal: the plan's test file names and row counts. */
+export interface CitedNames {
+  /** Each test path the plan writes or the request prescribes rows for, its base name and stem. */
+  names: ReadonlySet<string>;
+  /** The row count of each prescribed file and their total. */
+  counts: ReadonlySet<number>;
+  /** The names a supplied or planned file declares (`declaredNames`), for `helper` (#2646). */
+  helpers?: ReadonlySet<string>;
+}
+
+/**
+ * A declaration of a named helper: a keyword of a function, class, type or binding followed by its
+ * name (`export function cellsOf`, `const summaryText =`, `def cells_of`, `fn cells_of`).
+ */
+const DECLARATION =
+  /(?<![\w$.])(?:function\*?|const|let|var|class|interface|type|enum|def|defp|defmacro|fn|func|struct|trait|module|sub)\s+([A-Za-z_$][\w$]*)/g;
+/** Names an `export { a, b as c }` list exports. */
+const EXPORT_LIST = /\bexport\s*\{([^{}]*)\}/g;
+/** A single identifier of at least three characters: a helper's name, not a short value. */
+const HELPER_NAME = /^[A-Za-z_$][\w$]{2,}$/;
+
+/** The names the given file contents declare or export (#2646): exact identifiers only. */
+export function declaredNames(contents: readonly string[]): Set<string> {
+  const names = new Set<string>();
+  for (const content of contents) {
+    for (const match of content.matchAll(DECLARATION)) if (match[1]) names.add(match[1]);
+    for (const match of content.matchAll(EXPORT_LIST))
+      for (const part of (match[1] ?? "").split(","))
+        for (const name of part.trim().split(/\s+as\s+/))
+          if (/^[A-Za-z_$][\w$]*$/.test(name)) names.add(name);
+  }
+  return names;
+}
+
+/** Upper-case words a message or usage pattern uses for a value a row fills in. */
+const PLACEHOLDER_WORD =
+  /(?<![\p{L}\p{N}_])(?:LINE|LINENO|COL|COLUMN|MESSAGE|MSG|NAME|FILES?|PATH|DIR|VALUE|KEY|NUM|COUNT|TEXT|ARGS?|PATTERN|URL|PORT|HOST|INPUT|OUTPUT|OFFSET|INDEX|POS|REASON|DETAIL|TOKEN|FILTER|EXPR|WORDS?)(?![\p{L}\p{N}_])/gu;
+/** A number the words after it make a count of rows, cases or tests. */
+const COUNT_NOUN =
+  /^[\s`"']*(?:[\w-]+\s+){0,2}?(?:rows?|cases?|tests?|lines?|entries|records|examples|blocks?|files?)\b/i;
+/**
+ * Numbers joined by an en or em dash, alone or in a list (`1–28`, `1–17, 20`): rows or allowed
+ * values a criterion describes (#2911). A row writes a range its own way (`1..28`, `range(1, 29)`).
+ */
+const DASH_RANGE = /^\d+\s*[\u2013\u2014]\s*\d+(?:\s*,\s*\d+(?:\s*[\u2013\u2014]\s*\d+)?)*$/u;
+/** A row number or a hyphen range of them: `20`, `1-10`. */
+const ROW_NUMBER = /^\d+(?:\s*[-\u2013\u2014]\s*\d+)?$/u;
+/** One item of a list of row numbers, quoted or not, and what separates two of them. */
+const ROW_ITEM = String.raw`[\x60"\u201c]?\d+(?:\s*[-\u2013\u2014]\s*\d+)?[\x60"\u201d]?`;
+const ROW_SEP = String.raw`\s*(?:,|&|\band\b|\bor\b)\s*`;
+/**
+ * The text before a row number in a list of them: "rows ", "rows `1–17` and ", "`1–10`, ".
+ */
+const ROW_LIST_BEFORE = new RegExp(
+  String.raw`(?:\brows?\s+(?:${ROW_ITEM}${ROW_SEP})*|[\x60"\u201c]?\d+\s*[\u2013\u2014]\s*\d+[\x60"\u201d]?${ROW_SEP}(?:${ROW_ITEM}${ROW_SEP})*)$`,
+  "iu",
+);
+/**
+ * The text of a placeholder handler a scaffold writes, with or without a program prefix and a line
+ * end: `varprompt: not implemented\n`, `TODO`, `NotImplementedError` (#2911). The stubs of the
+ * supported languages: C#'s `NotImplementedException`, Java's and Kotlin's
+ * `UnsupportedOperationException` and `TODO()`, Python's `NotImplementedError`, Rust's `todo!()`
+ * and `unimplemented!()`, Scala's `???`, R's `.NotYetImplemented()`, and the message most stubs
+ * of every language print.
+ */
+const SCAFFOLD_TEXT =
+  /^(?:[\w.-]+:\s*)?(?:(?:[Ee]rror|[Ff]atal|panic):\s*)?(?:[Nn]ot\s+(?:yet\s+)?implemented(?:\s+yet)?|[Uu]nimplemented|TODO|NotImplemented(?:Error|Exception)?|UnsupportedOperationException|todo!\(\)|unimplemented!\(\)|TODO\(\)|\.NotYetImplemented\(\)|\?\?\?)[.!]?(?:\\n|\n)?$/;
+/**
+ * The null value of each supported language: `null` (C#, Java, Kotlin, Dart, JavaScript,
+ * TypeScript, PHP), `nil` (Go, Ruby, Elixir, Swift, Lua, Clojure, Objective-C), `None` (Python,
+ * Rust's `Option`), `NULL` (C, SQL, R), `nullptr` (C++), `undefined` (JavaScript), `Nothing`
+ * (Haskell, Visual Basic), `Nil` (Scala), `NA` (R) and `$null` (PowerShell).
+ */
+const NULL_WORD = /^(?:null|nil|None|NULL|nullptr|undefined|Nothing|Nil|NA|\$null)$/;
+/** Words before a literal that make it output a row prints, not a state: "prints `null`". */
+const OUTPUT_BEFORE =
+  /\b(?:prints?|printed|outputs?|writes?|written|emits?|echo(?:es)?|stdout|stderr)\b(?:\s+(?:to\s+)?(?:stdout|stderr))?\s*[:=]?\s*$/i;
+/** A code point by its Unicode name: `U+0000`, `U+1F600`. */
+const CODE_POINT = /\bU\+[\dA-Fa-f]{4,6}\b/;
+/**
+ * One control character written as an escape or in caret notation: `\u0000`, `\x1f`, `\0`,
+ * `\^@`. A row spells it in its own language's escape, so the criterion's spelling describes it.
+ */
+const CONTROL_ESCAPE =
+  /^(?:\\u00[01][\dA-Fa-f]|\\u007[fF]|\\u\{[01]?[\dA-Fa-f]\}|\\x[01][\dA-Fa-f]|\\x7[fF]|\\0[0-7]{0,2}|\\?\^[@A-Z[\\\]^_?])$/;
+/** Prose right after a literal that spells out its characters: "(backslash followed by letter n)". */
+const SPELLED_OUT =
+  /^\s*\((?:an?\s+|the\s+)?(?:backslash|two characters|characters?|bytes?|code points?|U\+[\dA-Fa-f]{4})\b/i;
+
+/** A test path's names a criterion may cite: the path, its base name and its stem. */
+export function testFileNames(path: string): string[] {
+  const clean = path.trim().replace(/^(?:\.\/)+/, "");
+  const base = clean.split(/[/\\]/).at(-1) ?? clean;
+  const stem = base.replace(/\.[^.]+$/, "");
+  const bare = stem
+    .replace(/(?:[._-](?:test|spec|tests))+$|^(?:test|spec)_/i, "")
+    .replace(/Tests?$/, "");
+  return [...new Set([clean, base, stem, bare].filter((name) => name.length >= 2))];
+}
+
+/**
+ * Whether a criterion literal describes rows instead of quoting one (#2524), and how. R82
+ * slotprompt filters: 4 of 4 `case_not_prescribed` notes cited the criteria's own row counts and
+ * test names, the error envelope `slotprompt: LINE:COL: MESSAGE\n`, and control characters the
+ * criterion described in prose. `after` is the criterion text right after the literal and `before`
+ * the text before it. R96 varprompt (#2911): 5 of 5 notes were row-number ranges, a `WORD`
+ * placeholder, scaffold stub text and `null`.
+ */
+export function citedKind(
+  literal: string,
+  after: string,
+  cited: CitedNames,
+  code = false,
+  before = "",
+): CitedKind | undefined {
+  const text = asciiTrim(literal);
+  if (DASH_RANGE.test(text) || (ROW_NUMBER.test(text) && ROW_LIST_BEFORE.test(before)))
+    return "range";
+  // A helper the supplied or planned code declares, named in a code span: no row's text (#2646).
+  if (code && HELPER_NAME.test(text) && cited.helpers?.has(text)) return "helper";
+  if (/^\d+$/.test(text)) {
+    const n = Number(text);
+    return cited.counts.has(n) || COUNT_NOUN.test(after) ? "count" : undefined;
+  }
+  if (cited.names.has(text)) return "name";
+  if (/[/\\]/.test(text) && FILE_NAME.test(text)) return "name";
+  if (CODE_POINT.test(text) || CONTROL_ESCAPE.test(text) || SPELLED_OUT.test(after))
+    return "description";
+  // A placeholder word beside other text: the envelope, not the literal itself (`NAME` alone).
+  const words = text.match(PLACEHOLDER_WORD) ?? [];
+  if (words.length && text.replace(PLACEHOLDER_WORD, "").replace(/[^\p{L}\p{N}]/gu, "").length)
+    return "placeholder";
+  if (SCAFFOLD_TEXT.test(text)) return "scaffold";
+  if (NULL_WORD.test(text) && !OUTPUT_BEFORE.test(before)) return "state";
+  return undefined;
+}
+
+/**
+ * The names and counts `citedKind` reads, from the plan's tasks, the prescribed rows and every row
+ * file the request names.
+ */
+function citedNames(task: CaseTask, context: CaseContext): CitedNames {
+  const paths = [
+    ...[task, ...(context.tasks ?? [])].flatMap((t) =>
+      t.writes ? writtenTestPaths({ writes: t.writes }) : [],
+    ),
+    ...(context.prescribedRows?.keys() ?? []),
+    ...(context.rowFiles ?? []),
+  ];
+  const counts = [...(context.prescribedRows?.values() ?? [])].map((lines) => lines.length);
+  // The code the request fixes: its verbatim files and the planned writes' content (#2646).
+  const planned = [task, ...(context.tasks ?? [])].flatMap((t) =>
+    (t.writes ?? []).flatMap((w) => (w.content ? [w.content] : [])),
+  );
+  return {
+    names: new Set(paths.flatMap(testFileNames)),
+    counts: new Set([...counts, ...(counts.length > 1 ? [counts.reduce((a, b) => a + b, 0)] : [])]),
+    helpers: declaredNames([...planned, ...(context.suppliedFiles ?? [])]),
+  };
+}
 
 /** A quoted output or argument value can be plain English, unlike a quoted scenario label. */
 const VALUE_CONTEXT =
@@ -296,8 +489,9 @@ const CHECK_COMMAND = new RegExp(
     String.raw`(?:cmake|ctest|clang-format|clang-tidy)\b`,
     // `dart test`, `flutter test`, `dart analyze`, `dart format` (#1494).
     String.raw`(?:dart|flutter)\s+(?:test|analyze|format)\b`,
-    // `sbt -batch test`, `sbt "testOnly *CalcSuite"`, `sbt scalafmtCheckAll` (#1496).
-    String.raw`sbt\b.*\b(?:test|testOnly|compile|scalafmtCheck\w*)\b`,
+    // `sbt -batch test`, `sbt "testOnly *CalcSuite"`, `sbt scalafmtCheckAll` (#1496), sbt 2's
+    // `sbt -batch testFull` (#2440).
+    String.raw`sbt\b.*\b(?:test|testFull|testOnly|compile|scalafmtCheck\w*)\b`,
     // `swift test`, `swift build`, `swift format lint` (#1492).
     String.raw`swift\s+(?:test|build|format\s+lint)\b`,
   ].join("|")})`,
@@ -330,13 +524,58 @@ export interface CaseContext {
    * parameterized test replays every row, and `rowFileProblems` refuses a changed block.
    */
   hostRows?: readonly InlineRowFile[];
-  /** Receives each walk's holds and refusals, for the run's record and its replay (#1715). */
-  record?: (walk: CaseWalk & { refused: number[] }) => void;
+  /**
+   * The rows the request prescribes for each test file the plan writes (`prescribedRowFiles`,
+   * read by `suppliedRows`, #2501): which file of the feature may hold a criterion literal, whether
+   * its writer has written it yet or not. Without it the walk reads only the files on disk.
+   */
+  prescribedRows?: PrescribedRows;
+  /**
+   * The content of the files the request supplies verbatim (`suppliedFileContents`): a helper one
+   * of them declares, named in a criterion's code span, is `cited` as `helper` (#2646).
+   */
+  suppliedFiles?: readonly string[];
+  /**
+   * Every test file a row block of the request names (`rowBlockFiles`), also another feature's:
+   * a criterion that names one cites a file, not a row's text (#2889).
+   */
+  rowFiles?: readonly string[];
+  /**
+   * `skip` (`citedCases`, #2531): a case nothing holds whose literal describes rows instead of
+   * quoting one (`CriterionCase.cited`) is not demanded, for any task, and the walk record says
+   * so (`cited`). Absent demands it, except from a task that writes only prescribed row files.
+   */
+  citedCases?: "demand" | "skip";
+  /**
+   * The per-row reader of a literal that restates a row in its own tuple notation (#2544, shadow):
+   * `rowTupleHeld` from `row-block-drift.ts`, which the caller passes since that module reads this
+   * one. Only `prescribedPerRow` reads it; absent, the per-row answer reads no tuple.
+   */
+  rowHold?: RowHold;
+  /**
+   * Receives each walk's holds and refusals, for the run's record and its replay (#1715), and the
+   * walked cases by the same index, for a caller that records a case's literal outside the trace.
+   */
+  record?: (walk: CaseWalk & { refused: number[] }, cases: readonly CriterionCase[]) => void;
   /**
    * The kinds of generated value the request or the task's criteria rule out for test inputs
    * (`bannedGeneratedKinds`, #2344): the walk records each one in a test file that holds a case.
    */
   generatedKinds?: ReadonlySet<GeneratedKind>;
+  /**
+   * Refuse the task for those generated values (`generated_case` enforced, #2469), naming each
+   * file and line; otherwise the walk only records them.
+   */
+  refuseGenerated?: boolean;
+}
+
+/** The refusal line of a walk's generated values (#2469): each file and line, and what to write. */
+export function generatedCaseRefusal(generated: readonly GeneratedValue[]): string {
+  const where = generated
+    .slice(0, 5)
+    .map((g) => `${g.path}:${String(g.line)} (${g.kind})`)
+    .join(", ");
+  return `The request or a criterion asks for literal examples, and these tests build their inputs or expected values from generated values: ${where}${generated.length > 5 ? `, and ${String(generated.length - 5)} more` : ""}. Write each case's input and expected value as a literal row (no interpolation, repetition, formatting or loops that build them).`;
 }
 
 /**
@@ -350,7 +589,36 @@ export interface CaseWalk {
   rowsIntact: boolean;
   /** Test files other tasks of the plan write, which may hold a case (#1886). */
   siblings: number;
-  cases: { criterionId: string; row: boolean; held: boolean; sibling: boolean | null }[];
+  cases: {
+    criterionId: string;
+    row: boolean;
+    held: boolean;
+    sibling: boolean | null;
+    /**
+     * For a case nothing on disk holds, where the request's prescribed rows put it (#2501): `own`,
+     * a row of a file this task writes (still demanded); `sibling`, only a row of a file another
+     * task writes (held by that task, written yet or not); `none`, no prescribed row, for a task
+     * whose test files are all prescribed row files (not demanded: it cannot add a row, and the
+     * `case_not_prescribed` record says so); `cited`, the same for a literal that describes rows
+     * instead of quoting one (`CriterionCase.cited`, #2524: not demanded, and neither recorded nor
+     * noted). Absent without prescribed rows.
+     */
+    prescribed?: CasePrescribed;
+    /**
+     * The same question asked row by row (#2544, shadow): a case of several values on one line is
+     * held by a prescribed row only when one row holds them all, not the rows' joined text, and a
+     * literal that restates a row as a tuple by its values in order within one row (`rowHold`).
+     * Present only where it answers differently from `prescribed`; the decision does not read it
+     * yet. A `none` here is recorded `case_not_prescribed` with `kind: "per-row"`, and a `none` of
+     * `prescribed` carries this answer as `perRow`, so a bench round counts both readers.
+     */
+    prescribedPerRow?: CasePrescribed;
+    /**
+     * Under `citedCases: "skip"` (#2531), what a case nothing holds describes instead of quoting
+     * a row (`CriterionCase.cited`): not demanded. Absent otherwise.
+     */
+    cited?: CitedKind;
+  }[];
   /**
    * Test inputs built from generated values where literal examples are asked for, in the task's
    * test files that hold a case (#2344): path, line and kind, no code. Absent without a ban.
@@ -371,11 +639,103 @@ export interface CaseWalkRecord extends CaseWalk {
   generatedStop?: boolean;
 }
 
-/** The cases (by index) the walk refuses the task for: those nothing holds. */
+/**
+ * The cases (by index) the walk refuses the task for: those nothing holds, except a literal that
+ * describes rows (`cited`, recorded only under `citedCases: "skip"`, #2531).
+ */
 export function caseWalkDecision(walk: CaseWalk): number[] {
   return walk.cases.flatMap((c, i) =>
-    (walk.rowsIntact && c.row) || c.held || c.sibling === true ? [] : [i],
+    (walk.rowsIntact && c.row) ||
+    c.held ||
+    c.cited !== undefined ||
+    c.sibling === true ||
+    c.prescribed === "sibling" ||
+    c.prescribed === "none" ||
+    c.prescribed === "cited"
+      ? []
+      : [i],
   );
+}
+
+/** Where the request's prescribed rows put a case nothing on disk holds (#2501). */
+export type CasePrescribed = "own" | "sibling" | "none" | "cited";
+
+/** The rows a request prescribes for each test file of the plan, by path as the request writes it. */
+export type PrescribedRows = ReadonlyMap<string, readonly string[]>;
+
+/** A path as the request writes it and `suppliedRows` keys it: no `./`. */
+const rowPath = (path: string): string => path.trim().replace(/^(?:\.\/)+/, "");
+
+/**
+ * Whether a case is several values on one line (an argument list with its output, a tuple): its
+ * significant tokens are more than one and it has no line break. A multi-line literal is one text
+ * that may run over several rows, and a single value is held by the joined rows as by one row.
+ */
+function multiValue(c: CriterionCase): boolean {
+  const text = normalizeLiteral(c.literal).trim();
+  return !/\n/.test(text) && (text.match(SIGNIFICANT_TOKEN)?.length ?? 0) > 1;
+}
+
+/**
+ * Whether one prescribed row holds a literal that restates a row (#2544): true or false when the
+ * reader reads the literal as a row's values, null when it does not (the walk's matcher decides).
+ */
+export type RowHold = (literal: string, row: string) => boolean | null;
+
+/**
+ * Whether prescribed rows hold a case (#2501): the walk's own matcher on the rows' text, as a row
+ * slice owns a literal by the rows that hold it (#2466). The one test of a criterion literal
+ * against a request's row block; a new reader of prescribed rows for the walk goes through it.
+ * `perRow` (#2544, shadow) holds a multi-value case only when one row holds it: on the joined
+ * text, `["render","--var","a=1"]` of one row and the output `42` of another hold
+ * `render --var a=1 => 42`, which no row tests. A `RowHold` there also reads a literal that
+ * restates a row in another notation by its values: R98 spendgate's criteria quoted rows as
+ * tuples the walk's matcher does not find in the row that holds them (10 false notes). Such a
+ * literal is read row by row whether `multiValue` counts it or not (a `\r\n` in it decodes to a
+ * line break), never on the joined text.
+ */
+export function prescribedRowsHeld(
+  c: CriterionCase,
+  rows: readonly string[],
+  perRow: boolean | RowHold = false,
+): boolean {
+  if (!rows.length) return false;
+  const inRow = () => rows.some((row) => missingCases([c], [row]).length === 0);
+  if (typeof perRow === "function") {
+    const held = rows.map((row) => perRow(c.literal, row));
+    // A literal the reader reads is held by one row, by its values or by the walk's matcher.
+    if (held.some((h) => h !== null)) return held.includes(true) || inRow();
+  }
+  if (perRow && multiValue(c)) return inRow();
+  return missingCases([c], [rows.join("\n")]).length === 0;
+}
+
+/**
+ * Where the prescribed rows put a case that no file on disk holds (#2501), or undefined when the
+ * plan prescribes no rows or they say nothing about it. R81 ratdec exact-cli T007 was refused for
+ * six literals of T006's `test/literals_test.exs` before T006 had written it (377k tokens against
+ * about 100k for its sibling row tasks), and T011 for `["eval","--as","frac","7/3"]`, a row no
+ * block of the brief holds, so it added a 14th row to a file the request fixes at 13 and a
+ * corrective removed it (368k).
+ */
+export function casePrescribed(
+  c: CriterionCase,
+  own: readonly string[],
+  rows: PrescribedRows | undefined,
+  perRow: boolean | RowHold = false,
+): CasePrescribed | undefined {
+  if (!rows?.size) return undefined;
+  const mine = new Set(own.map(rowPath));
+  const files = [...rows];
+  const ownRows = files.filter(([path]) => mine.has(path));
+  if (ownRows.some(([, lines]) => prescribedRowsHeld(c, lines, perRow))) return "own";
+  if (files.some(([path, lines]) => !mine.has(path) && prescribedRowsHeld(c, lines, perRow)))
+    return "sibling";
+  // A task with a test file of its own choosing, or a property's drawn values, can still hold it.
+  const onlyRows = mine.size > 0 && ownRows.length === mine.size;
+  if (!onlyRows || c.generated) return undefined;
+  // A count, a name, a placeholder or a described character is no row's text (#2524).
+  return c.cited ? "cited" : "none";
 }
 
 /**
@@ -440,7 +800,14 @@ export function criterionCases(
   const seen = new Set<string>();
   const plain = new Set<string>();
   const sets = closedSets(spec);
+  const names = citedNames(task, context);
   let bound = new Set<string>();
+  /** The criterion text after the span being added, for `citedKind` (#2524); none for a cell. */
+  let after = "";
+  /** Whether the span being added is a code span, for `citedKind`'s `helper` (#2646). */
+  let code = false;
+  /** The criterion text before the span being added, for `citedKind`'s `range` and `state`. */
+  let prior = "";
   const add = (
     criterionId: string,
     literal: string,
@@ -463,7 +830,19 @@ export function criterionCases(
     const key = `${criterionId}:${normalizeLiteral(literal)}`;
     // A literal the criterion also quotes outside its table is not held by the rows alone.
     if (!row) plain.add(key);
-    if (seen.has(key)) return;
+    const cited = citedKind(literal, after, names, code, prior);
+    if (seen.has(key)) {
+      // The criterion also quotes it as a row's text: a case like any other.
+      const earlier = cases.findIndex(
+        (c) => c.cited && `${c.criterionId}:${normalizeLiteral(c.literal)}` === key,
+      );
+      const found = cases[earlier];
+      if (found && !cited) {
+        const { cited: _cited, ...rest } = found;
+        cases[earlier] = rest;
+      }
+      return;
+    }
     if (isCheckCommand(literal, context.checks)) return;
     seen.add(key);
     const generated = spec.criteria.find((c) => c.id === criterionId)?.property !== undefined;
@@ -474,6 +853,7 @@ export function criterionCases(
       ...(generated ? { generated: true as const } : {}),
       ...(row ? { row: true as const } : {}),
       ...(length ? { length: true as const } : {}),
+      ...(cited ? { cited } : {}),
     });
   };
   const tasks = context.tasks ?? [];
@@ -496,6 +876,9 @@ export function criterionCases(
         const value = VALUE_CONTEXT.test(before);
         if (!literalCase(span.literal, span.code, value)) continue;
         const sentence = table.prose.slice(sentenceStart(table.prose, span.index), span.index);
+        after = table.prose.slice(span.index + span.raw.length);
+        code = span.code;
+        prior = before;
         add(
           criterion.id,
           span.literal,
@@ -505,6 +888,9 @@ export function criterionCases(
           hostRows && inCell(span.index),
           span.code && !value && /^\d+$/.test(span.literal) && LENGTH_CONTEXT.test(sentence),
         );
+        after = "";
+        code = false;
+        prior = "";
       }
       for (const input of table.inputs)
         add(criterion.id, input.literal, undefined, input.source, input.expected, hostRows);
@@ -617,7 +1003,11 @@ function boundFree(literal: string, bound: ReadonlySet<string>): string[] | null
   return rest.replace(/[^\p{L}\p{N}_]/gu, "").length >= 2 ? [rest] : [];
 }
 
-/** Each shared case belongs to one test task. Unclaimed rows go to the last carrier (#1597). */
+/**
+ * Each shared case belongs to one test task. Unclaimed rows go to the last carrier (#1597). Host
+ * row slices of one file own a case by the rows they hold (#2466); other slices deal the cases no
+ * description names by their shares.
+ */
 function partitionCases(
   cases: CriterionCase[],
   task: CaseTask,
@@ -648,6 +1038,17 @@ function partitionCases(
     const sliced = carriers.every(
       (t) => t.sizingSlice && t.sizingSlice.taskId === carriers[0]?.sizingSlice?.taskId,
     );
+    if (sliced && carriers.every((t) => t.sizingSlice?.rows?.length)) {
+      // Host row slices (#2466): a literal belongs to the first slice whose prescribed rows hold
+      // it, since each later slice appends to the same file and finds it there; a literal no row
+      // holds goes to the last slice, the only one whose file holds every row.
+      const texts = carriers.map((t) => t.sizingSlice?.rows ?? []);
+      for (const row of rows) {
+        const holder = texts.findIndex((lines) => prescribedRowsHeld(row, lines));
+        owners.set(row, (carriers[holder] ?? carriers.at(-1))?.id);
+      }
+      continue;
+    }
     const remaining: CriterionCase[] = [];
     for (const row of rows) {
       const named = carriers.filter((t) => !missingCases([row], [t.description ?? ""]).length);
@@ -847,6 +1248,17 @@ function enumeratedMembers(text: string, sets: ClosedSet[], source: string): str
 /** The header words of a table's first column, and a separator row's cells. */
 const HEADER_CELL =
   /^(?:inputs?|values?|cases?|args?|arguments?|commands?|given|when|expression|query|request)$/i;
+/** A word of a header cell of a table's other columns (`Scenario`, `Expected result`). */
+const HEADER_WORD =
+  "(?:inputs?|values?|cases?|args?|arguments?|commands?|given|when|then|expression|query|request|scenarios?|expected|actual|results?|outputs?|outcomes?|descriptions?|names?|notes?|comments?|reasons?|labels?|kinds?|types?|exit|codes?|status|stdout|stderr|errors?|messages?|returns?|why|rows?|ids?)";
+/** A header cell of up to three header words. */
+const HEADER_PHRASE = new RegExp(String.raw`^${HEADER_WORD}(?:[ \t]+${HEADER_WORD}){0,2}$`, "i");
+/** The header cell at the end of a first cell glued to the sentence before it (#2646). */
+const GLUED_HEADER = new RegExp(
+  String.raw`(?:^|[.:;!?][ \t]+)(${HEADER_WORD}(?:[ \t]+${HEADER_WORD}){0,2})$`,
+  "i",
+);
+const unquoteCell = (cell: string): string => cell.trim().replace(/^[`"\u201c]|[`"\u201d]$/g, "");
 const separatorRow = (cells: string[]): boolean =>
   cells.length >= 2 && cells.every((cell) => SEPARATOR_CELL.test(cell));
 
@@ -875,6 +1287,28 @@ function tableRows(text: string): { line: string; cells: string[]; skipped: bool
 }
 
 /**
+ * A table's header row, or undefined (#2646): a first cell that is a header word, or a first row of
+ * a table whose next row is a separator or whose other cells are all header words. A first cell
+ * glued to the sentence before it (`All 14 exact comparisons pass. Input`) ends in its header word;
+ * `sentence` is the text before it, which stays prose. R87 slackbar: 5 false `case_not_prescribed`
+ * notes read such a cell as a literal.
+ */
+function headerRow(
+  cells: string[],
+  first: boolean,
+  next: string[] | undefined,
+): { sentence: string } | undefined {
+  const raw = (cells[0] ?? "").trim();
+  if (HEADER_CELL.test(unquoteCell(raw))) return { sentence: "" };
+  if (!first) return undefined;
+  const others = cells.slice(1).every((cell) => HEADER_PHRASE.test(unquoteCell(cell)));
+  if (!others && !(next && separatorRow(next))) return undefined;
+  if (HEADER_PHRASE.test(unquoteCell(raw))) return { sentence: "" };
+  const glued = GLUED_HEADER.exec(raw);
+  return glued ? { sentence: raw.slice(0, glued.index + 1).trimEnd() } : undefined;
+}
+
+/**
  * Split explicit input spans in the first cell, leaving context words out.
  * Standalone cells still need a concrete literal rather than a scenario label (#1565).
  * Return the remaining cells and prose for the usual quoted-span walk.
@@ -888,15 +1322,24 @@ function tableInputs(text: string): {
   const rows = tableRows(text);
   if (rows.length < 2) return { inputs: [], prose: text, cells: [] };
   const inputs: { literal: string; source: string; expected: string }[] = [];
-  rows.forEach(({ cells, skipped }, index) => {
+  /** The prose kept of each header row's line: the sentence its first cell is glued to. */
+  const headers = new Map<string, string>();
+  const lines = text.split(/\r?\n/);
+  rows.forEach(({ line, cells, skipped }, index) => {
     if (skipped) return;
     if (cells.every((cell) => SEPARATOR_CELL.test(cell))) return;
     const next = rows[index + 1]?.cells;
+    const at = lines.indexOf(line);
+    const first = at <= 0 || !lines[at - 1]?.includes("|");
+    const header = headerRow(cells, first, next);
+    if (header) {
+      headers.set(line, header.sentence);
+      return;
+    }
     if (next?.every((cell) => SEPARATOR_CELL.test(cell))) return;
     const raw = cells[0] ?? "";
     const push = (literal: string, source = "") =>
       inputs.push({ literal, source, expected: cells.slice(1).join(" ") });
-    if (HEADER_CELL.test(raw.replace(/^[`"\u201c]|[`"\u201d]$/g, ""))) return;
     if (/^[A-Za-z_]\w*\s*=(?!=)/.test(raw)) {
       push(raw);
       return;
@@ -917,12 +1360,13 @@ function tableInputs(text: string): {
   );
   const cells: [number, number][] = [];
   let offset = 0;
-  const prose = text
-    .split(/\r?\n/)
+  const prose = lines
     .map((line) => {
       const cell = tableLines.get(line);
-      const kept = cell ?? line;
-      if (cell !== undefined) cells.push([offset, offset + kept.length]);
+      // A header's first cell glued to a sentence: the sentence stays prose, outside the cells.
+      const sentence = headers.get(line) ? `${headers.get(line)} ` : "";
+      const kept = cell === undefined ? line : `${sentence}${cell}`;
+      if (cell !== undefined) cells.push([offset + sentence.length, offset + kept.length]);
       offset += kept.length + 1;
       return kept;
     })
@@ -1005,23 +1449,25 @@ function decodedTwice(once: string): string {
 }
 
 /**
- * A test text decoded until no escape layer is left, at most four: JSON text the test holds in a
- * quoted string literal (`JSON.parse("[\"a\\r\\nb\"]")`, a host block's rows) keeps
- * `\r\n` as two characters after one decoding, so a multi-line literal finds no line break in it
- * (#1997, R64 cfgquill lint: 12 refusals of rows the host's own block held). The literal side is
+ * A test text and each of its escape layers decoded in turn, until none is left, at most four:
+ * JSON text the test holds in a quoted string literal (`JSON.parse("[\"a\\r\\nb\"]")`, a host
+ * block's rows) keeps `\r\n` as two characters after one decoding, so a multi-line literal finds
+ * no line break in it (#1997, R64 cfgquill lint: 12 refusals of rows the host's own block held).
+ * The first entry is the text as given, the last the text with no layer left. The literal side is
  * decoded the same way by `decodedTwice`.
  */
-function canonicalText(unescaped: string): string {
-  let text = unescaped;
+function canonicalLayers(unescaped: string): string[] {
+  const layers = [unescaped];
   for (let layer = 0; layer < 4; layer++) {
+    const text = layers[layers.length - 1] ?? unescaped;
     // Java, C, Python and Go also spell a control character as an octal escape (`\015\012`).
     const next = normalizeLiteral(text).replace(/\\([0-3][0-7]{2})/g, (_, octal: string) =>
       String.fromCharCode(Number.parseInt(octal, 8)),
     );
     if (next === text) break;
-    text = next;
+    layers.push(next);
   }
-  return text;
+  return layers;
 }
 
 /**
@@ -1067,6 +1513,42 @@ function linesHeld(unescaped: string, literal: string): boolean | null {
   return pattern.test(unescaped) || pattern.test(joinedStrings(unescaped));
 }
 
+/**
+ * Whether a test's text holds a text the request gives verbatim, both sides decoded until no
+ * escape layer is left (`canonicalLayers`, the same layer of each first, #2836): a quoted literal
+ * of a prescribed row (#2486), which the test may spell in its own language's string syntax,
+ * split into adjacent strings or a list of lines (`joinedStrings`), or, for several lines, as
+ * indented lines of a heredoc (`linesHeld`).
+ * Unlike `testsHold`, which accepts a criterion literal's tokens spread over the file, every
+ * character of the text counts: a row whose input lost its last event is not held. A long byte
+ * run (a hex string, a byte list, a repeat) is decided by its count (`runsHeld`, #2515): 300
+ * bytes of `0x78` are not held by a test that spells 303, in whatever notation.
+ */
+export function verbatimHeld(text: string, literal: string): boolean {
+  const runs = runsHeld(text, literal);
+  if (runs !== null) return runs;
+  const literalLayers = canonicalLayers(literal);
+  const wanted = literalLayers[literalLayers.length - 1] ?? literal;
+  if (!asciiTrim(wanted).replace(/\r?\n/g, "")) return true;
+  const held = (decoded: string, value: string) =>
+    decoded.includes(value) || linesHeld(decoded, value) === true;
+  for (const source of [text, joinedStrings(text)]) {
+    const layers = canonicalLayers(source);
+    // Each layer of the text against the same layer of the literal (#2836): a literal ending in
+    // an escaped backslash (`a\\`) stops at `a\` while the text decodes on through its closing
+    // quote (`a\\"` -> `a\"` -> `a"`), so only the text with every layer left would lose it.
+    if (
+      layers.some((decoded, i) =>
+        held(decoded, literalLayers[Math.min(i, literalLayers.length - 1)] ?? wanted),
+      )
+    )
+      return true;
+    // A text in another quoting than the literal (#1997) keeps a layer more: every layer of both.
+    if (held(layers[layers.length - 1] ?? source, wanted)) return true;
+  }
+  return false;
+}
+
 /** A row in tuple notation: `(6,d,1777,0777,"/tmp")`, three cells or more. */
 const TUPLE = /^\(([^()]*,[^()]*,[^()]*)\)$/;
 
@@ -1103,6 +1585,9 @@ const SIGNIFICANT_TOKEN =
  * Placeholders stand for test-specific values; case and token boundaries still matter.
  */
 export function testsHold(text: string, literal: string): boolean {
+  // A long byte run counts as a whole (#2515): its bytes as tokens would hold 300 inside 303.
+  const runs = runsHeld(text, literal);
+  if (runs !== null) return runs;
   const once = normalizeLiteral(literal);
   const twice = decodedTwice(once);
   return holds(text, literal, once) || (twice !== once && holds(text, literal, twice));
@@ -1121,7 +1606,10 @@ function holds(text: string, literal: string, decoded: string): boolean {
   // A literal with an escape no decoding layer knows is raw escape text, matched below (#1709).
   // JSON text inside a quoted string keeps one more escape layer than the string itself (#1997).
   const lines = RAW_ESCAPE.test(literal) ? null : linesHeld(unescaped, normalized);
-  if (lines === false) return linesHeld(canonicalText(unescaped), normalized) === true;
+  // Every layer, not only the last (#2836): a line ending in an escaped backslash would swallow
+  // the closing quote at the last layer.
+  if (lines === false)
+    return canonicalLayers(unescaped).some((layer) => linesHeld(layer, normalized) === true);
   if (lines !== null) return lines;
   if (!normalized.replace(PLACEHOLDER, "")) return false;
   const tokens = normalized.replace(PLACEHOLDER, " ").match(SIGNIFICANT_TOKEN) ?? [];
@@ -1503,15 +1991,28 @@ export function caseCheck(
     // A case a sibling's test file already tests is not demanded again (#1886).
     const open = cases.some((c, i) => !own[i] && !(intact && c.row));
     const others = siblings.length && open ? await read(siblings) : null;
+    // The request's rows say which file holds a case, written yet or not (#2501).
+    const tests = writtenTestPaths(task);
     const walk: CaseWalk = {
       rowsIntact: intact,
       siblings: siblings.length,
-      cases: cases.map((c, i) => ({
-        criterionId: c.criterionId,
-        row: c.row === true,
-        held: own[i] === true,
-        sibling: own[i] || (intact && c.row) || !others ? null : heldIn(c, others),
-      })),
+      cases: cases.map((c, i) => {
+        const unheld = !own[i] && !(intact && c.row);
+        const prescribed = unheld ? casePrescribed(c, tests, context.prescribedRows) : undefined;
+        // The per-row answer, recorded beside the joined one while it is in shadow (#2544).
+        const perRow =
+          prescribed && casePrescribed(c, tests, context.prescribedRows, context.rowHold ?? true);
+        const cited = unheld && context.citedCases === "skip" ? c.cited : undefined;
+        return {
+          criterionId: c.criterionId,
+          row: c.row === true,
+          held: own[i] === true,
+          sibling: own[i] || (intact && c.row) || !others ? null : heldIn(c, others),
+          ...(prescribed ? { prescribed } : {}),
+          ...(perRow && perRow !== prescribed ? { prescribedPerRow: perRow } : {}),
+          ...(cited ? { cited } : {}),
+        };
+      }),
     };
     // The generated values in the files that hold a case, where literal examples are asked for.
     const kinds = context.generatedKinds;
@@ -1525,9 +2026,13 @@ export function caseCheck(
         })
         .slice(0, MAX_GENERATED_VALUES);
     const refused = caseWalkDecision(walk);
-    context.record?.({ ...walk, refused });
+    context.record?.({ ...walk, refused }, cases);
     const missing = refused.flatMap((i) => cases[i] ?? []);
-    return Promise.all(
+    const generatedLine =
+      context.refuseGenerated && walk.generated && generatedCaseDecision(walk)
+        ? [generatedCaseRefusal(walk.generated)]
+        : [];
+    const lines = await Promise.all(
       missing.map(
         async (c) =>
           (await context.probe?.(c, root)) ??
@@ -1544,6 +2049,7 @@ export function caseCheck(
               : `${c.criterionId} names ${JSON.stringify(c.literal)}, found only in an assertion message in ${paths.join(", ")}. Use it as a test input or expected value; the message alone is a decoy.`),
       ),
     );
+    return [...lines, ...generatedLine];
   };
 }
 
@@ -1554,7 +2060,8 @@ export function caseCheck(
  * R57 expenses-py T009 was refused for six CLI argument strings that T007's `tests/test_cli.py`
  * tested (about 435k tokens after the refusal), md-site T009 for four URL schemes the sibling
  * property test drew, url-shortener T004 for a code its sibling test spelled. The file must exist
- * in the attempt's workspace; one a sibling has not written yet holds nothing.
+ * in the attempt's workspace; one a sibling has not written yet holds nothing on disk, though the
+ * rows the request prescribes for it still hold their literals (`casePrescribed`, #2501).
  */
 function siblingTestPaths(
   task: CaseTask,

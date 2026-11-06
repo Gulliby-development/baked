@@ -13,12 +13,22 @@ const NOW = Date.parse("2026-10-27T12:00:00Z");
 describe("subscription limits (#2300)", () => {
   test("the mock backend answers every provider with its windows", async () => {
     const { limits } = await setup.limits("baked");
-    expect(limits.map((l) => l.provider)).toEqual(["codex", "claude-code", "copilot"]);
+    // Each labelled account (#2303) follows its provider's own sign-in.
+    expect(limits.map((l) => l.name)).toEqual([
+      "Codex",
+      "Claude Code",
+      "Claude Code · Personal",
+      "Claude Code · Client seat",
+      "GitHub Copilot",
+    ]);
+    expect(limits[2]?.account).toEqual({ id: "personal", label: "Personal" });
+    expect(limits[2]?.state).toBe("ok");
+    expect(limits[3]?.state).toBe("not-signed-in");
     const codex = limits[0];
     if (!codex) throw new Error("no codex");
     expect(headlineWindow(codex)?.label).toBe("Weekly");
     expect(providerTone(codex)).toBe("warn");
-    const copilot = limits[2];
+    const copilot = limits[4];
     if (!copilot) throw new Error("no copilot");
     expect(providerTone(copilot)).toBe("err");
   });

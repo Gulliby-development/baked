@@ -3,11 +3,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { LanguageModelV3, LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import { MockLanguageModelV3 } from "./helpers/workflow-model.js";
 import { getProvider } from "../src/core/llm/providers/index.js";
-import { codeWebSearchFor, NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";
+import { attemptCapFault, codeWebSearchFor, NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";
 import { WorkspaceLeases } from "../src/core/workflows/leases.js";
 import { type AgentProfile, ProfileSchema, type RunPolicy } from "../src/core/workflows/schemas.js";
-import { AttemptStepController, type AttemptUsageRecord } from "../src/core/workflows/step-budget.js";
-import { mergeToolBackends, runUsage, toolBackendLine } from "../src/core/workflows/usage.js";
+import { AttemptStepController, type AttemptUsageRecord, allTokensCapFor } from "../src/core/workflows/step-budget.js";
+import { findPricing } from "../src/core/llm/pricing.js";
+import { attemptCost, mergeToolBackends, runUsage, toolBackendLine } from "../src/core/workflows/usage.js";
 import type { AgentExecutor, ExecutionRequest, Task } from "../src/core/workflows/types.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -191,6 +192,48 @@ describe("attempt usage of a failing native attempt", () => {
     expect(usage?.estimatedUsage?.outputTokens).toBe(100 + cap);
   });
 
+  // The charged estimate is a step of the record and also in the sum `estimatedUsage` repeats, so
+  // the price counted it twice: in the run's cost, its dollar cap and the stage rates (#2669).
+  test("an attempt charged at the output cap is priced once", async () => {
+    scriptModel([
+      step(1000, 100, { name: "unknown_tool", input: {} }),
+      () => {
+        throw new Error("Incomplete response returned, reason: max_output_tokens");
+      },
+    ]);
+    const priced = "openai/gpt-5.4";
+    const { store, run, attemptId, executor, request, usageRecord } = await nativeAttempt(
+      fixturePolicy,
+      "research",
+      undefined,
+      priced,
+    );
+    await expect(executor.execute(request)).rejects.toThrow("max_output_tokens");
+    const usage = usageRecord();
+    const pricing = findPricing(priced)?.pricing;
+    if (!usage || !pricing) throw new Error("usage or price missing");
+    const once =
+      usage.steps.reduce(
+        (sum, s) => sum + (s.inputTokens ?? 0) * pricing.input + (s.outputTokens ?? 0) * pricing.output,
+        0,
+      ) / 1e6;
+    expect(once).toBeGreaterThan(0);
+    expect(attemptCost(priced, usage)).toBeCloseTo(once, 9);
+    expect(store.attemptCostUsd(run.runId, attemptId)).toBeCloseTo(once, 9);
+    expect(runUsage(store, run.runId).attempts.find((a) => a.attemptId === attemptId)?.costUsd).toBeCloseTo(once, 9);
+  });
+
+  test("an estimate the steps do not carry is still priced", () => {
+    // Codex reported zero tokens for every step (#1057): only `estimatedUsage` holds the spend.
+    const record = {
+      steps: [{ inputTokens: 0, outputTokens: 0, cacheReadTokens: null, toolCalls: 1, compactedBytes: 0 }],
+      estimatedUsage: { inputTokens: 4_000, outputTokens: 1_000 },
+    } as unknown as AttemptUsageRecord;
+    const pricing = findPricing("openai/gpt-5.4")?.pricing;
+    if (!pricing) throw new Error("price missing");
+    expect(attemptCost("openai/gpt-5.4", record)).toBeCloseTo((4_000 * pricing.input + 1_000 * pricing.output) / 1e6, 9);
+  });
+
   test("an attempt that fails before any model step records zero tokens", async () => {
     scriptModel([
       () => {
@@ -253,7 +296,8 @@ describe("an attempt at its token cap", () => {
       details: { reason: "attempt_cap", cap: 30_000 },
     });
     expect(String(error)).toContain("uncached-token cap");
-    expect(String(error)).toContain("uncached tokens 30000/30000, total tokens 30000/150000");
+    // The all-token cap is one request past the 10-step limit at the 15k average request (#2650).
+    expect(String(error)).toContain("uncached tokens 30000/30000, total tokens 30000/165000");
   });
 });
 
@@ -261,6 +305,32 @@ describe("an attempt at its token cap", () => {
 function cachedStep(input: number, cached: number, output: number, call: { name: string; input: unknown }): LanguageModelV3GenerateResult {
   const base = step(input, output, call);
   return { ...base, usage: { ...base.usage, inputTokens: { total: input, noCache: input - cached, cacheRead: cached, cacheWrite: 0 } } };
+}
+
+const researched = { schemaVersion: 1, summary: "Fixture researched", facts: [], unknowns: [], constraints: [], suggestedScope: [] };
+
+/**
+ * Probes with steps of `size(count)` tokens (input and cache reads) until the attempt is restricted
+ * to its submit tool, then submits.
+ */
+function loopingModel(size: (count: number) => { input: number; cached: number }): { steps: () => number } {
+  const provider = getProvider("openai");
+  if (!provider) throw new Error("openai provider missing");
+  const original = provider.createModel;
+  let count = 0;
+  const model = new MockLanguageModelV3({
+    doGenerate: async (options) => {
+      count++;
+      const submitOnly = options.toolChoice?.type === "required" && options.tools?.every((t) => t.name === "submit_result");
+      const { input, cached } = size(count);
+      return cachedStep(input, cached, 500, submitOnly ? { name: "submit_result", input: researched } : { name: "unknown_tool", input: { step: count } });
+    },
+  });
+  provider.createModel = () => model as LanguageModelV3;
+  cleanups.push(() => {
+    provider.createModel = original;
+  });
+  return { steps: () => count };
 }
 
 describe("an attempt whose steps replay a cached context (#1070)", () => {
@@ -278,16 +348,24 @@ describe("an attempt whose steps replay a cached context (#1070)", () => {
     expect(usage).toMatchObject({ stopReason: "submitted", finalizedBy: null, maxTokens: 160_000, totalTokens: 324_000, cappedTokens: 36_000 });
   });
 
-  test("names the all-token cap and both totals when cached steps exhaust it (#1595)", async () => {
-    const cached = cachedStep(100_000, 99_000, 0, { name: "unknown_tool", input: {} });
-    const text = { ...cached, content: [{ type: "text" as const, text: "unfinished" }], finishReason: { unified: "stop" as const, raw: undefined } };
-    scriptModel([...Array.from({ length: 9 }, () => cached), text]);
-    const { executor, request, usageRecord } = await nativeAttempt({ ...fixturePolicy, maxTotalTokens: 10_000_000 });
-    const error = await executor.execute({ ...request, maxSteps: 32, attemptTokens: 250_000 }).catch((e: unknown) => e);
-    expect(String(error)).toContain("all-token cap");
+  test("names the all-token cap and both totals when cached steps exhaust it (#1595)", () => {
+    // Since #2650 the cap is never below one request past the step limit, so an attempt's own steps
+    // end it first; the report still names this cap when the totals it is given reach it.
+    const error = attemptCapFault("implementer", 10_000, 250_000, { totalTokens: 1_000_000, allTokensCap: 1_000_000 });
     expect(error).toMatchObject({ code: "BUDGET_EXHAUSTED", details: { reason: "attempt_cap", capKind: "all-token cap", tokens: 10_000, cap: 250_000, totalTokens: 1_000_000, allTokensCap: 1_000_000 } });
     expect(String(error)).toContain("uncached tokens 10000/250000, total tokens 1000000/1000000");
-    expect(usageRecord()).toMatchObject({ stopReason: "tokens", finalizedBy: "tokens", totalTokens: 1_000_000, cappedTokens: 10_000, allTokensCap: 1_000_000 });
+    // Without totals the cap is the one computation in step-budget.ts, the factor alone.
+    expect(attemptCapFault("implementer", 250_000, 250_000).details).toMatchObject({ allTokensCap: 750_000 });
+  });
+
+  test("an attempt whose 50k requests resend a cached prefix reaches its 20-step limit (#2650)", async () => {
+    // R88 md-site T009 and T013: requests of 45k to 50k, almost all cache reads, reached three times
+    // the 250k cap at about request 15 and ended without a result (1.61M tokens of the run).
+    const model = loopingModel(() => ({ input: 50_000, cached: 45_000 }));
+    const { executor, request, usageRecord } = await nativeAttempt({ ...fixturePolicy, maxTotalTokens: 10_000_000 });
+    await expect(executor.execute({ ...request, maxSteps: 20, attemptTokens: 250_000 })).resolves.toMatchObject({ output: researched });
+    expect(usageRecord()).toMatchObject({ stopReason: "submitted", finalizedBy: "steps", maxTokens: 250_000, allTokensInputs: { firstRequestTokens: 50_500 } });
+    expect(model.steps()).toBeGreaterThan(15);
   });
 
   test("still finalizes before the run's free budget, which counts the cache reads", async () => {
@@ -376,38 +454,20 @@ describe("scenario: a corrective admitted on its cap and finalized by the run bu
 
 // Bench round 32, notesift cli T004 (#1300): one attempt of 26 steps spent 2.27M tokens, almost
 // all cache reads, so its cap (which leaves them out) never bound and only the step limit ended it.
+// Since #2650 the all-token cap is never below one request past the step limit at the attempt's
+// average request, so the step limit bounds such a loop at its own request size.
 describe("scenario: an attempt whose cached context keeps growing (#1300)", () => {
-  const result = { schemaVersion: 1, summary: "Fixture researched", facts: [], unknowns: [], constraints: [], suggestedScope: [] };
-  /** Probes until the attempt is restricted to its submit tool, then submits. */
-  function loopingModel(): { steps: () => number } {
-    const provider = getProvider("openai");
-    if (!provider) throw new Error("openai provider missing");
-    const original = provider.createModel;
-    let count = 0;
-    const model = new MockLanguageModelV3({
-      doGenerate: async (options) => {
-        count++;
-        const submitOnly = options.toolChoice?.type === "required" && options.tools?.every((t) => t.name === "submit_result");
-        // Each step replays a 100k context, 97k of it from the cache: 3,500 tokens against the cap.
-        return cachedStep(100_000, 97_000, 500, submitOnly ? { name: "submit_result", input: result } : { name: "unknown_tool", input: { step: count } });
-      },
-    });
-    provider.createModel = () => model as LanguageModelV3;
-    cleanups.push(() => {
-      provider.createModel = original;
-    });
-    return { steps: () => count };
-  }
-
-  test("finalizes on its tokens, cache reads included, long before the step limit", async () => {
-    const model = loopingModel();
+  test("is finalized by its step limit and spends less than one request past it at its average", async () => {
+    // Each step replays the last context, 97 percent from the cache, and adds 8k: 3,000 against the cap.
+    const model = loopingModel((count) => ({ input: 60_000 + 8_000 * count, cached: 57_000 + 8_000 * count }));
     const { executor, request, usageRecord } = await nativeAttempt({ ...fixturePolicy, maxTotalTokens: 10_000_000 });
-    await expect(executor.execute({ ...request, maxSteps: 40, attemptTokens: 100_000 })).resolves.toMatchObject({ output: result });
+    await expect(executor.execute({ ...request, maxSteps: 20, attemptTokens: 100_000 })).resolves.toMatchObject({ output: researched });
     const usage = usageRecord();
-    // The cap counts 3,500 a step, so only the all-token cap (10 steps of 100k here) can bind.
-    expect(usage).toMatchObject({ stopReason: "submitted", finalizedBy: "tokens", maxTokens: 100_000 });
-    expect(usage?.totalTokens).toBeLessThanOrEqual(1_100_000);
-    expect(model.steps()).toBeLessThan(12);
+    expect(usage).toMatchObject({ stopReason: "submitted", maxTokens: 100_000 });
+    expect(model.steps()).toBeLessThanOrEqual(20);
+    const average = usage?.allTokensInputs?.averageRequestTokens ?? 0;
+    expect(usage?.totalTokens ?? Number.POSITIVE_INFINITY).toBeLessThan(21 * average);
+    expect(usage?.allTokensCap).toBe(allTokensCapFor(100_000, { maxSteps: 20, consumed: usage?.totalTokens ?? 0, requests: usage?.allTokensInputs?.requests ?? 0 }));
   });
 });
 

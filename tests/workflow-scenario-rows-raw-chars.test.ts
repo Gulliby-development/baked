@@ -52,6 +52,9 @@ const INLINE: Record<InlineRowTest["framework"], InlineRowTest> = {
   pest: { mode: "inline", framework: "pest", test: "tests/RulesTest.php" },
   exunit: { mode: "inline", framework: "exunit", test: "test/rules_test.exs" },
   dart: { mode: "inline", framework: "dart", test: "test/rules_test.dart" },
+  kotlin: { mode: "inline", framework: "kotlin", package: "com.ex.lint", test: "src/test/kotlin/com/ex/lint/RulesTest.kt" },
+  scalatest: { mode: "inline", framework: "scalatest", test: "src/test/scala/lint/RulesSuite.scala" },
+  munit: { mode: "inline", framework: "munit", test: "src/test/scala/lint/RulesSuite.scala" },
 };
 
 /** A block's text with the line breaks and indentation of its own layout taken out. */
@@ -70,6 +73,22 @@ describe("host-written literals hold no invisible character raw (#1995)", () => 
     const [, test] = rowFiles(task, { tasks: [{ id: "T003", rows: ["AC-004"], rowTest }], rows } as unknown as RowsArtifact);
     expect(test?.content).toContain("private const string Rows = ");
     expect([...literalText(test?.content ?? "").matchAll(LITERAL_ESCAPED)].map((m) => m[0])).toEqual([]);
+  });
+
+  // #2410: Kotlin's and Scala's literals escape them as \uXXXX; Scala 2 reads that before lexing,
+  // so a quote, a backslash or a line break is never one.
+  test.each([
+    ["kotlin", "src/test/kotlin/RulesHarness.kt", "src/test/kotlin/RulesRowsTest.kt"],
+    ["scalatest", "src/test/scala/RulesHarness.scala", "src/test/scala/RulesRowsSuite.scala"],
+    ["munit", "src/test/scala/RulesHarness.scala", "src/test/scala/RulesRowsSuite.scala"],
+  ])("the %s file-mode test", (framework, harness, path) => {
+    const rowTest = { framework, harness, test: path, data: "rows.json" };
+    const task = { id: "T003", rows: ["AC-004"], rowTest } as unknown as Task;
+    const [, test] = rowFiles(task, { tasks: [{ id: "T003", rows: ["AC-004"], rowTest }], rows } as unknown as RowsArtifact);
+    const text = test?.content ?? "";
+    expect([...literalText(text).matchAll(LITERAL_ESCAPED)].map((m) => m[0])).toEqual([]);
+    expect(text).toContain('list("\\ufeff#😀\\r\\r\\n#\\u2028\\r", map())');
+    expect(text).not.toMatch(/\\u00(?:22|5[cC]|0[aAdD])/);
   });
 });
 

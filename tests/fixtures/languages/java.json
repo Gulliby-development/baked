@@ -10,10 +10,15 @@
     "testsGrown": "[ERROR] Tests run: 4, Failures: 1, Errors: 0, Skipped: 0\n"
   },
   "generated": {
-    "src/test/java/GenTest.java": "String a = \"\\\\\".repeat(3);\nString b = String.format(\"x%s\", a);\nString lit = \"\\\\\\\\\\\\\";\n// String d = \"\\\\\".repeat(3);\n"
+    "src/test/java/GenTest.java": "String a = \"\\\\\".repeat(3);\nString b = String.format(\"x%s\", a);\nString lit = \"\\\\\\\\\\\\\";\n// String d = \"\\\\\".repeat(3);\n",
+    "src/test/java/RuntimeTest.java": "Path dir = Files.createTempDirectory(\"rt\");\nPath p = dir.resolve(\"a.txt\");\nString want = String.format(\"bad: %s\", p);\n"
   },
   "expected": {
+    "rowIndent": ["\"    row(1),\""],
+    "languagePitfalls": ["Java"],
     "generatedValues": ["src/test/java/GenTest.java:1 repeat","src/test/java/GenTest.java:2 format"],
+    "exampleBuild": null,
+    "runtimePaths": ["src/test/java/RuntimeTest.java: dir, p"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
       "Scanner passes Reader::isEncodingToken as the filter.: Reader::isEncodingToken"
@@ -86,11 +91,38 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/main/java/calc/Calc.java: error: incompatible types: String cannot be converted to int"],
     "testClasses": [
       "src/test/java/com/example/UnitTest1.java: com.example.FailureExceptionTest",
       "src/test/java/SumTest.java: by its name",
       "src/test/java/SumPropertyTest.java: SumPropertyTest"
     ],
-    "testDeclarations": ["src/test/java/SumTest.java: 2 tests, per class 2"]
+    "testDeclarations": ["src/test/java/SumTest.java: 2 tests, per class 2"],
+    "rowFileShapes": [
+      "src/test/java/bytemerge/EncodeIdsTest.java",
+      "package bytemerge;",
+      "",
+      "import static org.junit.jupiter.api.Assertions.assertEquals;",
+      "",
+      "import java.util.stream.Stream;",
+      "import org.junit.jupiter.params.ParameterizedTest;",
+      "import org.junit.jupiter.params.provider.Arguments;",
+      "import org.junit.jupiter.params.provider.MethodSource;",
+      "",
+      "class EncodeIdsTest {",
+      "  static Stream<Arguments> rows() {",
+      "    return Stream.of(",
+      "        Arguments.of(\"256 \\\\ n \\n\", \"[50, 53, 54, 32, 92, 32, 110, 32, 10]\"),",
+      "        Arguments.of(\"tab\\there\", \"[116, 97, 98, 9, 104, 101, 114, 101]\"));",
+      "  }",
+      "",
+      "  @ParameterizedTest",
+      "  @MethodSource(\"rows\")",
+      "  void encodesIds(String text, String ids) {",
+      "    assertEquals(ids, Encoder.encodeIds(text).toString());",
+      "  }",
+      "}",
+      ""
+    ]
   }
 }

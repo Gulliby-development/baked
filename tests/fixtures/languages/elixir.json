@@ -2,13 +2,23 @@
   "files": {
     "lib/sum.ex": "defmodule Sum do\n  def sum(a, b) do\n    raise \"not implemented\"\n  end\nend\n",
     "lib/sum_test.exs": "ExUnit.start()\nSum.sum(1, 2)\n# AC-001 example: (1, 2, 3)\n",
-    "mix.exs": "defmodule Fixture.MixProject do\nend\n"
+    "mix.exs": "defmodule Fixture.MixProject do\n  def project, do: [app: :sum, escript: [main_module: Sum.CLI]]\nend\n",
+    ".formatter.exs": "[]\n"
+  },
+  "outputs": {
+    "tests": ".\n\n  1) test fails on purpose (SumTest)\n     test/sum_test.exs:8\n     Assertion with == failed\n     code:  assert Proj.hello() == :moon\n     left:  :world\n     right: :moon\n     stacktrace:\n       test/sum_test.exs:9: (test)\n\n\nFinished in 0.02 seconds (0.00s async, 0.02s sync)\n2 tests, 1 failure\n\nRandomized with seed 0\n",
+    "testsGrown": ".\n\n  1) test fails on purpose (SumTest)\n     test/sum_test.exs:8\n     Assertion with == failed\n     code:  assert Proj.hello() == :moon\n     left:  :world\n     right: :moon\n     stacktrace:\n       test/sum_test.exs:9: (test)\n\n.\nFinished in 0.02 seconds (0.00s async, 0.02s sync)\n3 tests, 1 failure\n\nRandomized with seed 0\n"
   },
   "generated": {
-    "test/gen_test.exs": "a = String.duplicate(\"\\\\\", 3)\nb = \"x#{a}\"\nlit = \"\\\\\\\\\\\\\"\n# d = String.duplicate(\"\\\\\", 3)\n"
+    "test/gen_test.exs": "a = String.duplicate(\"\\\\\", 3)\nb = \"x#{a}\"\nlit = \"\\\\\\\\\\\\\"\n# d = String.duplicate(\"\\\\\", 3)\n",
+    "test/runtime_test.exs": "dir = System.tmp_dir!()\nwant = \"bad: #{dir}\"\n"
   },
   "expected": {
+    "rowIndent": ["\"  row(1),\""],
+    "languagePitfalls": null,
     "generatedValues": ["test/gen_test.exs:1 repeat","test/gen_test.exs:2 interpolate"],
+    "exampleBuild": ["mix run --no-compile; link _build"],
+    "runtimePaths": ["test/runtime_test.exs: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
     ],
@@ -30,11 +40,11 @@
     "placeholders": [
       "lib/sum.ex:3"
     ],
-    "gates": ["mix-compile", "mix-test"],
-    "testRunners": null,
+    "gates": ["mix-format", "mix-compile", "mix-test"],
+    "testRunners": ["exunit 2", "signature stable"],
     "mutation": null,
     "properties": null,
-    "entryPoints": null,
+    "entryPoints": ["sum: mix run -e Sum.CLI.main(System.argv()) --"],
     "testGates": null,
     "callGraph": [
       "sum called at lib/sum_test.exs:2"
@@ -43,7 +53,7 @@
       "lib/sum.ex:3",
       "lib/sum_test.exs:3 comment"
     ],
-    "formatters": null,
+    "formatters": ["mix-format-written: mix format --check-formatted lib/sum.ex lib/sum_test.exs mix.exs .formatter.exs"],
     "packageContents": ["mix.exs: hex"],
     "numericLimits": null,
     "staticTools": [
@@ -57,7 +67,23 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": [
+      "lib/calc.ex: undefined function sub/2",
+      "lib/calc/old.ex: error: undefined variable \"x\""
+    ],
     "testClasses": null,
-    "testDeclarations": ["test/sum_test.exs: 2 tests, per class 2"]
+    "testDeclarations": ["test/sum_test.exs: 2 tests, per class 2"],
+    "rowFileShapes": [
+      "test/eval_rows_test.exs",
+      "defmodule Ratdec.EvalRowsTest do",
+      "  use Ratdec.RowCase",
+      "",
+      "  rows([",
+      "    row([\"eval\"], \"7/3\\n\", 0, \"7/3\\n\", \"\"),",
+      "    row([\"eval\", \"--as\", \"mixed\"], \"7/3\\n\", 0, \"2 1/3\\n\", \"\")",
+      "  ])",
+      "end",
+      ""
+    ]
   }
 }

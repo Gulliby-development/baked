@@ -82,6 +82,24 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  "initiative-plan-share": {
+    label:
+      "A started initiative feature run's own sized plan needs more than its share of the token pool, before its first task",
+    // Shadow only (#2488): the run goes on under assume as before and the record names the
+    // extend that answers it. Its promotion adds `enforce` and parks the feature before its tasks.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  "initiative-row-owner": {
+    label:
+      "An initiative's split gives a prescribed row file to a feature although one of its rows cites a literal of a feature that depends on it",
+    // Shadow by default (#2487): the initiative records `decision.would_stop` when the split is
+    // proposed. `stopModes: { "initiative-row-owner": "enforce" }` returns the problem to the
+    // decomposer and refuses a split that still has it; making that the default is a pull request
+    // of its own after two bench rounds with no false would-stop.
+    modes: STOP_MODES,
+    defaultMode: "shadow",
+  },
   "initiative-plan-charge": {
     label:
       "An initiative's token pool holds an open feature run with a sized plan at its plan's need instead of its run limit",
@@ -98,15 +116,22 @@ export const STOP_REASONS = {
       "An open feature run's growth bound is above what the initiative's token pool or dollar ceiling holds for it",
     // Shadow only until two bench rounds show no false would-stop (#2280, R73 flatelens'
     // commands grew to 12.9M with 5.7M left). A bound derived from a plan charge is capped at
-    // what the pool and the ceiling hold (`chargeHold`); this records any bound still above them
-    // (a start's, an auto-extend's hard ceiling). Its promotion stops or caps the run instead.
+    // what the pool and the ceiling hold (`chargeHold`), and the run's own token growth
+    // (auto-growth, planning growth, auto-extend) is held at the pool less the other runs' use,
+    // enforced since the pool is a limit the person set (`WorkflowStore.tokenHold`, #2468: R79
+    // deltaglue's chunks auto-extended past it, which this reason had recorded, a true record).
+    // This still records a bound above them (a start's sizing ceilings, a dollar bound, an
+    // auto-extend hard ceiling the other runs' later use passed). Its promotion stops or caps
+    // the run on those too.
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
   repeated_failure: {
-    label: "A corrective's required checks fail exactly as the corrective's before it",
-    // Shadow only until two bench rounds show no false would-stop (#1996); its promotion is a
-    // pull request of its own that adds `enforce` and blocks the chain before the next session.
+    label:
+      "A corrective's required checks fail exactly as the corrective's before it, a planned task's whole-unit check fails on another task's file as it did before a finished corrective, or a task ends unfinished on the same failing checks as its previous unfinished end",
+    // Shadow only until two bench rounds show no false would-stop (#1996, #2437, #2948); its
+    // promotion is a pull request of its own that adds `enforce` and blocks the chain, the cascade's
+    // next corrective, or the unfinished task's resume, before the next session.
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
@@ -127,6 +152,18 @@ export const STOP_REASONS = {
     modes: STOP_MODES,
     defaultMode: "shadow",
   },
+  upstream_stale_file: {
+    label:
+      "A corrective's evidence names only a test file of a closed upstream initiative feature: amend it in this feature instead of parking for that feature",
+    // Shadow by default (#2485, R80 ratdec representations T007): the `amend` decision of
+    // `unownedRule` is recorded as a would-stop and the enforced `corrective_unowned_file` keeps
+    // its park. `stopModes: { upstream_stale_file: "enforce" }` (with `corrective_unowned_file`
+    // enforced, or a person's `upstream` remedy) adds the file to the feature's boundary and the
+    // corrective's writes (`hostAmend`); making that the default is a pull request of its own
+    // after two bench rounds with no false would-stop.
+    modes: STOP_MODES,
+    defaultMode: "shadow",
+  },
   upstream_symbol: {
     label:
       "A released planned-ahead feature's spec names a symbol of an upstream feature that the accepted upstream code does not have",
@@ -142,6 +179,16 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  chain_rewrite_repeat: {
+    label:
+      "A finding chain's next case comes after two rewrites of its symbol or family: the convergence ask instead of a third corrective",
+    // Shadow only until two bench rounds show no false would-stop (#2568, R83 md-site's
+    // `findDelimited`: T012 and T013 rewrote it and review found the next member); its promotion
+    // asks the person to converge with `rewrites` and the family, and the convergence gate reads
+    // `rewrites`, instead of opening the corrective.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   repro_blind: {
     label:
       "A corrective's repro prints the same output after the attempt changed the finding's file, and reads a path outside its root",
@@ -153,10 +200,16 @@ export const STOP_REASONS = {
   generated_case: {
     label:
       "A task's tests build their inputs from generated values where the request or a criterion asks for literal examples",
-    // Shadow only until a bench round shows its records true (#2344, R74 callmend); its promotion
-    // refuses the task at its case walk with the files and lines of the generated values.
-    modes: NOT_ENFORCED,
-    defaultMode: "shadow",
+    // Enforced (#2469) after R77 and R79 recorded only true would-stops (#2344): R79 deltaglue
+    // chunks T002's record preceded 8.28M tokens of correctives that a review finding opened for
+    // the same generated inputs. The case walk refuses the task with the files and lines of the
+    // generated values, in the session that wrote them; it applies only where the request or the
+    // task's criteria ask for literal examples (`bannedGeneratedKinds`). R78 deltaglue cli T008's
+    // record was false (expected stderr interpolating `mkdtemp` paths, the literal rows held), so a
+    // value built only from a path made at run time is no longer generated (`RUNTIME_PATH_SOURCES`).
+    // `shadow` records instead.
+    modes: STOP_MODES,
+    defaultMode: "enforce",
   },
   corrective_restores_removed: {
     label: "A corrective puts back what the previous corrective of the file removed",
@@ -216,12 +269,114 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  host_content_conflict: {
+    label:
+      "A task-level corrective the host writes itself would write its files with the content they already hold",
+    // Shadow only until two bench rounds show no false would-stop (#2456, R78 pairwick cli: three
+    // host correctives rewrote a Main.scala that scalafmt cannot parse); its promotion blocks the
+    // run at once with the conflict between the request's content and the project's check.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  fixer_unusable: {
+    label:
+      "A required check's fixer fails and changes nothing on a file of the base, where its check passes",
+    // Shadow only until two bench rounds show no false would-stop (#2442, R77 pairwick's
+    // `sbt scalafmtAll <file>`); its promotion stops the run before its first task with the
+    // fixer's output, instead of letting implementers call a fixer that cannot run.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  worktree_environment: {
+    label:
+      "A run's task worktree path is longer than a project language's test tool handles on this platform",
+    // Shadow only until two bench rounds show no false would-stop (#2454, R78 latcell-update's
+    // `dart test` at a 94-character worktree on Windows); its promotion stops the run before its
+    // first task with the path's length and the remedies, instead of paying correctives that
+    // cannot shorten a path.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   supplied_drift: {
     label:
       "A file a task delivered differs from the block the request gives for it verbatim (a whole file, a Markdown section or an exact diff)",
     // Shadow only until two bench rounds show no false would-stop (#2332, R74 ewvet-update's README
     // printf example with a doubled backslash); its promotion makes the mismatch a finding of
     // severity high on the task's file at the checks stage, which a repair task rewrites.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  transcript_drift: {
+    label:
+      "A document the run delivered leaves a command transcript the request says it must hold exactly",
+    // Shadow only until two bench rounds show no false would-stop (#2648, R88 pokerank's README
+    // printf line with a doubled backslash, R87 citeseek the same); its promotion makes the line a
+    // finding the host proved on the document, which the review gate repairs in any round.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  doc_finding_unrepaired: {
+    label:
+      "A reviewer's documentation finding marked noRepro stays a note because its kind is correctness, where a partial one repairs",
+    // Shadow until R92 and R93 showed 3 true would-stops and no false one (#2835, R91 stopcut's
+    // README escape reference with doubled backslashes, R90 holefit docs F1 and F3). Under
+    // `enforce`, the default since R93, the review and converge gates repair it as a `partial`
+    // finding (`docFindingRepairs`, #2866, R92 tailclose's README shipped a literal `\n` and
+    // doubled backslashes); `shadow` keeps the old note and records the would-stop.
+    modes: STOP_MODES,
+    defaultMode: "enforce",
+  },
+  doc_finding_repeat: {
+    label:
+      "A reviewer's documentation finding raised again after a correction stays a note because the round's severity floor leaves it out",
+    // Shadow only until two bench rounds show no false would-stop (#2931, R92 tailclose's second
+    // review raised F1 and F2 again; R99 cronwhen guide's README shipped two unclosed code spans
+    // after its review 2 repeated F1 and F2). Recorded in every mode of `doc_finding_unrepaired`,
+    // whose enforced first-round repair left this repeat with no record; its promotion opens one
+    // more correction for the repeat.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  row_block_drift: {
+    label:
+      "A test file the run delivered lacks a quoted literal of a row the request prescribes for it, or holds a row beyond them",
+    // Shadow only until two bench rounds show no false would-stop (#2486, R80 deltaglue cli T010
+    // dropped row 2's final `data: [DONE]` event, ratdec core T014 rewrote a stdin row; #2503, R81
+    // ratdec exact-cli T011 added a 14th row to 13 prescribed); its promotion makes the row a
+    // finding of severity high on the file at the checks stage, which a repair task restores from
+    // the request's row (or a host removal of the added line).
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  unfinished_row_split: {
+    label:
+      "A test task ended unfinished twice with prescribed rows its file still lacks: the host would split it into slices of the missing rows instead of resuming it whole",
+    // Shadow only (#2458, R78 deltaglue cli T007: 63 prescribed rows, four unfinished ends and
+    // 6.89M tokens, each resume starting over with the whole task). It records
+    // `row-splits/tasks/<task>.json` and the would-stop; starting the slices of the missing rows is
+    // a pull request of its own after a bench round with no false decision.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  case_not_prescribed: {
+    label:
+      "A criterion cites a literal that no row the request prescribes holds, for a task that writes only prescribed row files",
+    // Shadow only (#2501): the case walk no longer refuses such a task (it cannot add a row to a
+    // file the request fixes row for row; R81 ratdec exact-cli T011 added one and a corrective
+    // removed it, 368k), and records the criterion and literal instead; analysis lists them as a
+    // note. Its promotion, after two bench rounds with no false would-stop, makes that analysis
+    // finding blocking, so the spec author removes the example row from the criterion.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  slice_foreign_conflict: {
+    label:
+      "A host row slice's spec conflict asks for literals that only another slice's rows of the same file hold: the host would settle it without asking a person",
+    // Shadow only (#2476, R79 verhop T004: rows 1-7 of `tests/check.bats` reported three
+    // conflicts about AC-003 and AC-005 literals of rows 8-15, and a person answered the third
+    // with "satisfied by the union of both slices"). It records the would-stop beside the
+    // `conflicts/request/` record and the person is still asked; its promotion, after two bench
+    // rounds with no false would-stop, settles the report as slice-foreign with no clarification.
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
@@ -256,6 +411,17 @@ export const STOP_REASONS = {
     modes: STOP_MODES,
     defaultMode: "shadow",
   },
+  attempt_green_checkpoint: {
+    label:
+      "An attempt ended unfinished after its required checks failed on edits past a state where every one passed: the host would finish the task from that state",
+    // Shadow only (#2470, R79 deltaglue chunks T004: every required check passed at 23:19:17,
+    // two more edits failed them and the attempt ended at its all-token cap at 23:19:40, the
+    // run's third `attempt_cap` block). It records `decision.would_finish` from the attempt's
+    // checkpoint; restoring that state and finishing the task is a pull request of its own after
+    // a bench round with no false would-finish.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   "host-resume-on-stored-limit": {
     label:
       "A run blocked on its own active time, tokens or calls whose stored limits now exceed its usage: the host would resume it once",
@@ -263,6 +429,17 @@ export const STOP_REASONS = {
     // deadline stopped the attempt and the run waited 29 minutes 52 seconds for an owner's
     // plain resume). It records `decision.would_resume`; resuming for real is a pull request
     // of its own after two bench rounds with no false would-resume.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  "host-settle-interrupted-check": {
+    label:
+      "A check's command of unknown outcome whose process is gone: the host would settle it as not applied and run the check again at its stage",
+    // Shadow only (#2415, R76 schemamask: the laptop slept mid-check and two feature runs sat
+    // `waiting interrupted_effect` for a person's `recover --resolution retry`). It records
+    // `decision.would_resume` from `noteInterruptedChecks` in recovery.ts and leaves the request
+    // with the person; settling for real is a pull request of its own after two bench rounds
+    // with no false would-resume.
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
@@ -274,6 +451,19 @@ export const STOP_REASONS = {
     // The run still blocks; its promotion leaves it `waiting` on a request a person answers with
     // the extend remedy, and its planned-ahead dependants count it as waiting, not stalled.
     modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  stream_output_limit: {
+    label:
+      "A model call's streamed output passes twice the profile's maxOutputTokens on a provider that takes no output limit (Codex)",
+    // Shadow by default (#2660, a follow-up of #2547: Codex sends no `max_output_tokens`, and
+    // #1479 ran a 10-minute response to the model's own limit). The Codex app-server adapter
+    // counts each step's streamed text and reasoning (`streamOutputDecision`) and the executor
+    // records `decision.would_stop` from the step's usage record. `stopModes: {
+    // stream_output_limit: "enforce" }` interrupts the turn and ends the step `length`, so the
+    // truncation notice applies; making that the default is a pull request of its own after two
+    // bench rounds with no false would-stop.
+    modes: STOP_MODES,
     defaultMode: "shadow",
   },
   cost: {
@@ -700,6 +890,33 @@ export function recordWouldRerun(
       key: rerun.key.slice(0, 200),
       summary: rerun.summary.slice(0, 1000),
       inputs: rerun.inputs,
+    },
+  });
+  return true;
+}
+
+/**
+ * Records `decision.would_finish` for an attempt that ended unfinished after a state on which
+ * every required check passed (`attempt_green_checkpoint`, shadow, #2470), once per key. Returns
+ * whether it recorded now.
+ */
+export function recordWouldFinish(
+  store: WorkflowStore,
+  runId: string,
+  finish: Omit<WouldStop, "reason">,
+): boolean {
+  const seen = store
+    .eventsOfType(runId, "decision.would_finish")
+    .some((e) => e.type === "decision.would_finish" && e.payload.key === finish.key);
+  if (seen) return false;
+  store.emit(runId, {
+    type: "decision.would_finish",
+    payload: {
+      reason: "attempt_green_checkpoint",
+      mode: finish.mode,
+      key: finish.key.slice(0, 200),
+      summary: finish.summary.slice(0, 1000),
+      inputs: finish.inputs,
     },
   });
   return true;

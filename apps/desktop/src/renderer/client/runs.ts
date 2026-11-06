@@ -76,6 +76,36 @@ export interface RunDetailStatus extends Omit<RunStatus, "requests"> {
    * src/core/workflows/fork-stage.ts); absent from older backends.
    */
   forkStages?: string[];
+  /**
+   * A resume the workspace's parallel-run cap refused: the run is paused and waits for a slot
+   * (`queuedResume` in src/core/workflows/queued-resume.ts, #2421). Absent while a slot is free
+   * and from older backends.
+   */
+  queued?: RunQueued;
+}
+
+/** Why a resumed run is still paused: every slot of `workflows.maxParallelRuns` is taken. */
+export interface RunQueued {
+  reason: "parallel_cap";
+  message: string;
+  maxParallelRuns: number | null;
+  /** The runs that hold the slots. */
+  executing: string[];
+  /** The initiative whose drive starts the run once a slot is free, or null. */
+  initiativeId: string | null;
+}
+
+/** The run header's words for a run that waits for a free slot (#2421). */
+export function queuedText(queued: RunQueued): { title: string; next: string } {
+  const n = queued.executing.length;
+  const cap =
+    queued.maxParallelRuns === null ? "" : ` (maxParallelRuns ${String(queued.maxParallelRuns)})`;
+  return {
+    title: `Waiting for a free slot: ${String(n)} run${n === 1 ? "" : "s"} execute${n === 1 ? "s" : ""}${cap}.`,
+    next: queued.initiativeId
+      ? `Initiative ${queued.initiativeId} starts this run when a slot is free.`
+      : "Resume this run once one of them stops.",
+  };
 }
 
 export interface RunRouting {
@@ -135,6 +165,14 @@ export interface EventPayloads {
     usageEstimated?: true;
     /** Why a failed attempt failed. */
     error?: { code: string; message: string };
+  };
+  "attempt.large_prompt": {
+    attemptId: string;
+    taskId: string | null;
+    firstBytes: number;
+    medianBytes: number;
+    firstAttempts: number;
+    largest: { name: string; bytes: number };
   };
   "attempt.advisory": {
     attemptId: string;
@@ -311,7 +349,8 @@ export const runs = {
       requestId: string;
       effectId: string;
       resolution: RecoveryResolution;
-      evidence: string;
+      /** Optional (#2415): without it the decision records a generated note. */
+      evidence?: string;
     },
   ) =>
     call<RunSnapshot>(key, "POST", runPath(run.runId, "recover"), {

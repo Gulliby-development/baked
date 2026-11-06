@@ -1,5 +1,10 @@
 import { tokenText } from "../estimate.js";
-import { EXTEND_WITHIN_DOLLARS_MODES, STAGE_RESERVE_MODES } from "../schemas.js";
+import {
+  EXTEND_WITHIN_DOLLARS_MODES,
+  PLAN_CHARGE_EXPECTED_MODES,
+  STAGE_RESERVE_MODES,
+  TIME_POOL_GROWTH_MODES,
+} from "../schemas.js";
 import { centsUp } from "../stage-reserve.js";
 import type { StopMode } from "../stop-reasons.js";
 import {
@@ -8,6 +13,7 @@ import {
   ownPlanNeed,
   type PlannedRun,
 } from "./estimate.js";
+import { TIME_STEP_MS } from "./time-pool.js";
 
 // The initiative's shared token pool beside the person's dollar cap (#2042). Part of the
 // cap-growth hot module (.github/hot-modules.json). Bench round 66 (nodepluck) parked select at
@@ -16,7 +22,7 @@ import {
 
 /** Suggested pool sizes are rounded up to this step, so the answer is a short number. */
 export const POOL_STEP = 100_000;
-const roundUp = (n: number): number => Math.ceil(n / POOL_STEP) * POOL_STEP;
+export const roundUp = (n: number): number => Math.ceil(n / POOL_STEP) * POOL_STEP;
 const roundDown = (n: number): number => Math.floor(n / POOL_STEP) * POOL_STEP;
 const usd = (n: number): string => `$${n.toFixed(2)}`;
 
@@ -43,6 +49,16 @@ export type StageReserveMode = (typeof STAGE_RESERVE_MODES)[number];
 export const DEFAULT_STAGE_RESERVE: StageReserveMode = "shadow";
 
 /**
+ * Whether the host would grow the initiative's shared active time on its own while the token pool
+ * and the dollar cap have room (`workflows.timePoolGrowth`, #2346, `timePoolExtensionDecision`).
+ * `shadow`, the default, records a `decision.would_extend` initiative event and changes nothing;
+ * `off` records nothing. Growing the time for real is its own pull request.
+ */
+export { TIME_POOL_GROWTH_MODES };
+export type TimePoolGrowthMode = (typeof TIME_POOL_GROWTH_MODES)[number];
+export const DEFAULT_TIME_POOL_GROWTH: TimePoolGrowthMode = "shadow";
+
+/**
  * Every limit a person set that the host grows, or would grow, on its own, with the other cap the
  * person set that bounds it. A new growth registers here, ships in shadow and adds its case to
  * `tests/workflow-scenario-initiative-token-pool.test.ts`, which fails on a `decision.would_extend`
@@ -56,6 +72,17 @@ export const HOST_POOL_GROWTHS = {
     modes: EXTEND_WITHIN_DOLLARS_MODES,
     defaultMode: DEFAULT_EXTEND_WITHIN_DOLLARS,
   },
+  "plan-share": {
+    label:
+      "A started feature run's own sized plan needs more than its share of the initiative's token pool, before its first task",
+    grows:
+      "the shared token pool (--budget-tokens) and the feature run's token ceiling (sizing.maxRunTokens)",
+    boundBy:
+      "the dollar cap (--budget-usd) with its tolerance for the pool, and the grown pool less the other runs' use for the run (#2468)",
+    // The same opt-in as the share gate's extension: `on` acts at plan time too (#2488).
+    modes: EXTEND_WITHIN_DOLLARS_MODES,
+    defaultMode: DEFAULT_EXTEND_WITHIN_DOLLARS,
+  },
   "stage-reserve": {
     label:
       "A feature run that finished its tasks would stop on its cost ceiling before its review and convergence",
@@ -63,6 +90,15 @@ export const HOST_POOL_GROWTHS = {
     boundBy: "the initiative's dollar cap (--budget-usd) with its tolerance",
     modes: STAGE_RESERVE_MODES,
     defaultMode: DEFAULT_STAGE_RESERVE,
+  },
+  "time-pool": {
+    label:
+      "The initiative's time forecast passes its shared active time while its tokens have room",
+    grows: "the shared active time (--time-ms)",
+    boundBy:
+      "the token pool (--budget-tokens) at the measured pace, and the dollar cap (--budget-usd) with its tolerance when set",
+    modes: TIME_POOL_GROWTH_MODES,
+    defaultMode: DEFAULT_TIME_POOL_GROWTH,
   },
 } as const;
 export type PoolGrowthReason = keyof typeof HOST_POOL_GROWTHS;
@@ -202,17 +238,46 @@ export function planChargeUsd(
  * above their limits while unmeasured, names is the only one whose low end was above it; the high
  * end stays where a plan straddles the limit (R71 xmlvet's scanner, 4.26M-11.75M against 8.0M,
  * used 12.10M). The dollar charge (`planChargeUsd`) prices these tokens, so it follows.
+ *
+ * `point: "expected"` (`workflows.planChargeExpected: on`, #2534) holds every plan with expected
+ * tasks at its expected need while the ratio is unmeasured, never below what the run used, as the
+ * exception above does; a measured ratio keeps the high end. R82 tinyflate's first wave was held at its plans' high
+ * ends, 21.5M of a 19.6M pool, for runs that used 12.4M in all (core 8.05M against 3.02M), and
+ * R83 pnmforge's at 18.98M of 19.6M while they had used 4.7M: geometry parked 30 minutes and the
+ * host extended the pool by 2.7M that the initiative never used.
  */
 export function planChargeTokens(
   usedTokens: number,
   plan: PlannedRun,
   ratio: number | null,
   limitTokens: number,
+  point: PlanChargePoint = "high",
 ): number {
   const need = ownPlanNeed(plan, ratio);
-  const contradicts = ratio === null && plan.low > limitTokens;
-  return Math.max(usedTokens, contradicts ? need.low : need.high);
+  // A plan from before #2043 has no expected tasks: only its range, so it keeps the high end.
+  const expected =
+    ratio === null &&
+    ((point === "expected" && plan.expected !== undefined) || plan.low > limitTokens);
+  return Math.max(usedTokens, expected ? need.low : need.high);
 }
+
+/**
+ * Which point of a sized plan the pool holds an open run at before a plan-to-actual ratio is
+ * measured (#2534): `high`, the plan's high end (the rule since #2100), or `expected`, its expected
+ * need (`workflows.planChargeExpected: on`).
+ */
+export type PlanChargePoint = "high" | "expected";
+
+/**
+ * Whether the pool holds open runs at their plan's expected need while the ratio is unmeasured
+ * (`workflows.planChargeExpected`, #2534). `shadow`, the default, keeps the high end and records
+ * what the expected need would free (`PlanChargeView.expected`, a `decision.would_release` at a
+ * share gate it would turn); `on` (opt-in) holds the expected need; `off` records nothing. Making
+ * `on` the default is its own pull request.
+ */
+export { PLAN_CHARGE_EXPECTED_MODES };
+export type PlanChargeExpected = (typeof PLAN_CHARGE_EXPECTED_MODES)[number];
+export const DEFAULT_PLAN_CHARGE_EXPECTED: PlanChargeExpected = "shadow";
 
 /**
  * The plan charge of an initiative's open feature runs (the `initiative-plan-charge` stop
@@ -224,6 +289,8 @@ export interface PlanChargeView {
   mode: StopMode;
   /** The measured plan-to-actual ratio the charges use; null while unmeasured (times 1). */
   ratio: number | null;
+  /** The plan point an unmeasured charge holds (#2534); `high` unless `planChargeExpected: on`. */
+  point?: PlanChargePoint;
   runs: PlanChargeRun[];
   /** What all runs hold with each open run at max(used, limit): the rule before #2100. */
   limitCommittedTokens: number;
@@ -242,11 +309,17 @@ export interface PlanChargeView {
     planCommittedUsd: number;
     releasedUsd: number;
   } | null;
+  /**
+   * `planChargeExpected: shadow` (#2534): the same charge with each unmeasured plan held at its
+   * expected need (`point: "expected"`); absent when it holds what this one holds.
+   */
+  expected?: PlanChargeView;
 }
 
 /**
  * The plan charge over the open runs with a sized plan, or null when none has one.
- * `limitCommitted` is what the pool holds with every open run at max(used, limit).
+ * `limitCommitted` is what the pool holds with every open run at max(used, limit); `point` is
+ * the plan point an unmeasured charge holds (`planChargeTokens`).
  */
 export function planCharge(
   mode: StopMode,
@@ -254,10 +327,11 @@ export function planCharge(
   limitCommitted: number,
   runs: readonly Omit<PlanChargeRun, "chargeTokens" | "chargeUsd">[],
   dollars?: { taskRate: number | null; limitCommittedUsd: number },
+  point: PlanChargePoint = "high",
 ): PlanChargeView | null {
   if (!runs.length) return null;
   const charged = runs.map((run) => {
-    const chargeTokens = planChargeTokens(run.usedTokens, run.plan, ratio, run.limitTokens);
+    const chargeTokens = planChargeTokens(run.usedTokens, run.plan, ratio, run.limitTokens, point);
     return {
       ...run,
       chargeTokens,
@@ -285,6 +359,7 @@ export function planCharge(
   return {
     mode,
     ratio,
+    ...(point === "expected" ? { point } : {}),
     runs: charged,
     limitCommittedTokens: limitCommitted,
     planCommittedTokens: limitCommitted - released,
@@ -400,27 +475,65 @@ export function tokenPool(inputs: PoolInputs): TokenPoolView {
     capTokens,
     notice: null,
   };
-  if (forecastTokens !== null && suggestedTokens !== null) {
-    const ratio = advice?.ratio ?? inputs.ratio;
-    const basis =
-      ratio !== null
-        ? `At the measured ${ratio.toFixed(1)}x of the estimates`
-        : "At the estimates so far";
-    // Both forecasts, when the blend that budget decisions use says another figure (#2062).
-    const blended =
-      advice &&
-      inputs.ratio !== null &&
-      tokenText(advice.forecastTokens) !== tokenText(forecastTokens)
-        ? `${tokenText(forecastTokens)} at the blended ${inputs.ratio.toFixed(1)}x that budget decisions use; `
-        : "";
-    const command = `baked workflow initiative extend ${inputs.initiativeId} --tokens ${suggestedTokens}`;
-    const extend =
-      byDollars !== null && cost.capUsd !== null && usdPerMillion !== null
-        ? `Extend to ${tokenText(suggestedTokens)}, what the ${usd(cost.capUsd)} cap pays for at ${usd(usdPerMillion)} per million, so the pool stops no feature before the dollar cap does (${command}).`
-        : `Extend to ${tokenText(suggestedTokens)} (${command})${dollarRoom(pool, cost)}.`;
-    pool.notice = `${basis} the ${inputs.features} features need about ${tokenText(advice?.forecastTokens ?? forecastTokens)} tokens (${blended}${tokenText(usedTokens)} used); the shared pool is ${tokenText(limitTokens)}. ${extend}`;
-  }
+  if (forecastTokens !== null && suggestedTokens !== null)
+    pool.notice = poolNoticeText({
+      initiativeId: inputs.initiativeId,
+      features: inputs.features,
+      pool: { ...pool, forecastTokens },
+      suggestedTokens,
+      byDollars: byDollars !== null,
+      exactUsdPerMillion: usdPerMillion,
+      cost,
+    });
   return pool;
+}
+
+/**
+ * The forecast notice's sentence (#2042, #2244): what the features need beside the pool, and the
+ * one-line extend command. The split approval's budget preview ends with the same sentence (#2502).
+ */
+export function poolNoticeText(n: {
+  initiativeId: string;
+  features: number;
+  pool: Pick<
+    TokenPoolView,
+    "limitTokens" | "usedTokens" | "advice" | "ratio" | "capTokens" | "usdPerMillion"
+  > & { forecastTokens: number };
+  suggestedTokens: number;
+  /** Whether `suggestedTokens` is what the dollar cap pays for (`dollarTokens`). */
+  byDollars: boolean;
+  /** The unrounded price the cap's tokens were counted at. */
+  exactUsdPerMillion: number | null;
+  cost: PoolCost;
+  /**
+   * The split approval's high end (#2525): the sentence then names it beside the expected tokens,
+   * and an amount that is not the cap's as the high end with margin (`splitExtension`).
+   */
+  highTokens?: number;
+}): string {
+  const { pool, cost, suggestedTokens } = n;
+  const { advice, forecastTokens } = pool;
+  const ratio = advice?.ratio ?? pool.ratio;
+  const basis =
+    ratio !== null
+      ? `At the measured ${ratio.toFixed(1)}x of the estimates`
+      : "At the estimates so far";
+  // Both forecasts, when the blend that budget decisions use says another figure (#2062).
+  const blended =
+    advice && pool.ratio !== null && tokenText(advice.forecastTokens) !== tokenText(forecastTokens)
+      ? `${tokenText(forecastTokens)} at the blended ${pool.ratio.toFixed(1)}x that budget decisions use; `
+      : "";
+  const command = `baked workflow initiative extend ${n.initiativeId} --tokens ${suggestedTokens}`;
+  const extend =
+    n.byDollars && cost.capUsd !== null && n.exactUsdPerMillion !== null
+      ? `Extend to ${tokenText(suggestedTokens)}, what the ${usd(cost.capUsd)} cap pays for at ${usd(n.exactUsdPerMillion)} per million, so the pool stops no feature before the dollar cap does (${command}).`
+      : `Extend to ${tokenText(suggestedTokens)}${n.highTokens !== undefined ? ", the high end with margin" : ""} (${command})${dollarRoom(pool, cost)}.`;
+  const expected = tokenText(advice?.forecastTokens ?? forecastTokens);
+  const need =
+    n.highTokens !== undefined
+      ? `expect about ${expected} tokens and up to ${tokenText(n.highTokens)} at the high end`
+      : `need about ${expected} tokens`;
+  return `${basis} the ${n.features} features ${need} (${blended}${tokenText(pool.usedTokens)} used); the shared pool is ${tokenText(pool.limitTokens)}. ${extend}`;
 }
 
 /**
@@ -433,6 +546,32 @@ export function dollarTokens(capTokens: number | null, limitTokens: number): num
   if (capTokens === null) return null;
   const tokens = roundDown(capTokens);
   return tokens > limitTokens ? tokens : null;
+}
+
+/**
+ * The one pool a split approval names (#2525), which its budget preview, its message and the
+ * message's `extend` remedy all read: the high-end need with margin, held to what the dollar cap
+ * pays for (`dollarTokens`); null when the pool already covers the high end, or when the cap pays
+ * for no more than the pool (a larger pool would go unpaid). Without a cap, or without a price
+ * that counts its tokens, the high end with margin. Advice only: no decision reads it.
+ */
+export function splitExtension(n: {
+  limitTokens: number;
+  /** The estimate's high end, with what is used so far. */
+  highTokens: number;
+  /** The high end plus its margin (`InitiativeEstimate.withMargin`). */
+  withMargin: number;
+  /** What the dollar cap pays for at the split's price; null without a cap or a price. */
+  capTokens: number | null;
+}): { tokens: number; byDollars: boolean } | null {
+  if (n.highTokens <= n.limitTokens) return null;
+  const need = Math.max(n.withMargin, n.highTokens);
+  if (n.capTokens === null) return { tokens: need, byDollars: false };
+  const byDollars = dollarTokens(n.capTokens, n.limitTokens);
+  if (byDollars === null) return null;
+  return byDollars < need
+    ? { tokens: byDollars, byDollars: true }
+    : { tokens: need, byDollars: false };
 }
 
 /**
@@ -479,7 +618,10 @@ export function tokensForUsd(capUsd: number, usdPerMillion: number | null): numb
 }
 
 /** What the dollar cap says beside the pool, for a notice or a block message. */
-function dollarRoom(pool: TokenPoolView, cost: PoolCost): string {
+function dollarRoom(
+  pool: Pick<TokenPoolView, "capTokens" | "usdPerMillion">,
+  cost: PoolCost,
+): string {
   if (cost.capUsd === null) return "";
   if (pool.capTokens !== null && pool.usdPerMillion !== null)
     return `; the ${usd(cost.capUsd)} cap would pay for about ${tokenText(pool.capTokens)} at ${usd(pool.usdPerMillion)} per million`;
@@ -507,6 +649,12 @@ export function poolShortText(
       : ` The dollar cap has ${usd(cost.remainingUsd ?? 0)} left (${usd(cost.spentUsd)} of ${usd(cost.capUsd)} spent${cost.forecastUsd !== null ? `, forecast ${usd(cost.forecastUsd)}` : ""})${pool.capTokens !== null && pool.usdPerMillion !== null ? ` and would pay for about ${tokenText(pool.capTokens)} tokens at ${usd(pool.usdPerMillion)} per million${affordableClause(pool, remedy)}` : ""}.`;
   return `${parked.id} needs ${start} more tokens to start; a pool of ${tokenText(cover)} (${cover} tokens, ${Math.max(0, cover - pool.limitTokens)} more than ${tokenText(pool.limitTokens)}) covers the high estimates of ${names}.${dollars}`;
 }
+
+/**
+ * Why a pool growth with a dollar cap holds before the dollar forecast is measured (#2471): the
+ * share gate reads it to say that `extendWithinDollars: on` waits for the first accepted feature.
+ */
+export const NO_DOLLAR_FORECAST = "No measured dollar forecast yet.";
 
 /** The host's decision on a parked feature: whether it would extend the pool inside the dollar cap. */
 export interface PoolExtension {
@@ -540,7 +688,7 @@ export function poolExtensionDecision(inputs: PoolInputs, pool = tokenPool(input
     return no("No dollar cap: a pool the person set alone is never grown.");
   if (pool.coverTokens <= inputs.limitTokens)
     return no("The pool already covers the waiting features.");
-  if (cost.forecastUsd === null) return no("No measured dollar forecast yet.");
+  if (cost.forecastUsd === null) return no(NO_DOLLAR_FORECAST);
   if (cost.forecastUsd > cost.ceilingUsd)
     return no(
       `The dollar forecast ${usd(cost.forecastUsd)} is above the ${usd(cost.ceilingUsd)} ceiling.`,
@@ -560,5 +708,202 @@ export function poolExtensionDecision(inputs: PoolInputs, pool = tokenPool(input
     toTokens,
     byTokens: toTokens - inputs.limitTokens,
     why: `The dollar forecast ${usd(cost.forecastUsd)} is within the ${usd(cost.ceilingUsd)} ceiling${pool.capTokens !== null ? ` and the ${usd(cost.capUsd)} cap pays for about ${tokenText(pool.capTokens)} tokens` : ""}: the pool would grow from ${tokenText(inputs.limitTokens)} to ${tokenText(toTokens)}.`,
+  };
+}
+
+/** What the time-pool growth reads (#2346): the shared time's forecast, the token pool, the dollars. */
+export interface TimePoolGrowthInputs {
+  initiativeId: string;
+  limitMs: number;
+  usedMs: number;
+  /** The time forecast at the measured pace (`budget.time`); null without a pace or a forecast. */
+  forecastMs: number | null;
+  /** What the time notice suggests; null while the forecast fits. */
+  suggestedMs: number | null;
+  /** The measured pace the forecast is at; null without one. */
+  tokensPerMinute: number | null;
+  limitTokens: number;
+  usedTokens: number;
+  cost: { capUsd: number | null; ceilingUsd: number | null; forecastUsd: number | null };
+}
+
+/** The host's decision on the shared time: whether it would extend it, and to what. */
+export interface TimePoolExtension {
+  reason: "time-pool";
+  wouldExtend: boolean;
+  /** The time the token pool still runs at the pace, beside the time used; null without a pace. */
+  capMs: number | null;
+  /** The time after the extension; null when it would not extend. */
+  toMs: number | null;
+  byMs: number | null;
+  why: string;
+}
+
+/**
+ * Whether the host would extend the initiative's shared active time (#2346): only while the time
+ * forecast at the measured pace passes the limit, the dollar forecast is within its ceiling (with
+ * a dollar cap set; measured, not before), and the token pool still has the tokens to run longer
+ * at that pace. The extension is the time notice's suggestion, held to the time used plus what the
+ * token pool's remaining tokens take at the pace (rounded down to `TIME_STEP_MS`). It never raises
+ * a token, call or dollar limit.
+ */
+export function timePoolExtensionDecision(inputs: TimePoolGrowthInputs): TimePoolExtension {
+  const reason = "time-pool" as const;
+  const pace = inputs.tokensPerMinute;
+  const capMs =
+    pace && pace > 0
+      ? inputs.usedMs +
+        Math.round((Math.max(0, inputs.limitTokens - inputs.usedTokens) / pace) * 60_000)
+      : null;
+  const no = (why: string): TimePoolExtension => ({
+    reason,
+    wouldExtend: false,
+    capMs,
+    toMs: null,
+    byMs: null,
+    why,
+  });
+  if (capMs === null || inputs.forecastMs === null) return no("No measured pace or forecast yet.");
+  if (inputs.suggestedMs === null || inputs.forecastMs <= inputs.limitMs)
+    return no("The time forecast fits the shared time.");
+  const { cost } = inputs;
+  if (cost.capUsd !== null) {
+    if (cost.forecastUsd === null) return no(NO_DOLLAR_FORECAST);
+    if (cost.ceilingUsd !== null && cost.forecastUsd > cost.ceilingUsd)
+      return no(
+        `The dollar forecast ${usd(cost.forecastUsd)} is above the ${usd(cost.ceilingUsd)} ceiling.`,
+      );
+  }
+  const toMs = Math.min(inputs.suggestedMs, Math.floor(capMs / TIME_STEP_MS) * TIME_STEP_MS);
+  const min = (ms: number): number => Math.round(ms / 60_000);
+  if (toMs <= inputs.limitMs)
+    return no(
+      `The ${tokenText(inputs.limitTokens)} token pool runs out at about ${min(capMs)} min of active time at the pace, before more time would help.`,
+    );
+  return {
+    reason,
+    wouldExtend: true,
+    capMs,
+    toMs,
+    byMs: toMs - inputs.limitMs,
+    why: `The time forecast ${min(inputs.forecastMs)} min passes the shared ${min(inputs.limitMs)} min while the ${tokenText(inputs.limitTokens)} token pool runs about ${min(capMs)} min at the pace${cost.capUsd !== null && cost.forecastUsd !== null ? ` and the dollar forecast ${usd(cost.forecastUsd)} is within the ${usd(cost.ceilingUsd ?? cost.capUsd)} ceiling` : ""}: the shared time would grow from ${min(inputs.limitMs)} to ${min(toMs)} min.`,
+  };
+}
+
+/**
+ * What the plan-time share gate reads (#2488): an initiative's feature run whose own plan sizing
+ * (`plannedRunTokens`) needs more than the run's ceiling, the run's tokens, and the pool beside it.
+ */
+export interface PlanShareInputs {
+  runId: string;
+  featureId: string;
+  /** The run's tokens used, its token limit and its sizing ceiling (`sizing.maxRunTokens`). */
+  usedTokens: number;
+  limitTokens: number;
+  ceilingTokens: number;
+  /** The base policy's per-run ceiling, which the run's ceiling never passes; null without one. */
+  baseCeilingTokens: number | null;
+  /** The run's latest plan sizing and the initiative's measured plan-to-actual ratio (#2043). */
+  plan: PlannedRun;
+  planRatio: number | null;
+  /** The plan point the pool charges an unmeasured plan at (#2534); `high` when absent. */
+  planPoint?: PlanChargePoint;
+  /** What the pool counts the run at now: its plan charge when enforced, else max(used, limit). */
+  heldTokens: number;
+  /** What every other run of the initiative used: the pool hold reads it (#2468). */
+  othersUsedTokens: number;
+  /** The token pool and the dollars as the share gate reads them (`shareGatePool`). */
+  pool: PoolInputs;
+}
+
+/** The plan-time share gate's decision (#2488). */
+export interface PlanShareDecision {
+  reason: "plan-share";
+  /** The plan's need as the pool charges it (`planChargeTokens`, on `ownPlanNeed`). */
+  needTokens: number;
+  /**
+   * True when the need is above the run's ceiling, the initiative could raise that ceiling (the
+   * base policy's ceiling is above it) and the pool does not cover the need beside the waiting
+   * features' high estimates: the run would stop on its share in the middle of its tasks.
+   */
+  over: boolean;
+  /** The pool's extension inside the dollar cap with the run's need beside the waiting features. */
+  extension: PoolExtension;
+  wouldExtend: boolean;
+  /** The pool after the extension and by how much; null when it would not extend. */
+  toTokens: number | null;
+  byTokens: number | null;
+  /** The run's ceiling after the extension, held to the grown pool less the others' use; null without one. */
+  ceilingTokens: number | null;
+  /** What an extend remedy names (`affordableTokens`): the pool, and the dollar cap it needs. */
+  suggestedTokens: number | null;
+  suggestedUsd: number | null;
+  why: string;
+}
+
+/**
+ * The plan-time share gate (#2488): a started feature run whose own plan needs more than its
+ * ceiling asks the initiative, not the model, before its first task. The run's need beyond what
+ * the pool already counts for it joins the waiting features, and the pool's extension is the
+ * share gate's own (`poolExtensionDecision`): a dollar cap, a measured dollar forecast within its
+ * ceiling, the tokens the cap pays for, every waiting low still covered. With it the run's
+ * ceiling grows to its need, held to the base policy's ceiling and to the grown pool less what
+ * the other runs used (`tokenHold`, #2468). R80 deltaglue's cli sized 17.46M against its 3.38M
+ * start share, went on under assume and stopped `budget_exhausted` with 17 of 24 tasks left
+ * while the $30 cap paid for about 24M.
+ */
+export function planShareDecision(inputs: PlanShareInputs): PlanShareDecision {
+  const reason = "plan-share" as const;
+  const needTokens = planChargeTokens(
+    inputs.usedTokens,
+    inputs.plan,
+    inputs.planRatio,
+    inputs.limitTokens,
+    inputs.planPoint,
+  );
+  const target = Math.min(inputs.baseCeilingTokens ?? Number.POSITIVE_INFINITY, needTokens);
+  const extra = Math.max(0, needTokens - inputs.heldTokens);
+  const pool: PoolInputs = {
+    ...inputs.pool,
+    waiting:
+      extra > 0
+        ? [...inputs.pool.waiting, { id: inputs.featureId, low: extra, high: extra }]
+        : inputs.pool.waiting,
+  };
+  const view = tokenPool(pool);
+  const extension = poolExtensionDecision(pool, view);
+  const remedy = affordableTokens(view, pool);
+  const over = target > inputs.ceilingTokens && remedy !== null;
+  const base = {
+    reason,
+    needTokens,
+    over,
+    extension,
+    suggestedTokens: remedy?.tokens ?? null,
+    suggestedUsd: remedy?.usd ?? null,
+  };
+  const no = (why: string): PlanShareDecision => ({
+    ...base,
+    wouldExtend: false,
+    toTokens: null,
+    byTokens: null,
+    ceilingTokens: null,
+    why,
+  });
+  const plan = `${inputs.featureId}'s plan needs about ${tokenText(needTokens)} tokens, above its ${tokenText(inputs.ceilingTokens)} ceiling`;
+  if (!over) return no(`${plan}: nothing the initiative's pool would change.`);
+  if (!extension.wouldExtend || extension.toTokens === null) return no(`${plan}. ${extension.why}`);
+  const ceilingTokens = Math.min(target, extension.toTokens - inputs.othersUsedTokens);
+  if (ceilingTokens <= inputs.ceilingTokens)
+    return no(
+      `${plan}. The grown pool of ${tokenText(extension.toTokens)} less the ${tokenText(inputs.othersUsedTokens)} the other runs used leaves the run no more room.`,
+    );
+  return {
+    ...base,
+    wouldExtend: true,
+    toTokens: extension.toTokens,
+    byTokens: extension.byTokens,
+    ceilingTokens,
+    why: `${plan}. ${extension.why} The run's ceiling would grow from ${tokenText(inputs.ceilingTokens)} to ${tokenText(ceilingTokens)} before its first task.`,
   };
 }

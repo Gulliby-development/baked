@@ -29,6 +29,7 @@ import {
   gitMode,
   gitWorktreePaths,
   initiativeSpecPrefix,
+  inSubmodule,
   internalPath,
   looksSecret,
   type RemoteFailure,
@@ -36,6 +37,7 @@ import {
   shipsSpecs,
   statusPaths,
   treeModes,
+  treeSubmodules,
 } from "./delivery-git.js";
 import {
   githubPullRequests,
@@ -74,7 +76,7 @@ export interface DeliveryFile {
 }
 export interface DeliveryExclusion {
   path: string;
-  reason: "secret" | "internal" | "ignored" | "symlink" | "unchanged" | "specs";
+  reason: "secret" | "internal" | "ignored" | "symlink" | "unchanged" | "specs" | "submodule";
 }
 export interface DeliveryPlan {
   schemaVersion: 1;
@@ -542,9 +544,15 @@ export async function prepareDelivery(
       `Cannot read delivery file modes: ${modeResult.stderr.trim()}`,
     );
   const modes = treeModes(modeResult.stdout);
+  // A path in a submodule belongs to its own repository; committing it would drop the gitlink (#2798).
+  const submodules = treeSubmodules(modeResult.stdout);
   for (const path of candidates) {
     if (internalPath(path)) {
       excluded.push({ path, reason: "internal" });
+      continue;
+    }
+    if (inSubmodule(path, submodules)) {
+      excluded.push({ path, reason: "submodule" });
       continue;
     }
     if (!withSpecs && runSpecPath(path, run.feature_id, specPrefix)) {
@@ -1101,15 +1109,8 @@ export function decideDelivery(
     store.decideRequest(runId, request.id, "accepted", decision);
     return;
   }
-  if (
-    decision.kind !== "recovery" ||
-    body.effectId !== decision.effectId ||
-    !decision.evidence.trim()
-  )
-    throw new WorkflowFault(
-      "STALE_DECISION",
-      "Recovery evidence required for the requested effect",
-    );
+  if (decision.kind !== "recovery" || body.effectId !== decision.effectId)
+    throw new WorkflowFault("STALE_DECISION", "The recovery request is for another effect");
   const effect = store.effects(runId).find((e) => e.id === decision.effectId);
   if (effect?.kind !== "delivery" || !["prepared", "unknown"].includes(effect.status))
     throw new WorkflowFault("STALE_DECISION", "The delivery effect is no longer uncertain");

@@ -6,6 +6,7 @@ import {
   graduationCandidates,
   loadRegression,
   loadTasks,
+  missingRequirements,
   passHatK,
   pickPerLanguage,
   renderTable,
@@ -60,6 +61,19 @@ describe("bench suite tasks", () => {
     expect(problems).toContain("checks must list at least one check");
     expect(problems).toContain("origin must look like #N");
     expect(problems).toContain("seed/ is missing");
+  });
+
+  test("a task skips on a missing executable or a failing probe", () => {
+    const which = (exe: string) => (exe === "cmake" ? "/usr/bin/cmake" : null);
+    const probe = { name: "GoogleTest", command: ["cmake", "-S", "{task}/probe", "-B", "build"] };
+    expect(missingRequirements({ requires: ["cmake", "ctest"] }, which, () => true)).toEqual(["ctest"]);
+    expect(missingRequirements({ requires: ["cmake"], probes: [probe] }, which, () => false)).toEqual(["GoogleTest"]);
+    expect(missingRequirements({ requires: ["cmake"], probes: [probe] }, which, () => true)).toEqual([]);
+    expect(validateTask("/nowhere/x", { probes: [{ name: "x", command: [] }] })).toContain(
+      "probes must list { name, command } with a non-empty command",
+    );
+    // GoogleTest is a library, so the CMake task declares it as a probe.
+    expect(tasks.find((t) => t.id === "cpp-cmake-gtest-roman")?.probes?.map((p) => p.name)).toEqual(["GoogleTest"]);
   });
 
   test("a task may turn on an opt-in policy field and nothing else (#1981)", () => {

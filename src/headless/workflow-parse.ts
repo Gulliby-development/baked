@@ -67,6 +67,7 @@ export const DECISION_COMMANDS: readonly WorkflowCommand[] = [
   "evidence",
   "accept",
   "repair",
+  "recover",
 ];
 export interface WorkflowArgs {
   command: WorkflowCommand;
@@ -123,6 +124,7 @@ const preRunFlags = [
   "policy",
   "worktree",
   "writers",
+  "worktree-root",
   "candidates",
   "max-cost-usd",
   "sandbox",
@@ -145,6 +147,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "confirm-auto-approval",
     "worktree",
     "writers",
+    "worktree-root",
     "candidates",
     "route",
     "model-strict",
@@ -159,6 +162,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "issue",
     "budget",
     "max-cost-usd",
+    "account",
     "approval-review",
     "auto-preset",
     "record-model-calls",
@@ -177,8 +181,10 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "after",
     "confirm-auto-approval",
     "worktree",
+    "worktree-root",
     "route",
     "model-strict",
+    "account",
     "approval-review",
   ],
   status: [],
@@ -216,7 +222,15 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
   "export-package": ["out", "zip"],
   gc: ["before", "dry-run"],
   redact: ["file", "reason"],
-  recover: ["request", "effect", "resolution", "file", "expected-revision", "command-id"],
+  recover: [
+    "request",
+    "effect",
+    "resolution",
+    "file",
+    "expected-revision",
+    "command-id",
+    ...decisionResumeFlags,
+  ],
   usage: ["model", "stage", "top", "format", "output"],
   report: ["output"],
   recording: ["output"],
@@ -262,7 +276,7 @@ const commandFlags: Record<WorkflowCommand, string[]> = {
     "expected-revision",
   ],
   "discard-worktree": ["expected-revision", "command-id"],
-  worktrees: ["clean", "dry-run"],
+  worktrees: ["clean", "dry-run", "worktree-root"],
   "git-init": [],
   route: ["workflow", "model", "route", "json"],
   models: ["model", "provider", "json"],
@@ -628,7 +642,7 @@ export function validateWorkflowArgs(result: WorkflowArgs): WorkflowArgs {
 }
 export const workflowHelp = `baked workflow <command> [options]
 
-run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N]] [--candidates N] [--clarification ask|assume] [--sandbox off|auto|required] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--property-tests auto|off] [--budget PRESET] [--max-cost-usd N] [--approval-review] [--record-model-calls] [--replay FILE]
+run [WORKFLOW] --feature ID (--prompt TEXT | --prompt-file FILE) [--policy FILE] [--model ID [--model-strict]] [--route STAGE=MODEL,...] [--events] [--confirm-auto-approval HASH] [--worktree [--writers N] [--worktree-root DIR]] [--candidates N] [--clarification ask|assume] [--sandbox off|auto|required] [--duplication off|warn|ratchet] [--sast auto|off] [--mutation off|advisory|required] [--property-tests auto|off] [--budget PRESET] [--max-cost-usd N] [--account PROVIDER=ID,...] [--approval-review] [--record-model-calls] [--replay FILE]
 run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --prompt-file FILE] [other run options]
   --issue takes the request from a GitHub issue (its title and body; --prompt adds instructions)
   and names the feature issue-N-TITLE unless --feature is given; the delivery pull request says
@@ -638,8 +652,9 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   other configured class, role or stage route still wins, and the start warns which agents run on
   another model. --model-strict makes the
   model serve every class, role and stage of this run (only --route still overrides it)
-  --worktree runs the tasks in .baked/worktrees/RUN_ID/main on branch baked/wf/RUN_ID; your working copy is not changed
-  --writers N (1..4, with --worktree) implements up to N independent tasks at once, each in .baked/worktrees/RUN_ID/TASK_ID
+  --worktree runs the tasks in .baked/worktrees/RUN/main (RUN: the run id's first 8 hex digits) on branch baked/wf/RUN_ID; your working copy is not changed
+  --writers N (1..4, with --worktree) implements up to N independent tasks at once, each in .baked/worktrees/RUN/TASK_ID
+  --worktree-root DIR keeps the worktree in DIR/RUN/main instead of .baked/worktrees (workflows.worktreeRoot for this command): a short folder such as C:\\.bk keeps task checks under a toolchain's path limit on Windows
   --candidates N (1..8, at most the policy's maxCandidates, default 4) implements each planned task
   N times in separate worktrees and keeps the best candidate (best-of-N); needs a worktree run
   (--worktree or the best-of-n workflow). Default: the tasks stage's candidates, then the policy's
@@ -657,6 +672,9 @@ run [WORKFLOW] --issue URL|OWNER/NAME#N|#N [--feature ID] [--prompt TEXT | --pro
   policy's sandbox and the sandbox setting
   --max-cost-usd N caps the run's model cost at N US dollars (the policy's maxCostUsd); every model
   the run can call needs a known price. The token budget still applies
+  --account PROVIDER=ID runs every model turn of PROVIDER (codex, claude-code) on that labelled
+  account instead of the one the project uses (see baked accounts), on every resume too. The
+  account must be allowed for the project, or the run does not start
   --approval-review lets the approval reviewer (a model) approve a low-risk plan that leaves the
   auto approval limits only by its task count, file count or paths; it needs autoApproval.limits.
   Always-human paths, deletions and the token limit still wait for you
@@ -683,7 +701,7 @@ propose TEXT... | --prompt TEXT | --prompt-file FILE [--json]
   The workflow and budget --auto-preset would pick for a request, with the reason: a review of
   existing changes (review-only), research without a change (spike), a failing check (fix-ci),
   a docs-only or small change (quick, quick budget), a large change (default, extended budget)
-quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--budget PRESET] [--events] [--worktree] [--confirm-auto-approval HASH] [--approval-review]
+quick TEXT... | --prompt-file FILE [--feature ID] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--budget PRESET] [--events] [--worktree [--worktree-root DIR]] [--confirm-auto-approval HASH] [--account PROVIDER=ID,...] [--approval-review]
   A small task without specification: one agent finds the files and plans, then approval,
   implementation, the policy checks and one correctness review. The feature ID is derived from
   the text. Runs workflows.quickWorkflow when set, otherwise the quick preset. Also: baked quick
@@ -734,8 +752,10 @@ revise RUN_ID --candidate SHA256 --expected-revision N [--resume [--events]]   (
   implementation; their checks run again.
   --resume resumes and drives the revised run in the same command (exit codes as resume)
 undo RUN_ID --expected-revision N [--path PATH]   (restore what unfinished or invalidated task edits changed, unless changed since)
-recover RUN_ID --request ID --effect ID --resolution record-applied|record-not-applied|retry|cancel --file EVIDENCE --expected-revision N
-  record-not-applied / record-applied settle the one effect and the run goes on; cancel CANCELS THE WHOLE RUN (prints a warning)
+recover RUN_ID --request ID --effect ID --resolution record-applied|record-not-applied|retry|cancel [--file EVIDENCE] --expected-revision N [--no-resume | --events [--after SEQ]]
+  record-not-applied / record-applied / retry settle the one effect and the run goes on (resumed in
+  the same command unless --no-resume); cancel CANCELS THE WHOLE RUN (prints a warning). --file is
+  optional: without it the decision records a one-line note
 definitions               list workflow definitions: sdd, the presets and baked/workflows/*.json
 validate (ID | --file FILE)   check a definition against the gate library; exit 1 with problems
 define ID --from PRESET   copy a preset or definition to baked/workflows/ID.json as a custom workflow
@@ -764,7 +784,7 @@ models [--model ID] [--provider ID] [--json]
   list what a route, --route, --model or a fallback can name: the model names ($active, $fast,
   ...) with the model each resolves to, then the models of each provider; providers without a key
   or login are listed with that reason
-doctor [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--worktree [--writers N]] [--candidates N] [--max-cost-usd N] [--sandbox MODE] [--confirm-auto-approval HASH] [--json]
+doctor [WORKFLOW] [--model ID] [--route STAGE=MODEL,...] [--policy FILE] [--worktree [--writers N] [--worktree-root DIR]] [--candidates N] [--max-cost-usd N] [--sandbox MODE] [--confirm-auto-approval HASH] [--json]
   check before a run: start refusals, provider keys of every routed model, check commands, Git,
   a busy workspace, the budget and the cost cap; exit 1 when something must be fixed (also: baked doctor)
 estimate [WORKFLOW] (same options as doctor)
@@ -828,8 +848,8 @@ follow RUN_ID [--interval 60] [--timeout 60] [--once] [--fix] [--reviews]
   deliver FIX_RUN_ID --follow-up RUN_ID --answer-threads THREAD_IDS.
 discard-worktree RUN_ID --expected-revision N
   Remove the worktree and delete the branch of a completed, failed or cancelled worktree run.
-worktrees [--clean [--dry-run]]
-  Run and task worktrees under .baked/worktrees, largest first, with size and run status.
+worktrees [--clean [--dry-run]] [--worktree-root DIR]
+  Run and task worktrees under .baked/worktrees and workflows.worktreeRoot, largest first, with size and run status.
   --clean removes those of completed, failed, cancelled and unknown runs (branches stay).
 git-init
   Initialize Git in a project folder without it, so runs can use --worktree: git init, a

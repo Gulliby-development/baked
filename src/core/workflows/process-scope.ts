@@ -7,7 +7,7 @@ import {
   sandboxEnv,
   sandboxLaunch,
 } from "../security/sandbox.js";
-import { OUTPUT_GRACE_MS } from "../spawn.js";
+import { OUTPUT_HELD_NOTE, onOutputHeld } from "../spawn.js";
 import { executionClock, executionTimeout } from "./execution-clock.js";
 
 function stopTree(child: ChildProcess, scope: string, force = false): void {
@@ -32,6 +32,12 @@ export interface ProcessResult {
   output: string;
   stdout?: string;
   stderr?: string;
+  /**
+   * The bytes of both pipes as they arrived (`output` before its note) and in stream order, the
+   * stderr block then the stdout block (#2859). The order two pipes arrive in is not fixed, so a
+   * comparison of two runs reads `inStreamOrder`, never `output`.
+   */
+  streams?: { arrival: string; ordered: string };
   timedOut: boolean;
   cancelled: boolean;
   truncated: boolean;
@@ -39,8 +45,42 @@ export interface ProcessResult {
   /** The OS sandbox that applied; absent when the caller asked for none. */
   sandbox?: SandboxApplied;
 }
+/**
+ * `text`, which holds a process's output as its pipes arrived, with that output in stream order:
+ * the stderr block, then the stdout block (#2859). A check's notes and reports around it stay as
+ * they are. The order two pipes arrive in is not fixed (a Biome stand-in's stderr came after its
+ * stdout 1 time in 200), so a signature that compares two runs of a command reads this, while the
+ * recorded `output` keeps the arrival order for people. Without `streams` (a scripted process) or
+ * when the output is not in `text`, `text` is returned.
+ */
+export function inStreamOrder(text: string, streams: ProcessResult["streams"]): string {
+  if (!streams || streams.arrival === streams.ordered) return text;
+  const arrival = streams.arrival.replace(/\n*$/, "");
+  const at = arrival ? text.indexOf(arrival) : -1;
+  if (at < 0) return text;
+  return text.slice(0, at) + streams.ordered.replace(/\n*$/, "") + text.slice(at + arrival.length);
+}
+
 /** A Windows batch script: Bun and Node refuse to spawn it directly (EINVAL) and it needs cmd.exe. */
 export const isWindowsBatch = (executable: string): boolean => /\.(cmd|bat)$/i.test(executable);
+
+/**
+ * The program a Windows launch names (#2432): a bare batch name (`sbt.bat`, `npm.cmd`, no
+ * directory) is looked up on `path` from `cwd` and named by its absolute path. cmd.exe expands
+ * `%~dp0` of a script started as a quoted bare name to the working directory, so R77's `sbt.bat`
+ * looked for `<worktree>\bin\sbt-launch.jar`. A name with a directory, one not found, and a name
+ * without `.bat`/`.cmd` (which Bun resolves itself) are kept.
+ */
+export function windowsProgram(
+  executable: string,
+  path: string,
+  cwd: string,
+  which: (bin: string, options: { PATH: string; cwd: string }) => string | null = Bun.which,
+): string {
+  if (!isWindowsBatch(executable) || /[\\/]/.test(executable) || /^[a-z]:/i.test(executable))
+    return executable;
+  return which(executable, { PATH: path, cwd }) ?? executable;
+}
 
 /**
  * The cmd.exe invocation of a batch script: `cmd.exe /d /s /c "<quoted command line>"`, passed
@@ -89,7 +129,10 @@ export class ProcessScope {
     const started = executionClock.now();
     const scope = randomUUID();
     const batch = process.platform === "win32" && !options.verbatim && isWindowsBatch(executable);
-    const direct = batch ? windowsBatchInvocation(executable, args) : { executable, args };
+    const program = batch
+      ? windowsProgram(executable, options.env.PATH ?? options.env.Path ?? "", options.cwd)
+      : executable;
+    const direct = batch ? windowsBatchInvocation(program, args) : { executable, args };
     // Wrapping follows the batch rewrite; the Windows launcher joins a verbatim line unquoted.
     const verbatim = (options.verbatim === true || batch) && process.platform === "win32";
     const launch = options.sandbox
@@ -131,7 +174,7 @@ export class ProcessScope {
       let cancelled = false;
       let truncated = false;
       let hardKill: ReturnType<typeof setTimeout> | undefined;
-      let outputGrace: ReturnType<typeof setTimeout> | undefined;
+      let cancelOutputHeld: (() => void) | undefined;
       const stop = (): void => {
         stopTree(child, scope);
         hardKill ??= setTimeout(() => {
@@ -173,7 +216,7 @@ export class ProcessScope {
       const cleanup = (): void => {
         timer?.();
         if (hardKill) clearTimeout(hardKill);
-        if (outputGrace) clearTimeout(outputGrace);
+        cancelOutputHeld?.();
         this.children.delete(child);
         options.signal.removeEventListener("abort", abort);
       };
@@ -192,6 +235,10 @@ export class ProcessScope {
           output: output.toString("utf8") + note,
           stdout: Buffer.concat(stdout).toString("utf8"),
           stderr: Buffer.concat(stderr).toString("utf8"),
+          streams: {
+            arrival: output.toString("utf8"),
+            ordered: Buffer.concat([...stderr, ...stdout]).toString("utf8"),
+          },
           timedOut,
           cancelled,
           truncated,
@@ -199,18 +246,10 @@ export class ProcessScope {
           ...(launch ? { sandbox: launch.applied } : {}),
         });
       };
-      child.once("exit", (exitCode, signal) => {
-        outputGrace = setTimeout(() => {
-          // Stops what the command left running where the platform can find it, then stops reading.
-          stopTree(child, scope, true);
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-          finish(
-            exitCode,
-            signal,
-            "\n[baked] The command exited, but a process it started kept its output open; later output is not captured.",
-          );
-        }, OUTPUT_GRACE_MS);
+      cancelOutputHeld = onOutputHeld(child, (exitCode, signal) => {
+        // Stops what the command left running where the platform can find it.
+        stopTree(child, scope, true);
+        finish(exitCode, signal, `\n${OUTPUT_HELD_NOTE}`);
       });
       child.once("close", (exitCode, signal) => finish(exitCode, signal));
     });

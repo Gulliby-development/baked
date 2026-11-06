@@ -12,25 +12,29 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { canonical } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
+import { RUN_MARKER, type RunRoots } from "../verification/run-roots.js";
 import {
   git,
   gitMode,
   gitWorktreePaths,
+  inSubmodule,
   internalPath,
   looksSecret,
   runSpecPath,
   statusPaths,
   treeModes,
   treeShipsSpecs,
+  treeSubmodules,
 } from "./delivery-git.js";
 import {
   ALL_DEPENDENCY_DIRS,
@@ -43,11 +47,148 @@ import { WorkflowFault } from "./errors.js";
 import type { WorkflowStore } from "./store.js";
 import type { RuntimeState, WorktreeState } from "./types.js";
 
-/** Worktree of a run, relative to the project root. */
-export const worktreePath = (runId: string): string => `.baked/worktrees/${runId}/main`;
+/** Where run and task worktrees live, relative to the project root. */
+export const WORKTREES_DIR = ".baked/worktrees";
+export { RUN_MARKER };
+
+/**
+ * The run a worktree directory belongs to: the run id its `RUN_MARKER` names, else the directory's
+ * name (a directory named by the full run id, from before #2454); null when it does not exist.
+ */
+export function worktreeDirRun(directory: string): string | null {
+  if (!existsSync(directory)) return null;
+  try {
+    return readFileSync(join(directory, RUN_MARKER), "utf8").trim() || basename(directory);
+  } catch {
+    return basename(directory);
+  }
+}
+
+/**
+ * The folder `workflows.worktreeRoot` names, absolute (#2461): `~` is the home folder and a
+ * relative folder is the project's. Null when unset.
+ */
+export function worktreeRootDir(
+  workspace: string,
+  configured: string | null | undefined,
+): string | null {
+  const value = configured?.trim();
+  if (!value) return null;
+  const expanded =
+    value === "~" ? homedir() : /^~[\\/]/.test(value) ? join(homedir(), value.slice(2)) : value;
+  return resolve(workspace, expanded);
+}
+
+/**
+ * Why `root` cannot hold the project's run worktrees, or null when it can (#2461). A worktree path
+ * is stored relative to the project (run state, effect roots, `worktree:` leases), which a folder
+ * on another drive has no spelling for; a folder inside the project outside `.baked` would show
+ * the worktrees as the project's own untracked files.
+ */
+export function worktreeRootProblem(workspace: string, root: string): string | null {
+  const path = relative(workspace, root);
+  if (isAbsolute(path)) return `${root} is on another drive than the project`;
+  if (path === ".." || path.startsWith(`..${sep}`)) return null;
+  const spelled = path.replaceAll("\\", "/");
+  if (spelled === ".baked" || spelled.startsWith(".baked/")) return null;
+  return `${root} is inside the project; leave workflows.worktreeRoot unset to use ${WORKTREES_DIR}`;
+}
+
+/** A task worktree's tail below the worktree root, as deep as a real one: 8 hex digits and a task id. */
+export const TASK_WORKTREE_TAIL = "00000000/T0001";
+
+/**
+ * What a person does about a task worktree deeper than a toolchain's `limit` (#2461): a short
+ * `workflows.worktreeRoot` first, which changes no project, then a shorter project path or an
+ * inline run. One text for the doctor, the settings check and the `worktree_environment` record.
+ */
+export function worktreePathRemedy(
+  limit: number,
+  platform: NodeJS.Platform,
+  rootSet: boolean,
+): string {
+  const room = limit - TASK_WORKTREE_TAIL.length - 1;
+  const example = platform === "win32" ? "C:\\.bk" : "~/.bk";
+  return rootSet
+    ? `Set workflows.worktreeRoot to a shorter folder (at most ${String(room)} characters) or run inline`
+    : `Set workflows.worktreeRoot to a short folder such as ${example} (at most ${String(room)} characters; /code-quality, the desktop's Code quality page, or --worktree-root), move the project to a shorter path, or run inline`;
+}
+
+/**
+ * The folder, relative to the project root, that holds the run directories: `root` when it can
+ * hold them (`worktreeRootProblem`), else `.baked/worktrees`.
+ */
+function worktreesBase(workspace: string, root: string | null | undefined): string {
+  if (!root || worktreeRootProblem(workspace, root)) return WORKTREES_DIR;
+  return relative(workspace, root).replaceAll("\\", "/");
+}
+
+/**
+ * A run's directory, relative to the project root: the run id's first 8 hex digits (#2454) under
+ * `.baked/worktrees`, or under `root` (`workflows.worktreeRoot`, #2461). A task's checks run in
+ * `<dir>/<task>`, and on Windows `dart test` cannot start below a working directory of about 94
+ * characters (R78 latcell-update): the full 36-character id spent 28 of them. A directory of
+ * another run with the same prefix (another project's too, in a shared root) makes the name
+ * longer, and a run whose directory is named by its full id keeps it.
+ */
+export function runWorktreeDir(
+  workspace: string,
+  runId: string,
+  root: string | null = null,
+): string {
+  const base = worktreesBase(workspace, root);
+  const full = `${base}/${runId}`;
+  if (base === WORKTREES_DIR && existsSync(join(workspace, full))) return full;
+  const hex = runId.replaceAll("-", "");
+  for (const length of [8, 12, 16]) {
+    if (hex.length <= length) break;
+    const dir = `${base}/${hex.slice(0, length)}`;
+    const owner = worktreeDirRun(join(workspace, dir));
+    if (owner === null || owner === runId) return dir;
+  }
+  return full;
+}
+
+/** Creates a run's worktree directory and its `RUN_MARKER`; returns its absolute path. */
+function claimRunDir(workspace: string, runId: string, dir: string): string {
+  const absolute = join(workspace, dir);
+  mkdirSync(absolute, { recursive: true });
+  const marker = join(absolute, RUN_MARKER);
+  if (basename(dir) !== runId && !existsSync(marker)) writeFileSync(marker, `${runId}\n`);
+  return absolute;
+}
+
+/**
+ * Removes the run directory of a scratch worktree at `path` when nothing but its `RUN_MARKER` is
+ * left, and `.baked/worktrees` when that is empty too: an inline run's copies leave no folder.
+ */
+export function releaseRunDir(workspace: string, path: string): void {
+  const directory = dirname(join(workspace, path));
+  try {
+    if (readdirSync(directory).every((name) => name === RUN_MARKER))
+      rmSync(join(directory, RUN_MARKER), { force: true });
+    rmdirSync(directory);
+    // A configured `workflows.worktreeRoot` is the person's folder and stays (#2461).
+    if (relative(workspace, dirname(directory)).replaceAll("\\", "/") === WORKTREES_DIR)
+      rmdirSync(dirname(directory));
+  } catch {
+    // Another worktree of the run, or of another run, is still there.
+  }
+}
+
+/** Worktree of a run, relative to the project root; `root` is `workflows.worktreeRoot`. */
+export const worktreePath = (
+  workspace: string,
+  runId: string,
+  root: string | null = null,
+): string => `${runWorktreeDir(workspace, runId, root)}/main`;
 /** Worktree of one task of a run with several writers, relative to the project root. */
-export const taskWorktreePath = (runId: string, taskId: string): string =>
-  `.baked/worktrees/${runId}/${taskId}`;
+export const taskWorktreePath = (
+  workspace: string,
+  runId: string,
+  taskId: string,
+  root: string | null = null,
+): string => `${runWorktreeDir(workspace, runId, root)}/${taskId}`;
 /** The branch that carries a worktree run's accepted changes. */
 export const runBranch = (runId: string): string => `baked/wf/${runId}`;
 
@@ -105,6 +246,18 @@ export function worktreeView(
 /** The directory a run reads, edits and checks in: its worktree once it exists, else the project. */
 export function runRoot(workspace: string, state: Pick<RuntimeState, "worktree">): string {
   return state.worktree ? join(workspace, state.worktree.path) : workspace;
+}
+
+/**
+ * The run's workspace and the directory of its worktrees (`main` and one per task), for the
+ * recognizers that find another root of the run in a repro or a check's output (#2697): under
+ * `workflows.worktreeRoot` that directory is not under `.baked/worktrees`.
+ */
+export function runRoots(workspace: string, state: Pick<RuntimeState, "worktree">): RunRoots {
+  return {
+    workspace,
+    worktrees: state.worktree ? dirname(join(workspace, state.worktree.path)) : null,
+  };
 }
 
 /** Fallback identity for the run branch commit when the repository configures none. */
@@ -249,13 +402,13 @@ export async function provisionalBase(
   files: { path: string; content: string }[],
   date: number,
 ): Promise<string> {
-  const present = new Set(
-    (await required(workspace, ["ls-tree", "-r", "-z", "--name-only", base]))
-      .split("\0")
-      .filter(Boolean),
-  );
+  const listing = await required(workspace, ["ls-tree", "-r", "-z", base]);
+  const present = new Set(listing.split("\0").map((entry) => entry.slice(entry.indexOf("\t") + 1)));
+  const submodules = treeSubmodules(listing);
   const added = [...new Map(files.map((f) => [f.path, f])).values()]
-    .filter((f) => !present.has(f.path) && !internalPath(f.path))
+    .filter(
+      (f) => !present.has(f.path) && !internalPath(f.path) && !inSubmodule(f.path, submodules),
+    )
     .sort((a, b) => a.path.localeCompare(b.path));
   if (!added.length) return base;
   const directory = mkdtempSync(join(tmpdir(), "baked-provisional-"));
@@ -292,6 +445,15 @@ export async function provisionalBase(
   }
 }
 
+/** The paths `commit` tracks. */
+export async function trackedPaths(workspace: string, commit: string): Promise<Set<string>> {
+  return new Set(
+    (await required(workspace, ["ls-tree", "-r", "-z", "--name-only", commit]))
+      .split("\0")
+      .filter(Boolean),
+  );
+}
+
 /**
  * Writes `files` into the run worktree as untracked files where `base` tracks no file at their
  * path and the worktree has none yet: what the host gives a run to read without it entering any
@@ -308,11 +470,7 @@ export async function placeBaseFiles(
 ): Promise<void> {
   if (!files.length) return;
   const root = join(workspace, worktree.path);
-  const tracked = new Set(
-    (await required(workspace, ["ls-tree", "-r", "-z", "--name-only", base]))
-      .split("\0")
-      .filter(Boolean),
-  );
+  const tracked = await trackedPaths(workspace, base);
   for (const file of files) {
     if (tracked.has(file.path) || internalPath(file.path)) continue;
     const absolute = workspacePath(root, file.path);
@@ -358,6 +516,8 @@ export async function moveRunWorktree(
 export async function ensureRunWorktree(
   store: WorkflowStore,
   runId: string,
+  /** `workflows.worktreeRoot`, absolute (`worktreeRootDir`); null for `.baked/worktrees`. */
+  root: string | null = null,
 ): Promise<WorktreeState> {
   const workspace = store.workspace;
   const recorded = store.state(runId).worktree;
@@ -372,7 +532,8 @@ export async function ensureRunWorktree(
   }
   const head = await worktreeBase(workspace);
   const start = store.state(runId).worktreeBase ?? head;
-  const path = worktreePath(runId);
+  const path = worktreePath(workspace, runId, root);
+  const rootProblem = root ? worktreeRootProblem(workspace, root) : null;
   const branch = runBranch(runId);
   const absolute = join(workspace, path);
   const existing = (
@@ -381,7 +542,7 @@ export async function ensureRunWorktree(
   // A branch from an interrupted creation has no commit of its own yet: its tip is the baseline.
   const baseHead = existing || start;
   if (!existsSync(join(absolute, ".git"))) {
-    mkdirSync(dirname(absolute), { recursive: true });
+    claimRunDir(workspace, runId, dirname(path));
     const hooks = join(workspace, ".baked", "no-hooks");
     await worktreeCommand(workspace, async () => {
       await git(workspace, ["worktree", "prune"]);
@@ -411,7 +572,12 @@ export async function ensureRunWorktree(
       runId,
       "worktree",
       "worktree/created.json",
-      canonical({ ...worktree, createdAt: new Date().toISOString() }),
+      canonical({
+        ...worktree,
+        createdAt: new Date().toISOString(),
+        ...(root ? { worktreeRoot: root.replaceAll("\\", "/") } : {}),
+        ...(rootProblem ? { worktreeRootRefused: rootProblem } : {}),
+      }),
     );
   });
   return worktree;
@@ -528,14 +694,18 @@ export async function createTaskWorktree(
   files: string[] = [],
 ): Promise<string> {
   const workspace = store.workspace;
-  const path = taskWorktreePath(runId, taskId);
+  const source = store.state(runId).worktree;
+  // Beside the run's own worktree, whatever its directory is named.
+  const path = source
+    ? `${dirname(source.path).replaceAll("\\", "/")}/${taskId}`
+    : taskWorktreePath(workspace, runId, taskId);
   const stale = await removeTaskWorktree(workspace, path);
   if (!stale.removed)
     throw new WorkflowFault("INPUT_CHANGED", stale.warning ?? `${path} could not be removed`, {
       reason: "worktree_failed",
     });
   const absolute = join(workspace, path);
-  mkdirSync(dirname(absolute), { recursive: true });
+  claimRunDir(workspace, runId, dirname(path));
   const hooks = join(workspace, ".baked", "no-hooks");
   await worktreeCommand(workspace, () =>
     required(workspace, [
@@ -550,7 +720,6 @@ export async function createTaskWorktree(
     ]),
   );
   linkRunDependencies(store, runId, absolute);
-  const source = store.state(runId).worktree;
   if (source) alignTaskFiles(join(workspace, source.path), absolute, files);
   return path;
 }
@@ -710,7 +879,10 @@ export async function commitRunBranch(
   const env = { GIT_INDEX_FILE: join(directory, "index") };
   try {
     await required(root, ["read-tree", worktree.baseHead], { env });
-    const modes = treeModes(await required(root, ["ls-tree", "-r", "-z", worktree.baseHead]));
+    const listing = await required(root, ["ls-tree", "-r", "-z", worktree.baseHead]);
+    const modes = treeModes(listing);
+    // A file written inside a submodule would replace its gitlink in the index (#2798).
+    const submodules = treeSubmodules(listing);
     // The run's spec artifacts stay run artifacts unless the project already tracks specs/, as
     // in the delivery plan (#1998), or the caller needs them on the branch. An initiative
     // feature's upstream specs are untracked files of its worktree (`placeBaseFiles`, #2046); a
@@ -737,7 +909,12 @@ export async function commitRunBranch(
           updates.push(`0 ${"0".repeat(worktree.baseHead.length)}\t${path}\0`);
     }
     for (const path of [...new Set(paths)].sort()) {
-      if (internalPath(path) || (!withSpecs && runSpecPath(path, featureId, prefix))) continue;
+      if (
+        internalPath(path) ||
+        inSubmodule(path, submodules) ||
+        (!withSpecs && runSpecPath(path, featureId, prefix))
+      )
+        continue;
       const absolute = workspacePath(root, path);
       const stat = existsSync(absolute) ? lstatSync(absolute) : null;
       if (stat?.isSymbolicLink() || looksSecret(path)) continue;
@@ -799,10 +976,15 @@ export async function commitRunBranch(
 /**
  * Removes a terminal run's worktree, and its branch when the user discards the result. Delivery
  * keeps the branch: it records the accepted commit the delivered one was built from.
+ *
+ * Same steps as `removeTaskWorktree` (#2806): the holders stop first, `git worktree remove` is only
+ * a first try, and the directory itself is what must go. Git refuses a worktree it no longer lists
+ * ("is not a working tree": the project folder moved, or a prune dropped its entry) and a file a
+ * Windows process holds; a removal that ended there left the worktree on disk for good.
  */
 export async function removeRunWorktree(
   store: WorkflowStore,
-  runId: string,
+  _runId: string,
   worktree: WorktreeState,
   options: { deleteBranch: boolean },
 ): Promise<void> {
@@ -812,17 +994,16 @@ export async function removeRunWorktree(
   const runDirectory = dirname(absolute);
   if (existsSync(runDirectory))
     for (const entry of readdirSync(runDirectory))
-      if (join(runDirectory, entry) !== absolute)
+      if (entry !== RUN_MARKER && join(runDirectory, entry) !== absolute)
         await removeTaskWorktree(workspace, join(dirname(worktree.path), entry));
+  await stopHolders(runDirectory);
   if (existsSync(absolute))
     await worktreeCommand(workspace, () =>
-      required(workspace, ["worktree", "remove", "--force", absolute]),
+      git(workspace, ["worktree", "remove", "--force", absolute]),
     );
+  let left = await removeDirectory(runDirectory);
+  if (left && moveAside(workspace, runDirectory)) left = null;
   await worktreeCommand(workspace, () => git(workspace, ["worktree", "prune"]));
-  const runRoot = join(workspace, ".baked", "worktrees", runId);
-  await stopHolders(runRoot);
-  let left = await removeDirectory(runRoot);
-  if (left && moveAside(workspace, runRoot)) left = null;
   if (left)
     throw new WorkflowFault(
       "INPUT_CHANGED",

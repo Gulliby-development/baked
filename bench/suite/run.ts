@@ -27,6 +27,7 @@ import {
   graduationCandidates,
   loadRegression,
   loadTasks,
+  missingRequirements,
   pickPerLanguage,
   renderTable,
   type SkippedTask,
@@ -211,7 +212,20 @@ if (process.argv.includes("--per-language")) selected = pickPerLanguage(selected
 
 const skipped: SkippedTask[] = [];
 const runnable = selected.filter((task) => {
-  const missing = task.requires.filter((exe) => !Bun.which(exe));
+  const missing = missingRequirements(task, Bun.which, (command) => {
+    // A probe runs in a scratch folder, so a build it configures leaves nothing in the repository.
+    const cwd = mkdtempSync(join(tmpdir(), `bench-suite-probe-${task.id}-`));
+    try {
+      return Bun.spawnSync(
+        command.map((arg) => arg.replaceAll("{task}", task.dir)),
+        { cwd, stdout: "ignore", stderr: "ignore", timeout: 120_000 },
+      ).success;
+    } catch {
+      return false;
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
   if (missing.length > 0) skipped.push({ task, missing });
   return missing.length === 0;
 });

@@ -1,4 +1,4 @@
-import type { SpawnOptions } from "node:child_process";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { IS_WIN } from "./platform/index.js";
 
 const SECRET_ENV_PATTERN = /_API_KEY$|_SECRET$|_TOKEN$|_PASSWORD$|_CREDENTIAL$|_PRIVATE_KEY$/;
@@ -86,11 +86,16 @@ export const SAFE_STDIO: SpawnOptions["stdio"] = ["ignore", "pipe", "pipe"];
  *   so it has no controlling terminal and cannot read /dev/tty.
  *   Prevents tools like `security`, `ssh`, `sudo`, `gpg`, `pass`, etc.
  *   from prompting the user (and hanging) when stdin is closed.
- * - windowsHide: true → on Windows a detached child would otherwise open its own console window.
+ * - detached only on POSIX: on Windows a detached child has no console, so a console program it
+ *   starts (any command `cmd.exe /c` runs) gets a new console of its own and writes its output
+ *   there instead of into the pipes, while still inheriting the pipe handles (#2657; the LSP
+ *   spawn notes the same console behaviour). Tree kill on Windows goes through taskkill, so no process
+ *   group is needed there.
+ * - windowsHide: true → no console window flashes up for the child.
  */
 export const SAFE_SPAWN_OPTS: Pick<SpawnOptions, "stdio" | "detached" | "windowsHide"> = {
   stdio: SAFE_STDIO,
-  detached: true,
+  detached: !IS_WIN,
   windowsHide: true,
 };
 
@@ -145,4 +150,36 @@ export async function processOutput(proc: {
     finished = true;
     if (timer) clearTimeout(timer);
   }
+}
+
+/** The note a command's result carries when `onOutputHeld` stopped reading its output. */
+export const OUTPUT_HELD_NOTE =
+  "[baked] The command exited, but a process it started kept its output open; later output is not captured.";
+
+/**
+ * The `processOutput` bound for a `node:child_process` child whose result waits for `close`.
+ * `close` fires only once every handle to the output pipes is closed, so a process that holds one
+ * (one the command started, or on Windows any process created while the pipes were inheritable)
+ * keeps the wait open past the command's own exit, out of reach of a timeout kill of the command.
+ * `OUTPUT_GRACE_MS` after the child exited with its pipes still open, this closes them and calls
+ * `held` with the exit status, so the caller returns what it read (#1029, #2657). Returns a
+ * function that cancels it; call it once the result is settled.
+ */
+export function onOutputHeld(
+  child: ChildProcess,
+  held: (code: number | null, signal: NodeJS.Signals | null) => void,
+): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+    timer = setTimeout(() => {
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      held(code, signal);
+    }, OUTPUT_GRACE_MS);
+  };
+  child.once("exit", onExit);
+  return () => {
+    if (timer) clearTimeout(timer);
+    child.off("exit", onExit);
+  };
 }

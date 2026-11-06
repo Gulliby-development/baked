@@ -80,15 +80,42 @@ const withoutOutputFormat = (args: readonly string[]): string[] =>
       !OUTPUT_FORMAT.test(arg) && !/^--?(?:format|formatter|reporter)$/.test(args[i - 1] ?? ""),
   );
 
+/**
+ * For a Maven or Gradle invocation, whether it runs a lifecycle phase or task that includes the
+ * tests: `mvn test` or `verify` (also package and install), `gradle test` or `check` (also build),
+ * unless the arguments skip them; null for any other program (#844: the mutation gate found no
+ * test check in a Maven project checked by `mvn verify`).
+ */
+export function buildToolRunsTests(tool: string, args: readonly string[]): boolean | null {
+  const phases =
+    tool === "mvn" || tool === "mvnw"
+      ? ["test", "verify", "package", "install"]
+      : tool === "gradle" || tool === "gradlew"
+        ? ["test", "check", "build"]
+        : null;
+  if (!phases) return null;
+  if (!args.some((arg) => phases.includes(arg.toLowerCase().replace(/^:/, "")))) return false;
+  return !args.some(
+    (arg, i) =>
+      /^-D(?:skipTests|maven\.test\.skip)(?:=true)?$/i.test(arg) ||
+      ((arg === "-x" || arg === "--exclude-task") && /^:?test$/i.test(args[i + 1] ?? "")),
+  );
+}
+
 /** Task runners whose targets the gate fallback offers (#1488). */
 const TASK_RUNNER = /^(?:make|gmake|mingw32-make|just|task)$/;
 
 /**
  * A task runner's `check` target: in the projects the fallback serves it is the test suite
  * (autotools' `make check`) or tests plus lint, not a linter, so it is no file-local static
- * check that runs after every code task and is corrected as diagnostics only (#1680).
+ * check that runs after every code task and is corrected as diagnostics only (#1680). Gradle's
+ * `check` task, and any Maven or Gradle invocation that runs the tests (`buildToolRunsTests`), is
+ * the same: the preselected `gradle-check` gate read as static, so every code task ran the whole
+ * suite after it and the written-tests and affected-tests checks skipped it.
  */
 function runsAggregateTarget(check: Pick<Check, "executable" | "args">): boolean {
+  const launched = toolchainCommand(check.executable, check.args);
+  if (buildToolRunsTests(launched.program, launched.args)) return true;
   const program = (check.executable.replaceAll("\\", "/").split("/").at(-1) ?? "")
     .replace(/\.(?:exe|cmd|bat)$/i, "")
     .toLowerCase();
@@ -201,9 +228,26 @@ export function isWholeUnitFixer(fix: { executable: string; args: string[] }): b
   const { program, args } = toolchainCommand(fix.executable, fix.args);
   return (
     (program === "cargo" && args.includes("fmt") && !args.includes("--")) ||
-    gradleSourceSetFixer(program, args)
+    takesNoFile(program, args)
   );
 }
+
+/** A fixer that takes no file argument: it runs once, as configured (#2121, #2436). */
+const takesNoFile = (program: string, args: readonly string[]): boolean =>
+  gradleSourceSetFixer(program, args) || sbtWholeFixer(program, args) || /^mvnw?$/.test(program);
+
+/**
+ * An sbt fixer whose last command takes no file: each sbt argument is a command, and only an
+ * `...Only` task (`scalafmtOnly`, `scalafixOnly`-style) takes the file as its own argument. R77
+ * pairwick configured `sbt --server -batch scalafmtAll`; the appended path made it `scalafmtAll
+ * <file>`, which sbt refuses before it formats anything (#2436). Such a fixer runs once, as given;
+ * so does a Maven fixer, whose arguments are goals and phases (`mvn spotless:apply <file>` fails
+ * on an unknown lifecycle phase).
+ */
+const sbtWholeFixer = (program: string, args: readonly string[]): boolean =>
+  program === "sbt" && !sbtFileTask(args);
+const sbtFileTask = (args: readonly string[]): boolean =>
+  /^\w+Only$/.test(args.at(-1)?.trim() ?? "");
 
 /**
  * Gradle's Spotless and ktlint fixer tasks format every file of the source sets and take no file
@@ -226,7 +270,7 @@ export function wholeUnitFixerCommand(
   paths: readonly string[],
 ): { executable: string; args: string[] } {
   const { program, args, launch } = toolchainCommand(fix.executable, fix.args);
-  if (gradleSourceSetFixer(program, args)) return launch([...args]) ?? fix;
+  if (takesNoFile(program, args)) return launch([...args]) ?? fix;
   return (
     launch([...args, "--", ...paths]) ?? {
       executable: fix.executable,
@@ -241,6 +285,7 @@ export function fixerCommand(
 ): { executable: string; args: string[] } {
   const { program: name, args, launch } = toolchainCommand(fix.executable, fix.args);
   const [first] = args;
+  if (takesNoFile(name, args)) return launch([...args]) ?? fix;
   const command =
     name === "cargo" && args.includes("fmt") && !args.includes("--")
       ? launch([...args, "--", path])
@@ -249,7 +294,7 @@ export function fixerCommand(
         : name === "dotnet" && first === "format" && !args.includes("--include")
           ? launch([...args, "--include", path])
           : // Each sbt argument is a command: the file goes with the task (`"scalafmtOnly a.scala"`).
-            name === "sbt" && args.length
+            name === "sbt"
             ? launch([...args.slice(0, -1), `${args.at(-1)} ${path}`])
             : launch([...args, path]);
   // A path a launcher cannot pass unchanged is given to the fixer's own command line.

@@ -1,6 +1,8 @@
 import { type LanguageRecord, none } from "../intelligence/language-records.js";
 import { isTestFile } from "../intelligence/language-traits.js";
 import type { Check } from "../workflows/types.js";
+import { plainOutput } from "./plain-output.js";
+import { inRunWorktrees, type RunRoots, runWorktreePattern } from "./run-roots.js";
 import { normalizeVolatile } from "./volatile.js";
 
 /**
@@ -45,7 +47,8 @@ const lines = (output: string, pattern: RegExp): number =>
  * The number of diagnostics a linter or type checker reported, by its summary line: errors and
  * warnings, with the errors among them where the tool says.
  */
-export function diagnosticCount(output: string): OutputCount | null {
+export function diagnosticCount(raw: string): OutputCount | null {
+  const output = plainOutput(raw);
   // Biome: "Checked 12 files in 3ms. No fixes applied." then "Found 2 warnings." / "Found 3 infos."
   // Infos are hints (`useTemplate`, an unsafe-fix suggestion): Biome itself exits 0 on them.
   if (/\bChecked \d+ files? in\b/.test(output)) {
@@ -80,10 +83,7 @@ export function diagnosticCount(output: string): OutputCount | null {
   if (psalm) return { tool: "psalm", count: Number(psalm[1]), errors: Number(psalm[1]) };
   if (/^No errors found!/m.test(output)) return { tool: "psalm", count: 0, errors: 0 };
   // luacheck (#1495): "Total: 2 warnings / 1 error in 3 files", in colour even without a terminal.
-  const luacheck = output
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI colour codes
-    .replace(/\u001b\[[0-9;]*m/g, "")
-    .match(/^Total: (\d+) warnings? \/ (\d+) errors? in \d+ files?/m);
+  const luacheck = output.match(/^Total: (\d+) warnings? \/ (\d+) errors? in \d+ files?/m);
   if (luacheck)
     return {
       tool: "luacheck",
@@ -152,6 +152,10 @@ export function diagnosticCount(output: string): OutputCount | null {
   // styler through the gate: "R/sum.R: would be reformatted by styler" per file.
   const styled = lines(output, /: would be reformatted by styler$/);
   if (styled) return { tool: "styler", count: styled, errors: styled };
+  // Invoke-Formatter through the psformat gate (#2595): "src/A.ps1: would be reformatted by
+  // Invoke-Formatter" per file.
+  const psFormatted = lines(output, /: would be reformatted by Invoke-Formatter$/);
+  if (psFormatted) return { tool: "invoke-formatter", count: psFormatted, errors: psFormatted };
   // dotnet build: "    3 Warning(s)" and "    0 Error(s)"
   const warnings = output.match(/^\s*(\d+) Warning\(s\)/m);
   const errors = output.match(/^\s*(\d+) Error\(s\)/m);
@@ -184,6 +188,7 @@ export type TestRunner =
   | "jest"
   | "vitest"
   | "pytest"
+  | "unittest"
   | "cargo"
   | "dotnet"
   | "maven"
@@ -201,7 +206,8 @@ export type TestRunner =
   | "junit"
   | "tap"
   | "pester"
-  | "testthat";
+  | "testthat"
+  | "exunit";
 
 const TESTTHAT_SUMMARY = /^\[ FAIL (\d+) \| WARN (\d+) \| SKIP (\d+) \| PASS (\d+) \]/m;
 
@@ -237,15 +243,32 @@ const ctestListed = (o: string, outcome: RegExp): string[] =>
     .map((m) => (m[1] ?? "").trim());
 /** GoogleTest's summary of a test binary: "[==========] 3 tests from 1 test suite ran. (0 ms total)". */
 const GTEST_SUMMARY = /^\[==========\] (\d+) tests? from \d+ test (?:suites?|cases?) ran\./m;
+/**
+ * A package of `go test` that holds tests: "ok  \texample.com/m/a\t0.004s", from the test cache
+ * "ok  \texample.com/m/a\t(cached)", with "\tcoverage: ..." after either, or a failed package
+ * "FAIL\texample.com/m/a\t0.003s" or "FAIL\texample.com/m/a [build failed]". The fields are
+ * tab-separated as `go test` prints them, so jest's "FAIL src/a.test.js" is not one. Not "ok ...
+ * [no tests to run]", a package whose tests the `-run` filter left out (#2778).
+ */
+const GO_PACKAGE_TESTED =
+  /^(?:ok\s+\S+\t(?:[\d.]+s|\(cached\))(?![^\n]*\[no tests to run\])|FAIL\t\S+[\t ])/m;
+/** Gradle's line under a failed test task: "3 tests completed, 1 failed" (also ", 1 skipped"). */
+const GRADLE_COMPLETED = /^\d+ tests? completed, \d+ failed\b/m;
 const PEST_SUMMARY = /^\s*Tests:\s+((?:\d+ \w+(?:, )?)+) \(\d+ assertions?\)/m;
+
+/**
+ * Surefire's summary of a module, "[INFO] Tests run: 12, Failures: 0, Errors: 0, Skipped: 0", with
+ * ", Flakes: 1" after it when a test failed and then passed on a rerun (`rerunFailingTestsCount`);
+ * `Tests run` counts that test once (#2782).
+ */
+const MAVEN_SUMMARY =
+  /^\[\w+\] Tests run: (\d+), Failures: \d+, Errors: \d+, Skipped: (\d+)(?:, Flakes: \d+)?\s*$/gm;
 
 /**
  * The summary parsers, in the order `testCount` tries them: a more specific summary first, the
  * report formats any runner can print (JUnit XML, TAP) last. `ran` is the share of `count` that
  * executed, skipped and ignored tests left out, or null where the summary does not tell (#1832).
  */
-const MAVEN_SUMMARY = /^\[\w+\] Tests run: (\d+), Failures: \d+, Errors: \d+, Skipped: (\d+)\s*$/gm;
-
 const TEST_COUNTERS: readonly {
   tool: TestRunner;
   count: (output: string) => number | null;
@@ -255,24 +278,35 @@ const TEST_COUNTERS: readonly {
     tool: "bun",
     // bun test: "Ran 42 tests across 3 files." after " 40 pass", " 2 skip", " 0 fail"
     count: (o) => num(o.match(/^Ran (\d+) tests? across \d+ files?/m)),
-    ran: (o) => (/^Ran \d+ tests?/m.test(o) ? (sum(o, /^\s*(\d+) (?:pass|fail)$/gm) ?? 0) : null),
+    // Only bun's own line: unittest's "Ran 3 tests in 0.001s" read as bun with none run (#2737).
+    ran: (o) =>
+      /^Ran \d+ tests? across \d+ files?/m.test(o)
+        ? (sum(o, /^\s*(\d+) (?:pass|fail)$/gm) ?? 0)
+        : null,
   },
   {
     tool: "jest",
     // jest: "Tests:       1 failed, 2 skipped, 12 passed, 15 total"
     count: (o) => num(o.match(/^Tests:\s+.*?\b(\d+) total\b/m)),
+    // `--passWithNoTests` on a run that found no test prints no summary, only "No tests found,
+    // exiting with code 0", and exits 0 (#2699).
     ran: (o) => {
       const line = o.match(/^Tests:\s+(.*?\b\d+ total)\b/m)?.[1];
-      return line === undefined ? null : (sum(line, /(\d+) (?:passed|failed)\b/g) ?? 0);
+      if (line === undefined) return /^No tests found, exiting with code 0\s*$/m.test(o) ? 0 : null;
+      return sum(line, /(\d+) (?:passed|failed)\b/g) ?? 0;
     },
   },
   {
     tool: "vitest",
     // vitest: "      Tests  12 passed (12)" / "Tests  1 failed | 11 passed | 2 skipped (14)"
     count: (o) => num(o.match(/^\s*Tests\s+.*\((\d+)\)\s*$/m)),
+    // `--passWithNoTests` (or `passWithNoTests: true` in its config) on a run that found no test
+    // file: "No test files found, exiting with code 0", no summary, exit 0 (#2699).
     ran: (o) => {
       const line = o.match(/^\s*Tests\s+(.*)\(\d+\)\s*$/m)?.[1];
-      return line === undefined ? null : (sum(line, /(\d+) (?:passed|failed)\b/g) ?? 0);
+      if (line === undefined)
+        return /^No test files found, exiting with code 0\s*$/m.test(o) ? 0 : null;
+      return sum(line, /(\d+) (?:passed|failed)\b/g) ?? 0;
     },
   },
   {
@@ -293,6 +327,13 @@ const TEST_COUNTERS: readonly {
         ? null
         : (sum(line, /(\d+) (?:passed|failed|xfailed|xpassed|errors?)\b/g) ?? 0);
     },
+  },
+  {
+    tool: "unittest",
+    // python -m unittest (#2737): "Ran 4 tests in 0.001s", then "OK (skipped=2)" or "FAILED
+    // (failures=1, errors=1, skipped=1)"; Python 3.12 and later say "NO TESTS RAN" (exit 5).
+    count: (o) => unittestCount(o, false),
+    ran: (o) => unittestCount(o, true),
   },
   {
     tool: "cargo",
@@ -363,7 +404,7 @@ const TEST_COUNTERS: readonly {
     ran: (o) =>
       lines(o, /^=== RUN\s+[^/\s]+\s*$/) ||
       (/\[no tests? (?:to run|files)\]|^testing: warning: no tests to run/m.test(o) &&
-      !/^ok\s+\S+\s+[\d.]+s\s*$/m.test(o)
+      !GO_PACKAGE_TESTED.test(o)
         ? 0
         : null),
   },
@@ -389,9 +430,10 @@ const TEST_COUNTERS: readonly {
       const line = o.match(PEST_SUMMARY)?.[1];
       return line === undefined ? null : (sum(line, /(\d+) \w+/g) ?? 0);
     },
+    // A run that found no test prints "  INFO  No tests found." and no summary (#2699).
     ran: (o) => {
       const line = o.match(PEST_SUMMARY)?.[1];
-      if (line === undefined) return null;
+      if (line === undefined) return /^\s*INFO\s+No tests found\.\s*$/m.test(o) ? 0 : null;
       return (
         (sum(line, /(\d+) \w+/g) ?? 0) - (sum(line, /(\d+) (?:skipped|todos?|incomplete)\b/g) ?? 0)
       );
@@ -482,10 +524,16 @@ const TEST_COUNTERS: readonly {
       if (projects.length) return projects.reduce((n, t) => n + t.total + t.idle, 0);
       return scalatest(o, (m) => m.reduce((n, x) => n + x, 0));
     },
+    // sbt 2's `testFull` on a build without a test prints no summary, only "[success] elapsed
+    // time: 1 s" (#2440): a successful sbt run with neither a summary nor a suite line ran none.
+    // Only `ran` reads it, so a `requireTests` check fails; `count` stays null, since the line says
+    // nothing of the tests the build holds.
     ran: (o) => {
       const projects = sbtTotals(o);
       if (projects.length) return projects.reduce((n, t) => n + t.total, 0);
-      return scalatest(o, ([succeeded = 0, failed = 0]) => succeeded + failed);
+      const suites = scalatest(o, ([succeeded = 0, failed = 0]) => succeeded + failed);
+      if (suites !== null) return suites;
+      return SBT_SUCCESS.test(o) && !SBT_SUITE.test(plainOutput(o)) ? 0 : null;
     },
   },
   {
@@ -496,6 +544,13 @@ const TEST_COUNTERS: readonly {
     // Its skipped tests are in that count and are listed one by one ("Test waits() skipped").
     count: (o) => swiftCount(o, false),
     ran: (o) => swiftCount(o, true),
+  },
+  {
+    tool: "exunit",
+    // mix test (#2490): ExUnit's summary of Elixir 1.20 ("Result: 2/3 passed") or of 1.14 to 1.19
+    // ("3 tests, 1 failure"), after its "Finished in" line.
+    count: (o) => exunitCount(o, false),
+    ran: (o) => exunitCount(o, true),
   },
   // A language without a parser of its own (#1488): a JUnit XML report printed to the output
   // (`--reporter=junit`), then TAP (busted, bats, prove, node:test, pgTAP).
@@ -527,6 +582,30 @@ const TEST_COUNTERS: readonly {
 
 const num = (match: RegExpMatchArray | null): number | null => (match ? Number(match[1]) : null);
 
+/** unittest's summary: "Ran 3 tests in 0.002s", a blank line, then its verdict and counts. */
+const UNITTEST_SUMMARY =
+  /^Ran (\d+) tests? in \d[\d.]*s\r?\n\r?\n(?:OK|FAILED|NO TESTS RAN)(?: \(([^)\n]*)\))?\s*$/gm;
+/**
+ * A test module unittest could not import, which it counts as a test: "ERROR: test_a
+ * (unittest.loader._FailedTest.test_a)" ("(unittest.loader._FailedTest)" before Python 3.11).
+ */
+const UNITTEST_LOAD_ERROR = /^ERROR: \S+ \(unittest\.loader\._FailedTest(?:\.\S+)?\)\s*$/;
+
+/**
+ * unittest's counts summed over its summaries (one per `python -m unittest` the check runs), a
+ * module that did not import left out: `ran` also leaves out the skipped tests, which unittest
+ * counts in "Ran N tests" and lists as "skipped=N".
+ */
+function unittestCount(o: string, ran: boolean): number | null {
+  const runs = [...o.matchAll(UNITTEST_SUMMARY)];
+  if (!runs.length) return null;
+  const total = runs.reduce((n, m) => n + Number(m[1]), 0) - lines(o, UNITTEST_LOAD_ERROR);
+  const skipped = ran
+    ? runs.reduce((n, m) => n + (num((m[2] ?? "").match(/\bskipped=(\d+)/)) ?? 0), 0)
+    : 0;
+  return Math.max(0, total - skipped);
+}
+
 function swiftCount(o: string, ran: boolean): number | null {
   const xctest = [
     ...o.matchAll(
@@ -553,6 +632,13 @@ function sbtTotals(o: string): { total: number; idle: number }[] {
     }),
   );
 }
+/** The last line of an sbt run that succeeded: sbt 1's "Total time: 3 s", sbt 2's "elapsed time: 1 s". */
+const SBT_SUCCESS = /^\[success\] (?:Total|elapsed) time: /m;
+/**
+ * A test suite's heading line, as munit (`CalcSuite:`, its colours taken out) and ScalaTest
+ * (`[info] CalcSpec:`) print it before its tests (`pairwick.XTests:`).
+ */
+const SBT_SUITE = /^(?:\[info\] )?[A-Za-z_$][\w$.]*:\r?$/m;
 /** ScalaTest's own counts, summed over its "Tests: succeeded 2, failed 2, ..." lines. */
 function scalatest(o: string, count: (numbers: number[]) => number): number | null {
   const lines = [
@@ -561,6 +647,61 @@ function scalatest(o: string, count: (numbers: number[]) => number): number | nu
     ),
   ];
   return lines.length ? lines.reduce((n, m) => n + count(m.slice(1).map(Number)), 0) : null;
+}
+
+/**
+ * ExUnit's "Finished in 0.03 seconds (0.00s async, 0.03s sync)" line, which Elixir 1.14 and later
+ * print before the summary ("(0.02s on load, ...)" when the load time is known); RSpec's "Finished
+ * in ... (files took ...)" is not it.
+ */
+const EXUNIT_FINISHED =
+  /^Finished in \d[\d.]* seconds \((?:\d[\d.]*s on load, )?\d[\d.]*s async, \d[\d.]*s sync\)/m;
+/**
+ * ExUnit's summary up to Elixir 1.19 (#2490): the tests by type, the failures, then the excluded,
+ * invalid and skipped counts, which the types' counts include. Elixir 1.14 to 1.18 print
+ * "1 doctest, 3 tests, 1 failure, 1 excluded, 1 skipped", and only "0 failures" for a run of no
+ * test; Elixir 1.19 prints "0 tests, 0 failures" there and the excluded as "3 tests, 0 failures
+ * (3 excluded)" (ExUnit.CLIFormatter, print_summary).
+ */
+const EXUNIT_SUMMARY =
+  /^((?:\d+ [a-z]+, )*)\d+ failures?((?:, \d+ (?:excluded|invalid|skipped))*)(?: \((\d+) excluded\))?\s*$/m;
+/**
+ * ExUnit's summary from Elixir 1.20 (#2490, R80 ratdec): "Result: 3 passed" when every test passed,
+ * "Result: 2/3 passed" with "Failed: 1 test" below it, "Result: 0 tests" when none ran, each with a
+ * per-type breakdown in parentheses when the run held several types ("(1 doctest, 2 tests)"), then
+ * ", 1 invalid", ", 1 skipped" and ", 2 excluded". The passed and failed tests are counted; the
+ * invalid, skipped and excluded ones are not (ExUnit.CLIFormatter, print_summary).
+ */
+const EXUNIT_RESULT =
+  /^Result: (?:0 tests|(\d+) passed|\d+\/(\d+) passed)(?: \([^)\n]*\))?((?:, \d+ (?:invalid|skipped|excluded))*)\s*$/m;
+
+/**
+ * ExUnit's counts summed over the summaries after each "Finished in" line, one per Mix project
+ * (`mix test` in an umbrella runs each app's tests): `ran` leaves out the excluded, invalid and
+ * skipped tests. Null when the output holds no ExUnit summary.
+ */
+function exunitCount(output: string, ran: boolean): number | null {
+  const o = plainOutput(output);
+  const parts = o.split(new RegExp(EXUNIT_FINISHED.source, "m")).slice(1);
+  if (!parts.length) return null;
+  let total: number | null = null;
+  for (const part of parts) {
+    const result = part.match(EXUNIT_RESULT);
+    const older = result ? null : part.match(EXUNIT_SUMMARY);
+    if (!result && !older) continue;
+    const idle = (text: string) => sum(text, /(\d+) (?:excluded|invalid|skipped)\b/g) ?? 0;
+    let found: number;
+    if (result) {
+      const executed = Number(result[1] ?? result[2] ?? 0);
+      found = ran ? executed : executed + idle(result[3] ?? "");
+    } else {
+      const all = sum(older?.[1] ?? "", /(\d+) [a-z]+, /g) ?? 0;
+      const skipped = idle(older?.[2] ?? "") + Number(older?.[3] ?? 0);
+      found = ran ? all - skipped : all;
+    }
+    total = (total ?? 0) + found;
+  }
+  return total;
 }
 
 /** The progress prefix of `dart test`: elapsed time, then passed `+N`, skipped `~N`, failed `-N`. */
@@ -590,7 +731,7 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   vue: ["vitest", "jest"],
   svelte: ["vitest", "jest"],
   rescript: ["vitest", "jest"],
-  python: ["pytest"],
+  python: ["pytest", "unittest"],
   rust: ["cargo"],
   go: ["go"],
   csharp: ["dotnet"],
@@ -603,7 +744,7 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
   php: ["phpunit", "pest"],
   swift: ["swift"],
   lua: ["busted", "tap"],
-  elixir: none('ExUnit\'s "N tests, M failures" summary is not read'),
+  elixir: ["exunit"],
   dart: ["dart"],
   zig: none("zig build test prints no count"),
   bash: ["tap"],
@@ -617,7 +758,6 @@ export const TEST_RUNNERS: LanguageRecord<readonly TestRunner[]> = {
 };
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: munit colours its output even without a terminal
-const withoutAnsi = (o: string): string => o.replace(/\u001b\[[0-9;]*m/g, "");
 
 const captured = (output: string, pattern: RegExp): string[] => [
   ...new Set([...output.matchAll(pattern)].map((m) => (m[1] ?? "").trim()).filter(Boolean)),
@@ -637,13 +777,28 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
   vitest: (o) => captured(o, /^\s*FAIL\s+(\S.* > .+?)\s*$/gm),
   // "FAILED tests/test_parser.py::test_keeps_blank - AssertionError", also an ERROR at setup
   pytest: (o) => captured(o, /^(?:FAILED|ERROR) (\S+::\S+)/gm),
+  // "FAIL: test_bad (tests.test_a.T.test_bad)" or "ERROR: ...", a subtest's parameters after it
+  // ("(n=2)"), not a module that did not import
+  unittest: (o) =>
+    captured(o, /^(?:FAIL|ERROR): (\S+ \((?!unittest\.loader\._FailedTest\b)[\w.]+\))(?: .*)?$/gm),
   // "test parser::keeps_blank ... FAILED"
   cargo: (o) => captured(o, /^test (\S+) \.\.\. FAILED\s*$/gm),
   // "  Failed Parser.Tests.KeepsBlank [12 ms]"
   dotnet: (o) => captured(o, /^\s*Failed (\S+) \[/gm),
   // "[ERROR] app.ParserTest.keepsBlank -- Time elapsed: 0.01 s <<< FAILURE!" (surefire 3), or
   // "[ERROR] keepsBlank(app.ParserTest)  Time elapsed: 0.01 s  <<< ERROR!" (surefire 2)
-  maven: (o) => captured(o, /^\[ERROR\] (\S+?)(?: --)?\s+Time elapsed: .*<<< (?:FAILURE|ERROR)!/gm),
+  // A test surefire lists under "[WARNING] Flakes:" failed and then passed on a rerun (#2782).
+  maven: (o) => {
+    const flaky = new Set(
+      [
+        ...o.matchAll(/^\[WARNING\] Flakes: *\r?\n((?:\[\w+\] .*\r?\n?)*?)\[INFO\] *\r?$/gm),
+      ].flatMap((m) => captured(m[1] ?? "", /^\[WARNING\] (\S+)\s*$/gm)),
+    );
+    return captured(
+      o,
+      /^\[ERROR\] (\S+?)(?: --)?\s+Time elapsed: .*<<< (?:FAILURE|ERROR)!/gm,
+    ).filter((name) => !flaky.has(name));
+  },
   // "--- FAIL: TestKeepsBlank (0.00s)", subtests included
   go: (o) => captured(o, /^\s*--- FAIL: (\S+)/gm),
   // "1) Tests\\SumTest::testAdds" under "There was 1 failure:" or "There were 2 errors:", not
@@ -685,7 +840,7 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
   // munit "==> X CalcSuite.fails on purpose  0.038s munit.ComparisonFailException: ...", and
   // ScalaTest "[info] - fails on purpose *** FAILED ***" under its "[info] CalcSpec:" header
   sbt: (o) => {
-    const text = withoutAnsi(o);
+    const text = plainOutput(o);
     const munit = captured(text, /^==> X (\S.*?)\s{2,}[\d.]+s\b/gm);
     let suite = "";
     const scalatest: string[] = [];
@@ -716,6 +871,14 @@ export const FAILED_TESTS: Record<TestRunner, (output: string) => string[]> = {
         return [attr("classname"), attr("name")].filter(Boolean).join(".");
       })
       .filter(Boolean),
+  // ExUnit, Elixir 1.14 to 1.20: "  1) test keeps blank lines (ParserTest)", also a doctest
+  // ("  2) doctest Parser.parse/1 (1) (ParserTest)"); not "  3) ParserTest: failure on setup_all
+  // callback, all tests have been invalidated", a module whose tests did not run.
+  exunit: (o) =>
+    captured(
+      plainOutput(o),
+      /^\s*\d+\) ((?:test|doctest|property|feature) .+ \([A-Z][\w.]*\))\s*$/gm,
+    ),
   // "not ok 3 - keeps blank lines", not a TODO or skipped test
   tap: (o) =>
     captured(o, /^not ok \d+(?: -)? (.+?)\s*$/gm).filter(
@@ -741,6 +904,9 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   vitest: /^\s*(?:FAIL\s+\S+ \[ .+ \]|Error: (?:Failed to load|Transform failed).*)$/,
   // "ERROR collecting tests/test_parser.py", "E   ModuleNotFoundError: No module named 'parser'"
   pytest: /^(?:_* ?ERROR collecting .+|E\s+(?:ModuleNotFoundError|ImportError|SyntaxError): .+)$/,
+  // "ImportError: Failed to import test module: test_a" under "ERROR: test_a
+  // (unittest.loader._FailedTest.test_a)", for a missing import or a syntax error in the module.
+  unittest: /^ImportError: Failed to import test module: \S+$/,
   // "error[E0425]: cannot find function `fold` in this scope", "error: could not compile `cidrfold`"
   cargo: /^error(?:\[E\d+\]: .+|: could not compile .+)$/,
   // "Parser.cs(12,5): error CS1501: No overload for method 'Run' takes 7 arguments"
@@ -785,6 +951,10 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
   // "[-] Discovery in /w/tests/Sum.Tests.ps1 failed with:", "[-] /w/tests/Sum.Tests.ps1 failed with:"
   // (a BeforeAll that throws), and the "Container failed: 2" summary.
   pester: /^(?:\[-\] (?:Discovery in )?\S+\.Tests\.ps1 failed with:|Container failed: \d+)$/,
+  // mix test compiles the test files before it runs any: "== Compilation error in file
+  // test/a_test.exs ==" (Elixir 1.14 measured; 1.20 prints the same line, Kernel.ParallelCompiler),
+  // also for a project file that does not compile.
+  exunit: /^== Compilation error in file \S+\.exs?(?::\d+)? ==$/,
   // The package did not load: "Error in `load_all()`:" then "! Failed to load 'R/sum.R'".
   testthat: /^(?:Error in `(?:pkgload::)?load_all\(\)`:|! Failed to load '.+')$/,
 };
@@ -792,7 +962,7 @@ export const BUILD_FAILURES: Record<TestRunner, RegExp> = {
 // Compilers color their diagnostics even when not on a terminal (swiftc 6.4 prints "error:" in
 // bold red, #1492), so the build-failure lines are read without ANSI colors.
 const buildLines = (output: string): string[] =>
-  withoutAnsi(output)
+  plainOutput(output)
     .split(/\r?\n/)
     .map((line) => line.trimEnd());
 
@@ -823,7 +993,8 @@ export function buildRunner(output: string): TestRunner | null {
  * prints `--- FAIL` lines and no count). Null when neither is in the output, so a caller cannot
  * read an empty list as "none failed".
  */
-export function failedTests(output: string): { tool: TestRunner; names: string[] } | null {
+export function failedTests(raw: string): { tool: TestRunner; names: string[] } | null {
+  const output = plainOutput(raw);
   const counted = testCount(output)?.tool as TestRunner | undefined;
   if (counted) return { tool: counted, names: FAILED_TESTS[counted](output) };
   for (const { tool } of TEST_COUNTERS) {
@@ -834,7 +1005,8 @@ export function failedTests(output: string): { tool: TestRunner; names: string[]
 }
 
 /** The number of tests a runner ran, by its summary line. */
-export function testCount(output: string): OutputCount | null {
+export function testCount(raw: string): OutputCount | null {
+  const output = plainOutput(raw);
   for (const { tool, count } of TEST_COUNTERS) {
     const found = count(output);
     if (found !== null) return { tool, count: found };
@@ -849,13 +1021,31 @@ export function testCount(output: string): OutputCount | null {
  * `#![cfg(feature = ...)]` file) prints "0 passed" with exit 0 (tonemath-update, bench round 56,
  * #1832).
  */
-export function testsRan(output: string): OutputCount | null {
+export function testsRan(raw: string): OutputCount | null {
+  const output = plainOutput(raw);
   for (const { tool, count, ran } of TEST_COUNTERS) {
     const found = ran(output);
     if (found !== null) return { tool, count: found };
     if (count(output) !== null) return null;
   }
   return null;
+}
+
+/**
+ * Whether a check's output shows that some part of the run holds tests (#2778): a summary that
+ * counts some, a test reported as failed, a `go test` package that ran tests or whose tests did
+ * not build, or a Gradle test task that completed some. A "no tests" line of another part (a Go
+ * package without test files, an umbrella app without tests, a Gradle project whose test task
+ * discovered none) then does not stand for the whole run.
+ */
+export function heldTests(raw: string): boolean {
+  const output = plainOutput(raw);
+  return (
+    (testCount(output)?.count ?? 0) > 0 ||
+    (failedTests(output)?.names.length ?? 0) > 0 ||
+    GO_PACKAGE_TESTED.test(output) ||
+    GRADLE_COMPLETED.test(output)
+  );
 }
 
 /**
@@ -866,27 +1056,29 @@ export function testsRan(output: string): OutputCount | null {
  * with 0 tests in 0 suites passed"; busted 2.2 on a spec file without `it`: "0 successes / 0
  * failures / 0 errors / 0 pending"; testthat 3.2 on a test file without `test_that`: "[ FAIL 0 |
  * WARN 0 | SKIP 0 | PASS 0 ]"; Pester 5 on a `*.Tests.ps1` without `It`: "Tests Passed: 0,
- * Failed: 0, Skipped: 0, Inconclusive: 0, NotRun: 0". cargo is left out: its "0 passed" is a test
- * binary with no test in a crate that may have others (#1832).
+ * Failed: 0, Skipped: 0, Inconclusive: 0, NotRun: 0"; `mix test` on a test module without
+ * `test` (#2490): "0 failures" in Elixir 1.14 to 1.18, "0 tests, 0 failures" in 1.19 and "Result:
+ * 0 tests" in 1.20, summed over an umbrella's apps, so another app's tests overrule it. cargo is
+ * left out: its "0 passed" is a test binary with no test in a crate that may have others (#1832).
  */
-const EMPTY_SUMMARIES: ReadonlySet<TestRunner> = new Set(["swift", "busted", "testthat", "pester"]);
+const EMPTY_SUMMARIES: ReadonlySet<TestRunner> = new Set([
+  "swift",
+  "busted",
+  "testthat",
+  "pester",
+  "exunit",
+]);
 
 /**
  * The lines of runners without a counter here that say, with exit 0, that the run held no test
  * (#2419), each with the line of the same runner that says another part of the run did hold
- * tests (dune runs every test executable, Mix every umbrella app), which overrules it.
+ * tests (dune runs every test executable), which overrules it.
  */
 const EMPTY_RUN_LINES: readonly { runner: string; line: RegExp; held?: RegExp }[] = [
   // dotnet test (VSTest, SDK 8.0) on a test project without a test; another project's tests show
   // in the summary `testCount` reads. Not "No test matches the given testcase filter", a narrowed
   // run that selected nothing (#2378).
   { runner: "dotnet", line: /^No test is available in \S/m },
-  // ExUnit (Elixir 1.14 to 1.18) prints no test count when it ran none: "0 failures".
-  {
-    runner: "exunit",
-    line: /^Finished in \d[\d.]* seconds?\b.*\r?\n0 failures\r?$/m,
-    held: /^[1-9]\d* [a-z]+, (?:\d+ [a-z]+, )*\d+ failures?\b/m,
-  },
   // OUnit2 2.2 and Alcotest 1.7, the test libraries of `dune test`, on an empty suite.
   { runner: "ounit", line: /^Ran: 0 tests in: /m, held: /^Ran: [1-9]\d* tests? in: /m },
   {
@@ -901,7 +1093,8 @@ const EMPTY_RUN_LINES: readonly { runner: string; line: RegExp; held?: RegExp }[
  * opposed to tests that did not build or load (`buildFailure`) or a narrowed run that selected
  * none (XCTest's "Selected tests", #2378).
  */
-export function emptyTestRun(output: string): boolean {
+export function emptyTestRun(raw: string): boolean {
+  const output = plainOutput(raw);
   if (buildFailure(output)) return false;
   const counted = testCount(output);
   if (counted && counted.count > 0) return false;
@@ -991,6 +1184,9 @@ const FILES_DONE =
  */
 const GROWING_COUNTS: [RegExp, string][] = [
   [/\bchecked \d+ source files?\b/g, "checked <n> source file"],
+  // ExUnit from Elixir 1.20 (#2490): "Result: 2/3 passed (1/1 doctest, 1/2 tests)"; its "Failed:
+  // 1 test" line keeps the failed count.
+  [/^Result: (?:\d+\/)?\d+ passed(?: \([^)\n]*\))?/gm, "Result: <n> passed"],
   [
     /\b\d+ (passed|skipped|deselected|xfailed|xpassed|warnings?|total|tests completed)\b/g,
     "<n> $1",
@@ -1003,6 +1199,13 @@ const GROWING_COUNTS: [RegExp, string][] = [
   // 1 skips" with its rates "2931.07 runs/s, 1465.53 assertions/s" (#1493).
   [/\b\d+ (examples?|pending|runs?|assertions?|skips?)\b(?!\/s)/g, "<n> $1"],
   [/\b[\d.]+ (runs|assertions)\/s\b/g, "<n> $1/s"],
+  // ExUnit up to Elixir 1.19 (#2490): "1 doctest, 3 tests, 1 failure", the failures kept; and the
+  // lines of Mix compiling what changed since its last run, which are progress.
+  [
+    /^(?:\d+ (?:tests?|doctests?|propert(?:y|ies)|features?), )+(\d+ failures?)\b/gm,
+    "<n> tests, $1",
+  ],
+  [/^(?:Compiling \d+ files? \(\.exs?\)|Generated \S+ app)\r?(?:\n|$)/gm, ""],
   // The random order seed of RSpec and Minitest: "Randomized with seed 1809", "--seed 1809".
   [/\b(seed|--seed) \d+\b/g, "$1 <n>"],
   // dart test prints a progress line as each test starts (#1494): only the failures, their
@@ -1117,8 +1320,8 @@ const GROWING_COUNTS: [RegExp, string][] = [
 export const growingCounts = (text: string): string =>
   GROWING_COUNTS.reduce((out, [pattern, to]) => out.replace(pattern, to), text);
 
-export function failureSignature(output: string, root: string): string {
-  const text = withoutWorkspace(output, root)
+export function failureSignature(output: string, root: string, run?: RunRoots): string {
+  const text = withoutWorkspace(output, root, run)
     .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, "<time>")
     .replace(/\d+(\.\d+)?\s*(ms|s|sec|seconds|m)\b/g, "<duration>")
     .replace(/\[\d+(\.\d+)?(ms|s)\]/g, "<duration>")
@@ -1141,27 +1344,30 @@ export function failureSignature(output: string, root: string): string {
  * signature in the check baseline (`shapes`); the `baseline_signature` reason records, in shadow,
  * where it would match and the live one does not.
  */
-export function shapedFailureSignature(output: string, root: string): string {
-  const text = withoutWorkspace(output, root)
+export function shapedFailureSignature(output: string, root: string, run?: RunRoots): string {
+  const text = withoutWorkspace(output, root, run)
     .replaceAll("\r\n", "\n")
     .replaceAll("\r", "\n")
     .replaceAll("\\", "/");
   return withoutCounts(normalizeVolatile(text));
 }
 
-/** The output without colours and with every worktree path of the project as `<root>`. */
-function withoutWorkspace(output: string, root: string): string {
-  const project = root.replace(/[\\/]\.baked[\\/]worktrees[\\/].*$/, "");
-  return (
-    output
-      // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI colour codes
-      .replace(/\u001b\[[0-9;]*m/g, "")
-      .replace(WORKTREE_PATH, "<root>")
-      .split(root)
-      .join("<root>")
-      .split(project)
-      .join("<root>")
-  );
+/**
+ * The output without colours and with every worktree path of the project as `<root>`. `run` names
+ * the run's worktree directory, which under `workflows.worktreeRoot` has no `.baked/worktrees`
+ * spelling (#2697).
+ */
+function withoutWorkspace(output: string, root: string, run?: RunRoots): string {
+  const project = inRunWorktrees(root, run)
+    ? (run?.workspace ?? root)
+    : root.replace(/[\\/]\.baked[\\/]worktrees[\\/].*$/, "");
+  const others = runWorktreePattern(run, "()<>:");
+  const text = plainOutput(output).replace(WORKTREE_PATH, "<root>");
+  return (others ? text.replace(others, "<root>") : text)
+    .split(root)
+    .join("<root>")
+    .split(project)
+    .join("<root>");
 }
 
 /** The signature's counts that grow as tasks add files and tests, left out; blank lines dropped. */

@@ -82,6 +82,8 @@ benchmarks/results-*.json
 !.agents/skills/replay-corpus/
 !.agents/skills/bench-suite/
 !.agents/skills/add-language/
+# The area rules AGENTS.md indexes, one rule per file
+!.agents/rules/
 
 # Audit logs
 audit_issue.json

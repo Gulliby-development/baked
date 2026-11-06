@@ -10,10 +10,15 @@
     "testsGrown": " FAIL  src/sum.test.js > sum\n Test Files  1 failed (1)\n      Tests  1 failed | 3 passed (4)\n"
   },
   "generated": {
-    "src/Gen_test.res": "let a = Js.String2.repeat(\"\\\\\", 3)\nlet b = `x${a}`\nlet lit = \"\\\\\\\\\\\\\"\n// let d = Js.String2.repeat(\"\\\\\", 3)\n"
+    "src/Gen_test.res": "let a = Js.String2.repeat(\"\\\\\", 3)\nlet b = `x${a}`\nlet lit = \"\\\\\\\\\\\\\"\n// let d = Js.String2.repeat(\"\\\\\", 3)\n",
+    "src/Runtime_test.res": "let dir = NodeJs.Os.tmpdir()\nlet want = `bad: ${dir}`\n"
   },
   "expected": {
+    "rowIndent": ["\"  row(1),\""],
+    "languagePitfalls": null,
     "generatedValues": ["src/Gen_test.res:1 repeat","src/Gen_test.res:2 interpolate"],
+    "exampleBuild": null,
+    "runtimePaths": ["src/Runtime_test.res: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
     ],
@@ -72,7 +77,18 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["/p/.baked/worktrees/e7760f1b/main/src/Evaluate.res: This has type: value"],
     "testClasses": null,
-    "testDeclarations": ["__tests__/Sum_test.res: 2 tests"]
+    "testDeclarations": ["__tests__/Sum_test.res: 2 tests"],
+    "rowFileShapes": [
+      "tests/CliTest.res",
+      "let rows = [",
+      "  Harness.row([\"--help\"], \"\", 0, \"usage: csp [--strict] FILE\\n\", \"\"),",
+      "  Harness.row([\"--nope\"], \"\", 2, \"\", \"csp: unknown option --nope\\n\"),",
+      "]",
+      "",
+      "Harness.run(rows)",
+      ""
+    ]
   }
 }

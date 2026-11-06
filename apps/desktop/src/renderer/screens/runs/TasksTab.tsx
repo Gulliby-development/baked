@@ -46,8 +46,9 @@ const STATE_TEXT: Record<TaskState, string> = {
   blocked: "blocked",
 };
 
-const writerWorktree = (runId: string, taskId: string): string =>
-  `.baked/worktrees/${runId}/${taskId}`;
+/** A writer's worktree beside the run's own (`.baked/worktrees/<8 hex digits>/main`, #2454). */
+const writerWorktree = (status: RunData["status"], taskId: string): string =>
+  `${status.worktree?.path.replace(/\/[^/]*$/, "") ?? `.baked/worktrees/${status.runId}`}/${taskId}`;
 
 function WriterColumn({
   index,
@@ -91,7 +92,7 @@ function WriterColumn({
       </div>
       {current && (
         <span className="font-mono text-[12px] text-dim-foreground">
-          {writerWorktree(data.status.runId, current.id)}
+          {writerWorktree(data.status, current.id)}
         </span>
       )}
       {current && (

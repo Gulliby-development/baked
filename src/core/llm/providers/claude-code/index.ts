@@ -8,6 +8,7 @@ import type {
 import { parseOpusVersion } from "../../model-id.js";
 import { answerUsage, lostAnswer } from "../../provider-answer.js";
 import { providerResponded } from "../../provider-health.js";
+import { activeAccountEnv } from "../account-env.js";
 import { cliReasoningEffort } from "../cli-effort.js";
 import type { ContextSizeOption, ProviderDefinition, ProviderModelInfo } from "../types.js";
 import { assertClaudeCodeReady, getClaudeCodeLoginStatus } from "./cli.js";
@@ -61,7 +62,7 @@ export function claudeCodeContextSizes(modelId: string): ContextSizeOption[] {
   ];
 }
 
-// maxOutputTokens is left out: BAKED sets it on every agent, so the CLI ignoring it is expected.
+// maxOutputTokens is not here: the session sets it as CLAUDE_CODE_MAX_OUTPUT_TOKENS (#2547).
 const UNSUPPORTED_SETTINGS = [
   "temperature",
   "stopSequences",
@@ -91,6 +92,9 @@ export function createClaudeCodeLanguageModel(
     const result = await runner.run({
       modelId,
       ...(effort ? { effort } : {}),
+      ...(options.maxOutputTokens !== undefined
+        ? { maxOutputTokens: options.maxOutputTokens }
+        : {}),
       parts: buildClaudeCodePromptParts(options),
       abortSignal: options.abortSignal,
       onResponse: () => providerResponded(options.abortSignal),
@@ -165,7 +169,7 @@ export const claudeCode: ProviderDefinition = {
     await requestClaudeCodeAuth();
   },
   createModel(modelId: string) {
-    assertClaudeCodeReady();
+    assertClaudeCodeReady(activeAccountEnv("claude-code"));
     return createClaudeCodeLanguageModel(modelId);
   },
   async fetchModels() {
@@ -176,7 +180,8 @@ export const claudeCode: ProviderDefinition = {
   contextWindows: CLAUDE_CODE_CONTEXT_WINDOWS,
   contextSizes: claudeCodeContextSizes,
   checkAvailability: async () => {
-    const status = getClaudeCodeLoginStatus();
+    const env = activeAccountEnv("claude-code");
+    const status = getClaudeCodeLoginStatus(env ? { env } : {});
     return status.installed && status.loggedIn;
   },
   onDeactivate: () => closeDefaultClaudeCodeRunner(),

@@ -8,7 +8,13 @@ import {
   repeatCheck,
   repeatedFailureDecision,
   repeatRecord,
+  unfinishedRepeatRemedies,
 } from "../src/core/workflows/repeated-failure.js";
+import { WorkflowFault } from "../src/core/workflows/errors.js";
+import { invalidOutputBuildChange, invalidOutputDecision, invalidOutputKey } from "../src/core/workflows/invalid-output-repeat.js";
+import { errorRecovery } from "../src/core/workflows/remedies.js";
+import { unfinishedRepeatFault } from "../src/core/workflows/scheduler.js";
+import { writeRefusalOf } from "../src/core/workflows/write-refusals.js";
 import { failureSignature as failingLines, failuresCovered } from "../src/core/verification/convergence.js";
 import { shapedFailureSignature, TEST_RUNNERS, withinBaseline } from "../src/core/verification/output-counts.js";
 import { baselineSignatureDecision, signatureLines } from "../src/core/workflows/baseline-signature.js";
@@ -26,6 +32,8 @@ const busted = (time: string, address: string) =>
 const gradle = (time: string) =>
   `> Task :test FAILED\n\nParserTest > rejectsEmpty() FAILED\n    org.opentest4j.AssertionFailedError at ParserTest.kt:12\n\n1 test completed, 1 failed\n\nFAILURE: Build failed with an exception.\n\n* What went wrong:\nExecution failed for task ':test'.\n> There were failing tests. See the report at: file:///work/build/reports/tests/test/index.html\n\nBUILD FAILED in ${time}\n4 actionable tasks: 2 executed, 2 up-to-date\n`;
 const pairs: [string, string, string][] = [
+  // #2437: R77 pairwick, sbt 2's `elapsed time` line after a failing scalafmtCheck.
+  ["sbt (scalafmtCheck, R77 pairwick)", "[info] loading project definition from /work/project\n[warn] /work/src/main/scala/pairwick/Rules.scala isn't formatted properly!\n[error] (Compile / scalafmtCheck) 1 files aren't formatted properly\n[error] elapsed time: 4 s, cache 0%, 1 disk cache hit, 3 onsite tasks", "[info] loading project definition from /work/project\n[warn] /work/src/main/scala/pairwick/Rules.scala isn't formatted properly!\n[error] (Compile / scalafmtCheck) 1 files aren't formatted properly\n[error] elapsed time: 12 s, cache 50%, 106 disk cache hits, 1 onsite task"],
   ["gofmt", "internal\\lint\\rules_test.go:26:2217: illegal byte order mark\r\n", "internal/lint/rules_test.go:26:2217: illegal byte order mark\n"],
   ["go test", "--- FAIL: TestRules (0.00s)\n    rules_test.go:40: got 1\nFAIL\nFAIL\tcfgquill/internal/lint\t0.012s\n", "--- FAIL: TestRules (0.03s)\n    rules_test.go:40: got 1\nFAIL\nFAIL\tcfgquill/internal/lint\t0.457s\n"],
   ["bun test", "\u001b[31m(fail)\u001b[0m parse > rejects [1.23ms]\n 0 pass\n 1 fail\nRan 1 test across 1 file. [45.00ms]", "(fail) parse > rejects [0.98ms]\n 0 pass\n 1 fail\nRan 1 test across 1 file. [51.12ms]"],
@@ -36,6 +44,7 @@ const pairs: [string, string, string][] = [
   ["tap (prove)", "t/parse.t .. 1/2 \n#   Failed test 'rejects empty'\n#   at t/parse.t line 7.\nt/parse.t .. Dubious, test returned 1 (wstat 256, 0x100)\nFailed 1/2 subtests \nFiles=1, Tests=2,  0 wallclock secs ( 0.01 usr  0.00 sys +  0.03 cusr  0.01 csys =  0.05 CPU)\nResult: FAIL", "t/parse.t .. 1/2 \n#   Failed test 'rejects empty'\n#   at t/parse.t line 7.\nt/parse.t .. Dubious, test returned 1 (wstat 256, 0x100)\nFailed 1/2 subtests \nFiles=1, Tests=2,  1 wallclock secs ( 0.02 usr  0.01 sys +  0.05 cusr  0.00 csys =  0.08 CPU)\nResult: FAIL"],
   ["pytest", "FAILED tests/test_cli.py::test_parse - AssertionError\n1 failed in 0.12s", "FAILED tests/test_cli.py::test_parse - AssertionError\n1 failed in 0.31s"],
   ["pytest (randomly)", "Using --randomly-seed=1234567\nFAILED tests/test_cli.py::test_parse - AssertionError\n1 failed in 2.01s", "Using --randomly-seed=987\nFAILED tests/test_cli.py::test_parse - AssertionError\n1 failed in 1.50s"],
+  ["unittest", "F\n======================================================================\nFAIL: test_rejects_empty (tests.test_parse.ParseTest.test_rejects_empty)\n----------------------------------------------------------------------\nAssertionError: 2 != 1\n\n----------------------------------------------------------------------\nRan 1 test in 0.001s\n\nFAILED (failures=1)", "F\n======================================================================\nFAIL: test_rejects_empty (tests.test_parse.ParseTest.test_rejects_empty)\n----------------------------------------------------------------------\nAssertionError: 2 != 1\n\n----------------------------------------------------------------------\nRan 1 test in 0.123s\n\nFAILED (failures=1)"],
   ["cargo", "test parse ... FAILED\ntest result: FAILED. 0 passed; 1 failed; finished in 0.00s", "test parse ... FAILED\ntest result: FAILED. 0 passed; 1 failed; finished in 0.02s"],
   ["dotnet test", "  Failed App.Tests.ParserTests.RejectsEmpty [12 ms]\n  Error Message:\n   Assert.Equal() Failure\nFailed!  - Failed:     1, Passed:     0, Skipped:     0, Total:     1, Duration: 12 ms - App.Tests.dll (net8.0)", "  Failed App.Tests.ParserTests.RejectsEmpty [< 1 ms]\n  Error Message:\n   Assert.Equal() Failure\nFailed!  - Failed:     1, Passed:     0, Skipped:     0, Total:     1, Duration: < 1 ms - App.Tests.dll (net8.0)"],
   ["maven", "[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.012 s <<< FAILURE! -- in app.ParserTest\n[INFO] BUILD FAILURE\n[INFO] Total time:  3.456 s\n[INFO] Finished at: 2026-10-27T01:02:03+02:00", "[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.2 s <<< FAILURE! -- in app.ParserTest\n[INFO] BUILD FAILURE\n[INFO] Total time:  01:05 min\n[INFO] Finished at: 2026-10-27T02:03:04+02:00"],
@@ -55,8 +64,8 @@ const pairs: [string, string, string][] = [
   ["dart test", "00:00 +0: loading test/parse_test.dart\n00:01 +0 -1: parse rejects empty [E]\n  Expected: <1>\n    Actual: <2>\n  test/parse_test.dart 7:5  main.<fn>\n00:01 +0 -1: Some tests failed.", "00:00 +0: loading test/parse_test.dart\n00:03 +0 -1: parse rejects empty [E]\n  Expected: <1>\n    Actual: <2>\n  test/parse_test.dart 7:5  main.<fn>\n00:04 +0 -1: Some tests failed."],
   ["pester", "Starting discovery in 1 files.\nDiscovery found 2 tests in 12ms.\nRunning tests.\n[-] Parser.rejects empty 12ms (9ms|3ms)\n Expected 1, but got 2.\n at $r | Should -Be 1, /work/tests/Parser.Tests.ps1:5\nTests completed in 123ms\nTests Passed: 1, Failed: 1, Skipped: 0 NotRun: 0", "Starting discovery in 1 files.\nDiscovery found 2 tests in 31ms.\nRunning tests.\n[-] Parser.rejects empty 4ms (2ms|2ms)\n Expected 1, but got 2.\n at $r | Should -Be 1, /work/tests/Parser.Tests.ps1:5\nTests completed in 1.01s\nTests Passed: 1, Failed: 1, Skipped: 0 NotRun: 0"],
   ["testthat", "── Failure (test-parse.R:5:3): parse rejects empty ──\nparse(\"\") not equal to 1.\n[ FAIL 1 | WARN 0 | SKIP 0 | PASS 1 ]\n══ Results ══\nDuration: 0.5 s", "── Failure (test-parse.R:5:3): parse rejects empty ──\nparse(\"\") not equal to 1.\n[ FAIL 1 | WARN 0 | SKIP 0 | PASS 1 ]\n══ Results ══\nDuration: 1.2 s"],
-  // Runners without a summary parser (`none` in `TEST_RUNNERS`) whose failing checks still repeat.
   ["ExUnit", "Running ExUnit with seed: 52731, max_cases: 16\n\n  1) test rejects empty (ParserTest)\n     test/parser_test.exs:5\n     Assertion with == failed\n\nFinished in 0.03 seconds (0.00s async, 0.03s sync)\n1 test, 1 failure\n\nRandomized with seed 52731", "Running ExUnit with seed: 901, max_cases: 16\n\n  1) test rejects empty (ParserTest)\n     test/parser_test.exs:5\n     Assertion with == failed\n\nFinished in 0.1 seconds (0.02s async, 0.08s sync)\n1 test, 1 failure\n\nRandomized with seed 901"],
+  // Runners without a summary parser (`none` in `TEST_RUNNERS`) whose failing checks still repeat.
   ["zig build test", "error: 'parse_test.test.rejects empty' failed: expected 1, found 2\nBuild Summary: 3/5 steps succeeded; 1 failed; 1/2 tests passed; 1 failed\ntest transitive failure\n└─ run test 1 passed 1 failed 3ms MaxRSS:1M", "error: 'parse_test.test.rejects empty' failed: expected 1, found 2\nBuild Summary: 3/5 steps succeeded; 1 failed; 1/2 tests passed; 1 failed\ntest transitive failure\n└─ run test 1 passed 1 failed 15ms MaxRSS:2M"],
   ["julia Test", "parse: Test Failed at /work/test/runtests.jl:5\n  Expression: parse(\"\") == 1\nTest Summary: | Pass  Fail  Total  Time\nparse         |    1     1      2  0.5s", "parse: Test Failed at /work/test/runtests.jl:5\n  Expression: parse(\"\") == 1\nTest Summary: | Pass  Fail  Total  Time\nparse         |    1     1      2  2.1s"],
   ["dune (Alcotest)", "Testing `parse'.\nThis run has ID `9KXJ1U9Z'.\n\n  [FAIL]        parse          0   rejects empty.\nASSERT same int\nFAIL same int\n   Expected: `1'\n   Received: `2'\n\n1 failure! in 0.001s. 2 tests run.", "Testing `parse'.\nThis run has ID `ZQ3MBB0A'.\n\n  [FAIL]        parse          0   rejects empty.\nASSERT same int\nFAIL same int\n   Expected: `1'\n   Received: `2'\n\n1 failure! in 0.004s. 2 tests run."],
@@ -190,5 +199,86 @@ describe("one table of volatile values for every failure comparison (#2295)", ()
       expect(signature).not.toBe("");
       expect(failuresCovered(b, [{ claim: "Required check tests failed", impact: `Implementation cannot be accepted. Failing: ${signature}` }])).toBe(true);
     }
+  });
+});
+
+// #2520: the block of a task that ended unfinished twice alike says a resume repeats the failure,
+// so it offers no resume; R82 tinyflate deflate 82f19908 T007 was offered only that resume.
+describe("unfinishedRepeatFault (#2520)", () => {
+  const fault = () => new WorkflowFault("OUTPUT_INVALID", "Task T007 did not complete its implementation: ctest fails", { unfinishedTask: "T007" });
+  test("from the second end alike the remedies change an input and leave resume out", () => {
+    const blocked = unfinishedRepeatFault(fault(), "run-1", { taskId: "T007", ends: 2, checks: ["ctest"] });
+    const advice = errorRecovery(blocked);
+    expect(advice?.remedies.map((r) => r.action)).toEqual(["reroute", "revise", "replan", "cancel"]);
+    expect(advice?.remedies.every((r) => r.runId === "run-1")).toBe(true);
+    expect(blocked.message).toContain("Task T007 ended unfinished 2 times in a row with the same failing output of ctest.");
+    expect(blocked.message).toContain("What must change is the input behind ctest");
+    expect(blocked.message).toContain("baked workflow reroute run-1 --route STAGE=MODEL --resume");
+    expect(blocked.details.unfinishedTask).toBe("T007");
+    expect(unfinishedRepeatRemedies(3)).toEqual(["reroute", "revise", "replan", "cancel"]);
+  });
+  // #2643: R87 slackbar T005 blocked naming `format` while its worker reported no run_probe.
+  test("the block names what the worker reported unresolved, clipped", () => {
+    const long = "x".repeat(400);
+    const blocked = unfinishedRepeatFault(fault(), "run-1", { taskId: "T005", ends: 2, checks: ["format"], unresolved: ["run_probe is not available in this environment", long, "third"] });
+    expect(blocked.message).toContain('Its worker reported unresolved: "run_probe is not available in this environment"; "' + "x".repeat(300) + '...".');
+    expect(blocked.message).not.toContain("third");
+    expect(blocked.message).toContain("or behind what its worker reported unresolved");
+    expect(errorRecovery(blocked)?.summary).toContain("run_probe is not available in this environment");
+    const quiet = unfinishedRepeatFault(fault(), "run-1", { taskId: "T005", ends: 2, checks: ["format"], unresolved: [" "] });
+    expect(quiet.message).not.toContain("reported unresolved");
+  });
+  test("without a repeat the fault stays as it was", () => {
+    const plain = fault();
+    expect(unfinishedRepeatFault(plain, "run-1", null)).toBe(plain);
+    expect(unfinishedRepeatRemedies(1)).toEqual(["resume"]);
+  });
+});
+
+// #2520: the invalid-output repeat key is built from the writes the host refused, never from the
+// model's wording; the diagnostic's hash keys only a stop without refusals.
+describe("invalid-output repeat decision (#2520)", () => {
+  const refusals = [{ code: "exists" as const, path: "lib/src/template.dart" }];
+  const inputs = { routing: 1 };
+  test("the same refusal under a new diagnostic repeats the last resume", () => {
+    const previous = invalidOutputKey({ refusals, diagnostic: "hash-of-first-wording", inputs });
+    expect(invalidOutputKey({ refusals, diagnostic: "hash-of-second-wording", inputs })).toBe(previous);
+    expect(invalidOutputDecision({ refusals, diagnostic: "hash-of-second-wording", inputs, noted: false, previous })).toBe("repeat");
+    expect(invalidOutputDecision({ refusals, diagnostic: "hash-of-second-wording", inputs, noted: false, previous: null })).toBe("first");
+    // A reroute changes the routing revision, so the same refusal is a new situation.
+    expect(invalidOutputDecision({ refusals, diagnostic: "x", inputs: { routing: 2 }, noted: false, previous })).toBe("progress");
+    expect(invalidOutputDecision({ refusals: [{ code: "exists", path: "lib/src/render.dart" }], diagnostic: "x", inputs, noted: false, previous })).toBe("progress");
+  });
+  test("without refusals the diagnostic keys the decision, as before", () => {
+    const previous = invalidOutputKey({ refusals: [], diagnostic: "d1", inputs });
+    expect(invalidOutputDecision({ refusals: [], diagnostic: "d1", inputs, noted: true, previous })).toBe("repeat");
+    expect(invalidOutputDecision({ refusals: [], diagnostic: "d2", inputs, noted: true, previous })).toBe("progress");
+    expect(invalidOutputDecision({ refusals: [], diagnostic: "d1", inputs, noted: false, previous })).toBe("first");
+  });
+  // #2587: the build is an input of the key; a key from before it, which has none, differs.
+  test("another build, or a key without one, is progress; the same build repeats", () => {
+    const built = { routing: 1, build: "0.5.0+1c434312e0b7" };
+    const previous = invalidOutputKey({ refusals: [], diagnostic: "d1", inputs: { routing: 1, build: "0.5.0+7d1e0a52c4b9" } });
+    const facts = { refusals: [], diagnostic: "d1", inputs: built, noted: true, previous };
+    expect(invalidOutputDecision(facts)).toBe("progress");
+    expect(invalidOutputBuildChange(facts)).toEqual({ from: "0.5.0+7d1e0a52c4b9", to: built.build });
+    const same = invalidOutputKey({ refusals: [], diagnostic: "d1", inputs: built });
+    expect(invalidOutputDecision({ ...facts, previous: same })).toBe("repeat");
+    expect(invalidOutputBuildChange({ ...facts, previous: same })).toBeNull();
+    // A key from before #2587 and the pre-key fallback both have no build.
+    const legacy = invalidOutputKey({ refusals, diagnostic: "d1", inputs });
+    expect(invalidOutputDecision({ refusals, diagnostic: "d1", inputs: built, noted: false, previous: legacy })).toBe("progress");
+    expect(invalidOutputDecision({ ...facts, previous: null })).toBe("progress");
+    expect(invalidOutputBuildChange({ ...facts, previous: null })).toEqual({ from: null, to: built.build });
+    // Another input changed as well: the build is not why the resume passes.
+    expect(invalidOutputBuildChange({ ...facts, inputs: { ...built, routing: 2 } })).toBeNull();
+    // A record from before #2587 replays as it was decided.
+    expect(invalidOutputDecision({ refusals: [], diagnostic: "d1", inputs, noted: true, previous: null })).toBe("repeat");
+  });
+  test("a journaled refusal reads back as its code and path", () => {
+    expect(writeRefusalOf("Create target already exists: lib/src/template.dart")).toEqual({ code: "exists", path: "lib/src/template.dart" });
+    expect(writeRefusalOf("File changed outside this attempt: a.ts")).toEqual({ code: "changed", path: "a.ts" });
+    expect(writeRefusalOf("Modify target is missing: b.ts")).toEqual({ code: "missing", path: "b.ts" });
+    expect(writeRefusalOf("oldString not found in a.ts")).toBeNull();
   });
 });

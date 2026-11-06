@@ -6,6 +6,7 @@ import {
 import { rangeText, type StartEstimate } from "../../core/workflows/estimate.js";
 import { canExtendRun } from "../../core/workflows/extendable.js";
 import { detectGates } from "../../core/workflows/gates.js";
+import { largePromptText } from "../../core/workflows/prompt-sections.js";
 import { reasonText } from "../../core/workflows/reasons.js";
 import {
   type Remedy,
@@ -496,8 +497,14 @@ export function eventText(event: WorkflowEvent, stages: StageView[]): string | n
       return event.payload.mode === "advisory"
         ? `Would re-run (advisory): ${event.payload.summary}`
         : null;
+    case "decision.would_finish":
+      return event.payload.mode === "advisory"
+        ? `Would finish (advisory): ${event.payload.summary}`
+        : null;
     case "attempt.recovery":
       return `Stalled agent call, recovery: ${event.payload.detail}`;
+    case "attempt.large_prompt":
+      return largePromptText(event.payload);
     case "attempt.advisory":
       return `Progress watcher ${event.payload.action === "stopped" ? "stopped the agent call" : "warned the agent"}: ${event.payload.detail}`;
     case "task.state_changed":
@@ -570,6 +577,11 @@ const HINTS: [RegExp, string][] = [
     "Raise the limits (B) to continue from where it stopped, or fork the run (F) with a fresh budget.",
   ],
   [/Unknown run/i, "The run no longer exists. Pick another one from the list."],
+  // A change applied at the parallel-run cap: kept, and the run waits for a slot (#2415).
+  [
+    /continues when a slot is free/i,
+    "Nothing else to do: the change is kept and the run starts when one of the executing runs ends.",
+  ],
   [
     /WORKSPACE_BUSY|already executing|workspace is busy/i,
     "Another run or edit holds the workspace. Wait or pause it first.",

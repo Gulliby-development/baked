@@ -18,15 +18,20 @@ import {
   hostApplyContents,
   hostApplyDecision,
   hostApplyInputs,
+  hostApplyPaths,
   hostApplyText,
   hostApplyRecords,
   regionSections,
   zeroContextHunks,
 } from "../src/core/workflows/host-apply.js";
-import type { Check, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
+import type { Check, RunPolicy, Spec, Task, TaskGraph } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
-import { suppliedBlocks, suppliedLines } from "../src/core/workflows/sizing.js";
+import { headerPath, suppliedBlocks, suppliedLines } from "../src/core/workflows/sizing.js";
+import { isNoRow } from "../src/core/intelligence/language-records.js";
+import { ROW_FILE_SHAPES } from "../src/core/workflows/row-file.js";
 import { newId } from "../src/core/workflows/store.js";
+import { suppliedTestFiles } from "../src/core/workflows/supplied-content.js";
+import { comparableWrite, suppliedDrifts } from "../src/core/workflows/supplied-drift.js";
 import { exportTrace, replayTrace } from "../src/core/workflows/trace.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
 
@@ -98,6 +103,8 @@ describe("the verbatim reader and the apply decision (#2023)", () => {
     expect(hostApplyDecision([write({ applies: false, refusal: "error: patch failed: src/x.ts:1" })]).reason).toBe("the diff for src/x.ts does not apply to the task's base: error: patch failed: src/x.ts:1");
     expect(hostApplyDecision([write({}), write({ path: "src/y.ts", diffs: 0, applies: null })]).reason).toBe("the request gives no verbatim block for src/y.ts");
     expect(hostApplyDecision([write({ action: "delete" })]).reason).toBe("the task deletes src/x.ts");
+    // A new-file diff whose content the base already holds is done, not refused (#2594).
+    expect(hostApplyDecision([write({ applies: false, present: true, refusal: "error: src/x.ts: already exists in working directory" })])).toEqual({ wouldApply: true, reason: null });
   });
 
   test("the apply check changes no file, and a task without a supplied write has nothing to decide", async () => {
@@ -287,6 +294,9 @@ describe("every pre-session shadow hook runs on both implementer paths (#2138)",
     const hooks = [...body("beforeSession").matchAll(/this\.(record\w+)\(/g)].map((m) => m[1]);
     expect(hooks).toEqual(["recordHostApply", "recordSuppliedChecks"]);
     expect(source.match(/this\.recordHostApply\(/g)).toHaveLength(1);
+    // A task that runs no session gets the supplied-content check before the host writes (#2456).
+    expect(source.match(/this\.recordSuppliedChecks\(/g)).toHaveLength(2);
+    expect(body("runTaskStep").includes("await this.recordSuppliedChecks(")).toBe(true);
     // A corrective's `start` scope record is unownedFile's (#2133): runTaskStep calls it, and
     // heldCorrectives before a batch.
     expect(body("runTaskStep").includes('this.unownedFile(runId, state, policy, task, root, "start")')).toBe(true);
@@ -598,4 +608,215 @@ describe("a zero-context (-U0) diff applies at its @@ positions (#2412)", () => 
     expect(executor.attempts).toEqual([]);
     for (const [path, text] of Object.values(files)) expect(readFileSync(join(root, runRootPath(service.store, run.runId), path), "utf8")).toBe(text);
   }, 120000);
+});
+
+// Bench round 77 (#2438): trailspin's brief listed each Go file's exported signatures in a fenced
+// block whose first line was a path comment (`// internal/cli/cli.go`), after the prose "Files
+// (names and shapes are fixed; tests call them)". The host took the listing as the whole new file,
+// wrote six stubs that did not compile, and the run spent a corrective round replacing them.
+const LISTING = ["```go", "// internal/cli/cli.go", "func Run(args []string, stdout, stderr io.Writer) int", "func Usage() string", "```"];
+const trailspin = (prose: string) => [prose, ...LISTING].join("\n");
+const cliTask = { writes: [{ path: "internal/cli/cli.go", action: "create" as const }] };
+
+describe("a path-comment signature listing is not a new file (#2438)", () => {
+  test("only a header comment names the path, the prose does not say whole: a listing the host declines", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-host-listing-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    const request = trailspin("Files (names and shapes are fixed; tests call them):");
+    expect(suppliedBlocks(request, ["internal/cli/cli.go"]).get("internal/cli/cli.go")).toMatchObject([{ kind: "file", listing: true }]);
+    const writes = (await hostApplyInputs(root, request, cliTask)) ?? [];
+    expect(writes).toEqual([{ path: "internal/cli/cli.go", action: "create", files: 1, diffs: 0, whole: false, exists: false, applies: null, listing: true }]);
+    expect(hostApplyDecision(writes).wouldApply).toBe(false);
+    expect(hostApplyDecision(writes).reason).toContain("may be a listing");
+    // The decision unit: the same create without the flag applies.
+    expect(hostApplyDecision([write({ path: "internal/cli/cli.go", action: "create", files: 1, diffs: 0, applies: null, exists: false, listing: true })]).wouldApply).toBe(false);
+    expect(hostApplyDecision([write({ path: "internal/cli/cli.go", action: "create", files: 1, diffs: 0, applies: null, exists: false })]).wouldApply).toBe(true);
+  }, 60000);
+
+  test("a header block whose prose says it is the whole file, or whose prose names the path, still applies", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-host-listing-whole-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    for (const prose of ["Write this file verbatim:", "Create `internal/cli/cli.go` with:", "The complete contents:"]) {
+      const request = trailspin(prose);
+      expect(suppliedBlocks(request, ["internal/cli/cli.go"]).get("internal/cli/cli.go")?.[0]).not.toHaveProperty("listing");
+      expect(hostApplyDecision((await hostApplyInputs(root, request, cliTask)) ?? []).wouldApply).toBe(true);
+    }
+  }, 60000);
+
+  test("every header comment form marks a listing", () => {
+    for (const [path, lead] of [["tools/run.py", "#"], ["src/lib.rs", "//"], ["db/schema.sql", "--"], ["src/core.lisp", ";"]] as const) {
+      const request = ["Shapes:", "```", `${lead} ${path}`, "signature one", "```"].join("\n");
+      expect(suppliedBlocks(request, [path]).get(path)).toMatchObject([{ kind: "file", listing: true }]);
+    }
+  });
+
+  test("supplied drift and the supplied test files leave a listing out", () => {
+    const request = trailspin("Files (names and shapes are fixed; tests call them):");
+    const listing = write({ path: "internal/cli/cli.go", action: "create", files: 1, diffs: 0, applies: null, exists: false, listing: true });
+    expect(comparableWrite(listing)).toBe(false);
+    const graph = { tasks: [{ id: "T001", origin: "planned", writes: cliTask.writes }] } as unknown as Pick<TaskGraph, "tasks">;
+    // An older record without the flag still finds the block marked and records no drift.
+    const { listing: _drop, ...unflagged } = listing;
+    expect(suppliedDrifts(request, [{ taskId: "T001", mode: "shadow", writes: [unflagged], wouldApply: true, reason: null }], graph, () => "package cli\n")).toEqual([]);
+    const testPath = "internal/cli/cli_test.go";
+    const testRequest = ["Tests:", "```go", `// ${testPath}`, "func TestRun(t *testing.T)", "```"].join("\n");
+    const testGraph = { tasks: [{ id: "T002", origin: "planned", writes: [{ path: testPath, action: "create" }] }] } as unknown as Pick<TaskGraph, "tasks">;
+    expect(suppliedTestFiles(testRequest, testGraph).size).toBe(0);
+  });
+});
+
+// Bench round 78 (#2453): deltaglue's brief listed `src/cli.ts`'s shape (`// src/cli.ts`) after a
+// line whose prose named `src/frames.ts`, `src/chunks.ts` and `src/assemble.ts` and "the whole
+// stream". For a task that wrote `src/frames.ts` the reader took the cli.ts listing as the whole
+// of frames.ts, and under `hostApply: on` the host wrote it; the real frames listing, headed with
+// trailing words, was attributed to nothing. The block's own header comment now decides its path.
+const deltaglue = [
+  "## Shapes",
+  "",
+  "Tests import `src/frames.ts`, `src/chunks.ts` and `src/assemble.ts` and check the whole stream:",
+  "```ts",
+  "// src/cli.ts",
+  "export function run(argv: string[], out: (line: string) => void): number;",
+  "```",
+  "The frame codec:",
+  "```ts",
+  "// src/frames.ts   (names and shapes are fixed; tests call them)",
+  "export interface Frame { kind: number; body: Uint8Array }",
+  "export function encode(frame: Frame): Uint8Array;",
+  "```",
+].join("\n");
+const DELTAGLUE_PATHS = ["src/frames.ts", "src/chunks.ts", "src/assemble.ts", "src/cli.ts"];
+const deltaglueGraph = {
+  tasks: DELTAGLUE_PATHS.map((path, i) => ({ id: `T00${i + 1}`, origin: "planned", writes: [{ path, action: "create" }] })),
+} as unknown as Pick<TaskGraph, "tasks">;
+
+describe("a block's header comment names its file, whatever the prose names (#2453)", () => {
+  test("scenario: deltaglue's listings go to the files their headers name, as listings, for one path or all", async () => {
+    for (const asked of [...DELTAGLUE_PATHS.map((p) => [p]), DELTAGLUE_PATHS]) {
+      const supplied = suppliedBlocks(deltaglue, asked);
+      expect(supplied.has("src/chunks.ts")).toBe(false);
+      expect(supplied.has("src/assemble.ts")).toBe(false);
+      if (asked.includes("src/frames.ts")) {
+        expect(supplied.get("src/frames.ts")).toMatchObject([{ kind: "file", whole: false, listing: true }]);
+        expect(supplied.get("src/frames.ts")?.[0]).toMatchObject({ content: expect.stringContaining("export interface Frame") });
+      }
+      // "the whole stream" is a clause about other files: the cli.ts block is a listing too.
+      if (asked.includes("src/cli.ts")) expect(supplied.get("src/cli.ts")).toMatchObject([{ kind: "file", whole: false, listing: true }]);
+    }
+    const root = mkdtempSync(join(tmpdir(), "baked-host-deltaglue-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    for (const task of deltaglueGraph.tasks) {
+      const writes = await hostApplyInputs(root, deltaglue, task, deltaglueGraph);
+      expect(writes === null || !hostApplyDecision(writes).wouldApply).toBe(true);
+    }
+    expect(hostAppliableTasks(deltaglue, deltaglueGraph)).toEqual([]);
+    // The record R78 left for frames T001 (whole, unflagged) finds the frames listing: no drift.
+    const old = write({ path: "src/frames.ts", action: "create", files: 1, diffs: 0, whole: true, applies: null, exists: false });
+    const frames = { tasks: [{ id: "T001", origin: "planned", writes: [{ path: "src/frames.ts", action: "create" }] }] } as unknown as Pick<TaskGraph, "tasks">;
+    expect(suppliedDrifts(deltaglue, [{ taskId: "T001", mode: "on", writes: [old], wouldApply: true, reason: null }], frames, () => "export interface Frame {\n")).toEqual([]);
+  }, 60000);
+
+  test("one case per comment marker: Python and Ruby #, Go, Rust and TypeScript //, Lua --", () => {
+    for (const [lead, a, b] of [
+      ["#", "pkg/a.py", "pkg/b.py"],
+      ["#", "lib/a.rb", "lib/b.rb"],
+      ["//", "internal/a.go", "internal/b.go"],
+      ["//", "src/a.rs", "src/b.rs"],
+      ["//", "src/a.ts", "src/b.ts"],
+      ["--", "lua/a.lua", "lua/b.lua"],
+    ] as const) {
+      const request = [
+        `Tests import \`${b}\` and check the whole output:`,
+        "```",
+        `${lead} ${a}`,
+        "signature of a",
+        "```",
+        "Shapes of b:",
+        "```",
+        `${lead} ${b}   (names and shapes are fixed)`,
+        "signature of b",
+        "```",
+      ].join("\n");
+      for (const asked of [[b], [a], [a, b]]) {
+        const supplied = suppliedBlocks(request, asked);
+        if (asked.includes(b)) expect(supplied.get(b)).toMatchObject([{ kind: "file", listing: true, content: `${lead} ${b}   (names and shapes are fixed)\nsignature of b\n` }]);
+        if (asked.includes(a)) expect(supplied.get(a)).toMatchObject([{ kind: "file", listing: true, content: `${lead} ${a}\nsignature of a\n` }]);
+        expect([...supplied.keys()].every((path) => asked.includes(path))).toBe(true);
+      }
+    }
+  });
+
+  test("a header is a path-like first token; trailing words need a directory or punctuation", () => {
+    expect(headerPath("// src/frames.ts   (names and shapes are fixed)")).toBe("src/frames.ts");
+    expect(headerPath("# setup.py (entry point)")).toBe("setup.py");
+    expect(headerPath("-- ./db/schema.sql")).toBe("db/schema.sql");
+    expect(headerPath("; src/core.lisp")).toBe("src/core.lisp");
+    expect(headerPath("// Node.js helper for the stream")).toBeNull();
+    expect(headerPath("# Shapes of the API")).toBeNull();
+    expect(headerPath("#!/usr/bin/env python3")).toBeNull();
+    expect(headerPath("export const A = 1;")).toBeNull();
+    // A bare file name in the header lets the prose give the directory; a whole file still applies.
+    const request = ["Replace `src/config.py` with:", "```python", "# config.py", "DEBUG = False", "```"].join("\n");
+    expect(suppliedBlocks(request, ["src/config.py"]).get("src/config.py")).toMatchObject([{ kind: "file", whole: true }]);
+    expect(suppliedBlocks(request, ["src/config.py"]).get("src/config.py")?.[0]).not.toHaveProperty("listing");
+  });
+
+  test("the record and the plan approval read the blocks with one set of paths", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baked-host-one-set-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    // The prose names two planned files: the block is neither's, whoever asks.
+    const request = ["Create `src/x.ts` and `src/y.ts`; both get exactly this content:", "```ts", "export {};", "```"].join("\n");
+    const graph = {
+      tasks: ["src/x.ts", "src/y.ts"].map((path, i) => ({ id: `T00${i + 1}`, origin: "planned", writes: [{ path, action: "create" }] })),
+    } as unknown as Pick<TaskGraph, "tasks">;
+    expect(hostAppliableTasks(request, graph)).toEqual([]);
+    for (const task of graph.tasks) expect(await hostApplyInputs(root, request, task, graph)).toBeNull();
+    expect(hostApplyPaths(graph.tasks[0] as Task, graph)).toEqual(["src/x.ts", "src/y.ts"]);
+  }, 60000);
+});
+
+// #2909, bench round 96 cellref (Go) cli T002: the prose line before `cli`'s rows block named
+// `reads_test.go` (a note about its wrapper), the task's only path, so `suppliedBlocks` took the
+// rows block of `cli_test.go` for an excerpt of `reads_test.go`. `prescribedRows` drops a path with
+// a supplied block, the host declined ("may be an excerpt"), and a session wrote the 28 rows
+// (436k tokens in 15 attempts) while the ten other row files were host-written at 0 tokens.
+describe("a rows block after prose that names the task's only path (#2909)", () => {
+  const fence = "```";
+  const shape = ROW_FILE_SHAPES.go;
+  if (isNoRow(shape)) throw new Error("go has row shapes");
+  const reads = "cmd/reads_test.go";
+  const request = [
+    "Build cellref.",
+    "",
+    `The wrapper in \`${reads}\` calls run() once per row; the cli rows:`,
+    "",
+    `${fence}text`,
+    "cli in cmd/cli_test.go (2 rows)",
+    ...shape.example.rows,
+    fence,
+    "",
+    `${fence}text`,
+    `reads in ${reads} (2 rows)`,
+    ...shape.example.rows,
+    fence,
+    "",
+  ].join("\n");
+
+  test("the rows block is no file block of the named path, so the host writes the rows", async () => {
+    expect(suppliedBlocks(request, [reads]).get(reads)).toBeUndefined();
+    const root = mkdtempSync(join(tmpdir(), "rows-block-prose-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, "cmd"), { recursive: true });
+    writeFileSync(join(root, "cmd/scaffold_test.go"), shape.example.reference);
+    const inputs = await hostApplyInputs(root, request, { writes: [{ path: reads, action: "create" }], reference: "cmd/scaffold_test.go" });
+    expect(inputs?.[0]).toMatchObject({ path: reads, files: 0, diffs: 0 });
+    expect(inputs?.[0]?.rows?.count).toBe(2);
+    expect(hostApplyDecision(inputs ?? [])).toMatchObject({ wouldApply: true });
+  });
+
+  test("a file comment whose path only spells rows stays the file's verbatim block", () => {
+    const path = "tests/rows.test.ts";
+    const given = [`Replace \`${path}\` with:`, "", `${fence}ts`, `// ${path}`, 'import { test } from "bun:test";', fence, ""].join("\n");
+    expect(suppliedBlocks(given, [path]).get(path)).toEqual([expect.objectContaining({ kind: "file", whole: true })]);
+  });
 });

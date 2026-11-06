@@ -520,23 +520,59 @@ export const DEPENDENCY_PREPARE: LanguageRecord<(root: string) => string[] | nul
 
 /**
  * The longest working directory a language's test tool handles, for a project its manifest names,
- * or `none(reason)` (#2361): a task worktree is about 60 characters deeper than the workspace, and
- * the doctor warns when that crosses the limit.
+ * on the platform it was measured on, or `none(reason)` (#2361, #2454): a task's checks run in
+ * `.baked/worktrees/<8 hex digits>/<task>`, about 30 characters deeper than the workspace, and the
+ * doctor warns and a run records `worktree_environment` when that crosses the limit.
  */
 export const WORKTREE_PATH_LIMITS: LanguageRecord<{
   manifest: string;
   chars: number;
   tool: string;
+  platform: NodeJS.Platform;
 }> = {
-  // Measured in R75 latcell: every test file fails to load from 126 to 156 characters on.
-  dart: { manifest: "pubspec.yaml", chars: 120, tool: "dart test" },
+  // `dart test` starts its frontend server by a path relative to the working directory, one `..\`
+  // per level, so the limit falls with the depth and with the SDK's own path. Measured on Windows:
+  // R75 latcell failed from 126 characters on; R78 latcell-update (a WinGet SDK, 131 characters)
+  // failed at 94 and passed at 88.
+  dart: { manifest: "pubspec.yaml", chars: 88, tool: "dart test", platform: "win32" },
   ...Object.fromEntries(
     SUPPORTED_LANGUAGES.filter((language) => language !== "dart").map((language) => [
       language,
       none("no working-directory length limit observed"),
     ]),
   ),
-} as LanguageRecord<{ manifest: string; chars: number; tool: string }>;
+} as LanguageRecord<{ manifest: string; chars: number; tool: string; platform: NodeJS.Platform }>;
+
+/** A worktree whose path is longer than a project language's test tool handles. */
+export interface WorktreePathRisk {
+  language: SupportedLanguage;
+  tool: string;
+  limit: number;
+  path: string;
+  length: number;
+}
+
+/**
+ * The `WORKTREE_PATH_LIMITS` a worktree path crosses, for the languages whose manifest `root`
+ * holds, on `platform`.
+ */
+export function worktreePathRisks(
+  root: string,
+  path: string,
+  platform: NodeJS.Platform = process.platform,
+): WorktreePathRisk[] {
+  return SUPPORTED_LANGUAGES.flatMap((language) => {
+    const limit = WORKTREE_PATH_LIMITS[language];
+    if (
+      isNoRow(limit) ||
+      limit.platform !== platform ||
+      path.length <= limit.chars ||
+      !existsSync(join(root, limit.manifest))
+    )
+      return [];
+    return [{ language, tool: limit.tool, limit: limit.chars, path, length: path.length }];
+  });
+}
 
 /** How long a prepare command may take before the worktree goes on without it. */
 const PREPARE_MS = 120_000;

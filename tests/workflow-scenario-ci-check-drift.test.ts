@@ -2,7 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ciCheckDrift, ciCheckDriftSummary, fileGateCommands, type ScriptTables, scriptTables, toolCommand } from "../src/core/workflows/ci-check-drift.js";
+import { ciCheckDrift, ciCheckDriftSummary, fileGateCommands, looksLikeCommand, type ScriptTables, scriptTables, toolCommand } from "../src/core/workflows/ci-check-drift.js";
+import { PSSA_LINT } from "../src/core/workflows/gates.js";
+import { PESTER_RUN } from "../src/core/workflows/pester.js";
 import type { RunPolicy, TaskGraph } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
@@ -330,5 +332,240 @@ describe("scenario: a run delivers a README whose `bun run test` runs the `bun t
     // `bun run test` is the `bun test` check; `bun run typecheck` (tsc) is a gate no check runs.
     expect(wouldStops.map((w) => [w.key, w.inputs.tool, w.inputs.script])).toEqual([["README.md#bun run typecheck", "tsc", "tsc --noEmit"]]);
     expect((await fixture.service.get(run.runId)).status).toBe("completed");
+  });
+});
+
+// Bench round 83, pnmforge docs (#2567): the README documented `clang-format -i src/*.cpp ...` (the
+// check's fixer) and `clang-format --dry-run --Werror src/*.cpp src/*.hpp tests/*.cpp tests/*.hpp`
+// (the check, with globs where the check lists 14 files): 2 of 2 `ci_check_drift` records false.
+describe("ciCheckDrift: a check's fixer form and globs over its files are no drift (#2567)", () => {
+  const readme = (...lines: string[]) => `# Project\n\n\`\`\`sh\n${lines.join("\n")}\n\`\`\`\n`;
+  const FILES = ["src/codec.cpp", "src/codec.hpp", "src/main.cpp", "tests/harness.hpp", "tests/scaffold_test.cpp"];
+  const clangFormat = { ...check("clang-format", `clang-format --dry-run --Werror ${FILES.join(" ")}`), fix: { executable: "clang-format", args: ["-i"] } };
+
+  test("C++ pnmforge: the fixer with globs and the check with globs over its files record nothing", () => {
+    const drift = ciCheckDrift(
+      [{ path: "README.md", text: readme("clang-format -i src/*.cpp src/*.hpp tests/*.cpp tests/*.hpp", "clang-format --dry-run --Werror src/*.cpp src/*.hpp tests/*.cpp tests/*.hpp") }],
+      [clangFormat],
+    );
+    expect(drift).toEqual([]);
+  });
+
+  test("a glob that misses a file the check lists still records", () => {
+    const drift = ciCheckDrift([{ path: "README.md", text: readme("clang-format --dry-run --Werror src/*.cpp src/*.hpp") }], [clangFormat]);
+    expect(drift.map((d) => [d.check?.id, d.missing])).toEqual([["clang-format", ["src/*.cpp", "src/*.hpp"]]]);
+  });
+
+  test("a recursive glob and a folder cover the files below them", () => {
+    expect(ciCheckDrift([{ path: "README.md", text: readme("clang-format --dry-run --Werror src/**/*.?pp tests/") }], [clangFormat])).toEqual([]);
+  });
+
+  const PAIRS: [string, ReturnType<typeof check> & { fix: { executable: string; args: string[] } }, string][] = [
+    ["Go", { ...check("gofmt", "gofmt -l ."), fix: { executable: "go", args: ["fmt", "./..."] } }, "go fmt ./..."],
+    ["Python", { ...check("ruff-format", "ruff format --check"), fix: { executable: "ruff", args: ["format"] } }, "ruff format"],
+    ["JavaScript", { ...check("prettier", "prettier --check ."), fix: { executable: "prettier", args: ["--write"] } }, "npx prettier --write ."],
+    ["TypeScript", { ...check("biome", "biome check"), fix: { executable: "biome", args: ["check", "--write"] } }, "bunx biome check --write ."],
+    ["Shell", { ...check("shfmt", "shfmt -d scripts/build.sh scripts/test.sh"), fix: { executable: "shfmt", args: ["-w"] } }, "shfmt -w scripts/*.sh"],
+    ["Rust", { ...check("fmt", "cargo fmt --all -- --check"), fix: { executable: "cargo", args: ["fmt"] } }, "cargo fmt"],
+    ["C#", { ...check("format", "dotnet format --verify-no-changes"), fix: { executable: "dotnet", args: ["format"] } }, "dotnet format"],
+  ];
+  for (const [language, gate, write] of PAIRS)
+    test(`${language}: the README's write form "${write}" is the check's fixer, not a drift`, () => {
+      expect(ciCheckDrift([{ path: "README.md", text: readme(write) }], [gate])).toEqual([]);
+    });
+
+  test("a write form with a flag neither the check nor its fixer has still records", () => {
+    const ruff = { ...check("ruff-format", "ruff format --check"), fix: { executable: "ruff", args: ["format"] } };
+    const drift = ciCheckDrift([{ path: "README.md", text: readme("ruff format --line-length 80") }], [ruff]);
+    expect(drift.map((d) => d.missing)).toEqual([["--line-length", "80"]]);
+  });
+});
+
+// Bench round 84, wrapsmith docs (#2593): the README documented `Invoke-Pester`, `Invoke-ScriptAnalyzer
+// -Path . -Recurse`, the analyzer's fixer `Invoke-ScriptAnalyzer -Fix -Path FILE` and the program
+// itself, `pwsh bin/wrapsmith.ps1 fill -w 60 < in.txt`; the checks run the cmdlets inside `pwsh
+// -Command`. 4 of 4 `ci_check_drift` records false.
+describe("ciCheckDrift: an interpreter's inline code and the project's own program (#2593)", () => {
+  const readme = (...lines: string[]) => `# Project\n\n\`\`\`powershell\n${lines.join("\n")}\n\`\`\`\n`;
+  const PWSH = ["-NoProfile", "-NonInteractive", "-Command"];
+  const pester = { id: "pester", executable: "pwsh", args: [...PWSH, PESTER_RUN] };
+  const analyzer = {
+    id: "psscriptanalyzer",
+    executable: "pwsh",
+    args: [...PWSH, PSSA_LINT],
+    fix: { executable: "pwsh", args: [...PWSH, "Invoke-ScriptAnalyzer", "-Fix", "-Path"] },
+  };
+  const settingsAnalyzer = {
+    ...analyzer,
+    args: [...PWSH, PSSA_LINT.replace("Invoke-ScriptAnalyzer ", "Invoke-ScriptAnalyzer -Settings ./PSScriptAnalyzerSettings.psd1 ")],
+    fix: { executable: "pwsh", args: [...PWSH, "Invoke-ScriptAnalyzer", "-Settings", "./PSScriptAnalyzerSettings.psd1", "-Fix", "-Path"] },
+  };
+
+  test("R84 wrapsmith: the README's cmdlets, the fixer form and the program's example record nothing", () => {
+    const text = readme("Invoke-Pester", "Invoke-ScriptAnalyzer -Path . -Recurse", "Invoke-ScriptAnalyzer -Fix -Path FILE", "pwsh bin/wrapsmith.ps1 fill -w 60 < in.txt");
+    expect(ciCheckDrift([{ path: "README.md", text }], [pester, analyzer])).toEqual([]);
+    expect(ciCheckDrift([{ path: "README.md", text }], [pester, settingsAnalyzer])).toEqual([]);
+    // PowerShell's parameters are case-insensitive.
+    expect(ciCheckDrift([{ path: "README.md", text: readme("invoke-scriptanalyzer -path . -recurse -enableexit") }], [analyzer])).toEqual([]);
+  });
+
+  test("a README cmdlet with a parameter the check does not pass still records", () => {
+    const drift = ciCheckDrift([{ path: "README.md", text: readme("Invoke-Pester -Output Detailed", "Invoke-ScriptAnalyzer -Path . -Recurse -Settings CodeFormatting") }], [pester, analyzer]);
+    expect(drift.map((d) => [d.check?.id, d.missing])).toEqual([
+      ["pester", ["-output", "Detailed"]],
+      ["psscriptanalyzer", ["-settings", "CodeFormatting"]],
+    ]);
+  });
+
+  test("the tool of the inline code, one row per interpreter; a pipeline's later commands are not the tool", () => {
+    expect(toolCommand("pwsh", [...PWSH, PSSA_LINT])?.tool).toBe("invoke-scriptanalyzer");
+    expect(toolCommand("pwsh", [...PWSH, PESTER_RUN])?.tool).toBe("invoke-pester");
+    expect(toolCommand("powershell.exe", ["-NoProfile", "-c", "& ./build.ps1 -Task Test"])).toEqual({ tool: "build", words: ["-task", "Test"] });
+    expect(toolCommand("Rscript", ["-e", "testthat::test_local()"])).toEqual({ tool: "testthat::test_local", words: [] });
+    expect(toolCommand("bash", ["-c", "shellcheck scripts/a.sh && echo ok"])).toEqual({ tool: "shellcheck", words: ["scripts/a.sh"] });
+    expect(toolCommand("sh", ["-c", "eslint --max-warnings 0"])).toEqual({ tool: "eslint", words: ["--max-warnings", "0"] });
+    expect(toolCommand("cmd", ["/d", "/c", "eslint", "src"])).toEqual({ tool: "eslint", words: ["src"] });
+    expect(toolCommand("python", ["-c", "import pytest; raise SystemExit(pytest.main())"])?.tool).toBe("import");
+    expect(toolCommand("node", ["-e", "process.exit(0)"])?.tool).toBe("process.exit(0)");
+  });
+
+  const INTERPRETERS: [string, ReturnType<typeof check>, string, string, string[]][] = [
+    ["PowerShell (Windows)", check("lint", "powershell -NoProfile -Command Invoke-ScriptAnalyzer -Path . -Recurse"), "Invoke-ScriptAnalyzer -Recurse", "Invoke-ScriptAnalyzer -Recurse -Fix", ["-fix"]],
+    ["R", check("testthat", "Rscript -e testthat::test_local()"), 'Rscript -e "testthat::test_local()"', 'Rscript -e "testthat::test_local(stop_on_failure=TRUE)"', ["stop_on_failure=TRUE"]],
+    ["Shell (bash -c)", { id: "shellcheck", executable: "bash", args: ["-c", "shellcheck -x scripts/a.sh"] }, "shellcheck scripts/a.sh", "shellcheck -S style scripts/a.sh", ["-S", "style"]],
+    ["Shell (sh -c)", { id: "eslint", executable: "sh", args: ["-c", "eslint ."] }, "eslint .", "eslint --max-warnings 0 .", ["--max-warnings", "0"]],
+    ["Windows cmd", { id: "eslint", executable: "cmd", args: ["/c", "eslint ."] }, "eslint .", "eslint --fix .", ["--fix"]],
+  ];
+  for (const [language, gate, same, differs, missing] of INTERPRETERS)
+    test(`${language}: the check through the interpreter matches the README's inner command, and a real difference records`, () => {
+      expect(ciCheckDrift([{ path: "README.md", text: readme(same) }], [gate])).toEqual([]);
+      expect(ciCheckDrift([{ path: "README.md", text: readme(differs) }], [gate]).map((d) => d.missing)).toEqual([missing]);
+    });
+
+  test("the project's own program is read as its script: compared with a check that runs it, never with the interpreter's other checks", () => {
+    expect(ciCheckDrift([{ path: "README.md", text: readme("pwsh bin/wrapsmith.ps1 fill -w 60") }], [pester])).toEqual([]);
+    expect(ciCheckDrift([{ path: "README.md", text: readme("python scripts/report.py --all", "node bin/cli.js --help", "ruby bin/app.rb") }], [check("pytest", "python -m pytest")])).toEqual([]);
+    const own = check("lint-script", "python scripts/lint.py --strict");
+    expect(ciCheckDrift([{ path: CI, text: workflow("python scripts/lint.py") }], [own])).toEqual([]);
+    expect(ciCheckDrift([{ path: CI, text: workflow("python scripts/lint.py --fix-all") }], [own]).map((d) => [d.check?.id, d.missing])).toEqual([["lint-script", ["--fix-all"]]]);
+  });
+});
+
+// Scenario of bench round 85 shu (shardplan, Java, run ae303a00, #2620): 25 drift records, 22 false.
+// The README's untagged blocks held the example timings file, the program's output and its usage
+// text, and every line was read as a command whose first word was the tool.
+describe("ciCheckDrift: README sample data and program output are no commands (#2620)", () => {
+  const fence = (lang: string, ...lines: string[]) => `\`\`\`${lang}\n${lines.join("\n")}\n\`\`\`\n`;
+  const README = [
+    "# shardplan",
+    fence("", "42.5 tests/test_db.py", "3.2 tests/test_cli.py", "18 tests/test_api.py", "27.250 tests/test_parser.py", "0.8 tests/test_utils.py", "9.1 tests/test_auth.py"),
+    fence("", "42.500 tests/test_db.py", "shardplan: tests/test_db.py takes 42.500 s, longer than the target 30.000 s"),
+    fence("", "Usage:", "  -t, --target 1500ms   target shard time", "  -n 2                  shards", "  0.5s"),
+    fence("", "tests/test_db.py"),
+  ].join("\n");
+
+  test("the R85 blocks give no command, and so no drift record", () => {
+    expect(fileGateCommands("README.md", README)).toEqual([]);
+    expect(ciCheckDrift([{ path: "README.md", text: README }], [check("verify", "mvn -B -q verify")])).toEqual([]);
+  });
+
+  test("a console block's commands are its prompted lines; its output lines are not", () => {
+    const readme = fence("console", "$ gradle test", "BUILD SUCCESSFUL in 3s", "4 actionable tasks: 4 executed", "> gradle check");
+    expect(fileGateCommands("README.md", readme)).toEqual(["gradle test", "gradle check"]);
+    // An untagged block that prompts its commands reads the same way.
+    expect(fileGateCommands("README.md", fence("", "$ cargo test", "test result: ok. 4 passed", "PS> dotnet test"))).toEqual(["cargo test", "dotnet test"]);
+  });
+
+  test("an untagged block of commands without a prompt is still read, in every language", () => {
+    const commands = ["cargo test", "go test ./...", "pytest", "mvn verify", "dotnet test", "./gradlew build", "./scripts/check.sh --strict", "bun run test"];
+    expect(fileGateCommands("README.md", fence("", ...commands))).toEqual(commands);
+    expect(looksLikeCommand("src/main.rs --flag")).toBe(false);
+  });
+});
+
+
+// Bench round 86 binlayer (#2634): the README documented `python -m sqlfluff lint sql` and the
+// check ran `python -m sqlfluff lint .`; `sql` read as a word the check lacks, though the check
+// lints `sql` and everything else. A README path inside a check's broader path is no drift.
+describe("ciCheckDrift: a README path inside the check's broader path is no drift (#2634)", () => {
+  const ROWS: [string, string][] = [
+    ["python -m sqlfluff lint sql", "python -m sqlfluff lint ."],
+    ["python -m ruff check src", "python -m ruff check ."],
+    ["ruff check src", "ruff check ."],
+    ["ruff check src tests", "ruff check ."],
+    ["python -m pytest tests", "python -m pytest -q"],
+    ["pytest tests/unit", "pytest"],
+    ["eslint src", "eslint ."],
+    ["gofmt -l cmd", "gofmt -l ."],
+    ["go vet ./cmd/...", "go vet ./..."],
+    ["ruff check src/app.py", "ruff check src"],
+    ["sqlfluff lint .", "sqlfluff lint ."],
+  ];
+  test.each(ROWS)("README `%s` against the check `%s` records nothing", (command, gate) => {
+    expect(ciCheckDrift([{ path: "README.md", text: readme(command) }], [check("gate", gate)])).toEqual([]);
+  });
+
+  test("a path outside the check's path, above its directory, or a flag the check lacks still records", () => {
+    const missing = (command: string, gate: string) => ciCheckDrift([{ path: "README.md", text: readme(command) }], [check("gate", gate)]).map((d) => d.missing);
+    expect(missing("ruff check lib", "ruff check src")).toEqual([["lib"]]);
+    expect(missing("ruff check ../shared", "ruff check .")).toEqual([["../shared"]]);
+    expect(missing("ruff check --select E src", "ruff check .")).toEqual([["--select", "E"]]);
+    expect(missing("sqlfluff lint --dialect postgres sql", "sqlfluff lint .")).toEqual([["--dialect", "postgres"]]);
+    expect(missing("go vet ./cmd/...", "go vet ./internal/...")).toEqual([["./cmd/..."]]);
+  });
+});
+
+// #2982, R106 netsieve docs run 517b97ff: the README ran `sbt --server -batch compile`, the checks
+// ran `sbt --server -batch scalafmtCheckAll` and `testFull`. The subcommand was read only before
+// any flag, so all three were the tool `sbt` and the README's `compile` was a missing word of the
+// scalafmt check; without the flags `sbt compile` was its own tool and recorded nothing.
+describe("ci_check_drift: a subcommand after leading flags (#2982)", () => {
+  const parse = (command: string) => {
+    const [executable = "", ...args] = command.split(" ");
+    return toolCommand(executable, args);
+  };
+  const cases: [string, string, string, string[]][] = [
+    ["Scala", "sbt --server -batch compile", "sbt compile", ["--server", "-batch"]],
+    ["Java (Maven)", "mvn -B -q verify", "mvn verify", ["-B"]],
+    ["Maven, a flag with a value", "mvn -f sub/pom.xml -B test", "mvn test", ["-f", "sub/pom.xml", "-B"]],
+    ["Kotlin (Gradle)", "gradle --console=plain build", "gradle build", ["--console", "plain"]],
+    ["Gradle, a project dir", "gradle -p app check", "gradle check", ["-p", "app"]],
+    ["Go", "go -C sub test ./...", "go test", ["-C", "sub", "./..."]],
+    ["C#", "dotnet --nologo test", "dotnet test", ["--nologo"]],
+    ["Rust", "cargo --locked test", "cargo test", []],
+    ["Rust, -C with a value", "cargo -C crates/core clippy -- -D warnings", "cargo clippy", ["-C", "crates/core", "--", "-D", "warnings"]],
+    ["TypeScript (bun)", "bun --cwd web test", "bun test", ["--cwd", "web"]],
+    ["npm, a script after --prefix", "npm --prefix web run lint", "npm run lint", ["--prefix", "web"]],
+  ];
+  for (const [name, command, tool, words] of cases)
+    test(`${name}: ${command}`, () => {
+      expect(parse(command)).toEqual({ tool, words });
+    });
+
+  test("the flag-first and flag-last spellings read the same tool and words", () => {
+    for (const [first, last] of [
+      ["sbt --server -batch compile", "sbt compile --server -batch"],
+      ["mvn -B -q verify", "mvn verify -B -q"],
+      ["go -C sub test ./...", "go test -C sub ./..."],
+      ["dotnet --nologo test", "dotnet test --nologo"],
+    ] as const) {
+      const a = parse(first);
+      const b = parse(last);
+      expect(a?.tool).toBe(b?.tool ?? "");
+      expect([...(a?.words ?? [])].sort()).toEqual([...(b?.words ?? [])].sort());
+    }
+  });
+
+  test("Scala, R106 netsieve: the README's sbt --server -batch compile records nothing", () => {
+    const readme = ["# netsieve", "", "```sh", "sbt --server -batch compile", "```", ""].join("\n");
+    const checks = [check("scalafmt", "sbt --server -batch scalafmtCheckAll"), check("tests", "sbt --server -batch testFull")];
+    expect(ciCheckDrift([{ path: "README.md", text: readme }], checks)).toEqual([]);
+    // A gate the checks run with a word the README lacks is still drift, flags first or not.
+    const ci = workflow("sbt --server -batch scalafmtCheckAll", "sbt --server -batch -Dstrict=true testFull");
+    expect(ciCheckDrift([{ path: CI, text: ci }], checks).map((d) => [d.tool, d.check?.id, d.missing])).toEqual([["sbt testfull", "tests", ["-Dstrict=true"]]]);
+  });
+
+  test("Java: mvn -B -q verify in CI against a check that runs mvn -B verify: same tool, no drift", () => {
+    expect(ciCheckDrift([{ path: CI, text: workflow("mvn -B -q verify") }], [check("verify", "mvn -B verify")])).toEqual([]);
   });
 });

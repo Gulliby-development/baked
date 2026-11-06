@@ -13,10 +13,15 @@
     "testsGrown": "src/a.test.ts:\n(fail) sum is commutative [1.20ms]\n\n 3 pass\n 1 fail\nRan 4 tests across 1 file. [15.00ms]\n"
   },
   "generated": {
-    "tests/gen.test.ts": "const a = \"\\\\\".repeat(3);\nconst b = `x${a}`;\nfor (const c of cases) run(c);\nconst lit = \"\\\\\\\\\\\\\";\n// const d = \"\\\\\".repeat(3);\n"
+    "tests/gen.test.ts": "const a = \"\\\\\".repeat(3);\nconst b = `x${a}`;\nfor (const c of cases) run(c);\nconst lit = \"\\\\\\\\\\\\\";\n// const d = \"\\\\\".repeat(3);\n",
+    "tests/runtime.test.ts": "const dir = mkdtempSync(join(tmpdir(), \"rt-\"));\nconst file = join(dir, \"a.txt\");\nconst want = `bad: ${file}`;\n"
   },
   "expected": {
+    "rowIndent": ["\"  row(1),\""],
+    "languagePitfalls": null,
     "generatedValues": ["tests/gen.test.ts:1 repeat","tests/gen.test.ts:2 interpolate","tests/gen.test.ts:3 loop"],
+    "exampleBuild": null,
+    "runtimePaths": ["tests/runtime.test.ts: dir, file"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
       "Scanner calls Reader#isEncodingToken per token.: Reader#isEncodingToken"
@@ -94,7 +99,22 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/a.ts: error TS2322: Type 'string' is not assignable to type 'number'."],
     "testClasses": null,
-    "testDeclarations": ["tests/sum.test.ts: 3 tests"]
+    "testDeclarations": ["tests/sum.test.ts: 3 tests"],
+    "rowFileShapes": [
+      "tests/problems-rows.test.ts",
+      "import { expect, test } from \"bun:test\";",
+      "import { run } from \"./helpers/run\";",
+      "",
+      "const rows = [",
+      "  { args: [\"problems\"], code: 0, out: \"1\\n\" },",
+      "  { args: [\"problems\", \"--all\"], code: 0, out: \"2\\n\" },",
+      "];",
+      "",
+      "for (const row of rows)",
+      "  test(row.args.join(\" \"), async () => expect(await run(row)).toEqual(row));",
+      ""
+    ]
   }
 }

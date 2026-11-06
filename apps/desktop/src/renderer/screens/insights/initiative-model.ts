@@ -2,6 +2,7 @@ import {
   estimateBudgetText,
   highCalibrationText,
 } from "../../../../../../src/core/workflows/initiatives/estimate-budget.js";
+import { splitPreviewLine } from "../../../../../../src/core/workflows/initiatives/split-preview.js";
 import { extendSuggestion } from "../../../../../../src/core/workflows/remedies-model.js";
 import type {
   FeatureState,
@@ -143,6 +144,16 @@ export function featureCounts(view: Pick<InitiativeView, "features">): FeatureCo
 export function splitApproval(view: InitiativeView) {
   if (view.status !== "awaiting_approval") return null;
   return view.pendingDecisions.find((d) => d.scope === "initiative") ?? null;
+}
+
+/**
+ * The split approval's budget line (#2502): the proposed features' lows, expected and high tokens,
+ * what the dollar cap pays for, the first share gate at the current pool and the pool to extend
+ * to; null outside a split approval or on a backend without the preview.
+ */
+export function splitPreviewText(view: Pick<InitiativeView, "status" | "budget">): string | null {
+  if (view.status !== "awaiting_approval" || !view.budget.preview) return null;
+  return splitPreviewLine(view.budget.preview);
 }
 
 /**

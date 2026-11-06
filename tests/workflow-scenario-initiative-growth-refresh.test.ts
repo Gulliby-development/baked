@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { canonical } from "../src/core/specs/hash.js";
+import { growBudgetOnProgress } from "../src/core/workflows/budget.js";
 import { hostGrowth, withoutHostGrowth } from "../src/core/workflows/host-growth.js";
 import type { InitiativePlan } from "../src/core/workflows/initiatives/plan.js";
 import { costGrowthLimit, InitiativeService, refreshedGrowth } from "../src/core/workflows/initiatives/service.js";
@@ -146,5 +147,54 @@ describe("scenario: the initiative refreshes an open feature run's bound and rec
     // Nothing changed since: a second refresh writes nothing.
     service.refreshGrowth("wheeltags", "explain", runId);
     expect(store.artifacts(runId).filter((a) => a.logical_path.startsWith("policy-revisions/initiative-"))).toHaveLength(1);
+  });
+});
+
+// Every path that raises a feature run's token limit reads what the initiative holds for the run
+// (AGENTS.md): the initiative-growth bounds through `chargeHold` and `growthLimit`, the run's own
+// auto-growth and auto-extend through `WorkflowStore.tokenHold` (#2468, R79 deltaglue).
+describe("scenario: an open feature run grows into its refreshed bound no further than the pool holds (#2468)", () => {
+  test("auto-growth and auto-extend toward a 20M bound stop at the pool less the others' use", async () => {
+    const fixture = workflowFixture();
+    fixture.config.defaultModel = MODEL;
+    cleanups.push(fixture.dispose);
+    const initiatives = new InitiativeService(fixture.service);
+    const policy: RunPolicy = { ...fixturePolicy, maxTotalTokens: 4_000_000, maxAgentCalls: 1000, costForecast: "off", sizing: { maxRunTokens: 8_000_000 } };
+    const view = await initiatives.start({ commandId: newId(), initiativeId: "wheeltags", prompt: "Create values", plan, policy, model: MODEL, ownerLabel: "test", keepFeatures: true, featureAutoApproval: null, budget: { maxTotalTokens: 12_000_000, maxAgentCalls: 1000, maxActiveMs: 21_600_000 } });
+    const request = view.pendingDecisions.find((d) => d.scope === "initiative")!;
+    await initiatives.approve("wheeltags", { commandId: newId(), expectedRevision: view.revision }, { requestId: request.requestId, digest: request.digest });
+    const service = initiatives as unknown as { startFeature(id: string, featureId: string): Promise<boolean> };
+    expect(await service.startFeature("wheeltags", "base")).toBe(true);
+    expect(await service.startFeature("wheeltags", "explain")).toBe(true);
+    const runOf = (id: string) => initiatives.view("wheeltags").features.find((f) => f.id === id)!.runId!;
+    const store = fixture.service.store;
+    // base used 6.5M of the 12M pool: 5.5M is what the pool holds for explain.
+    const baseRun = runOf("base");
+    store.transaction(() => store.transition(baseRun, "running"));
+    const stepId = store.beginStep(baseRun, "implement");
+    const attempt = store.reserve(baseRun, stepId, MODEL, 1000, { ...fixturePolicy, maxTotalTokens: 1_000_000_000, maxCostUsd: null });
+    store.transaction(() => {
+      store.artifact(baseRun, "usage", `attempts/${attempt}/usage.json`, canonical(usage(6_500_000)));
+      store.finishAttempt(baseRun, attempt, "completed", 6_500_000);
+    });
+    const runId = runOf("explain");
+    store.transaction(() => store.transition(runId, "running"));
+    // explain's bounds as a refresh left them, above the pool: 20M to grow to, 30M to extend to.
+    const explainPolicy: RunPolicy = { ...JSON.parse(store.run(runId).policy_json), clarification: "assume", maxTotalTokens: 3_000_000, maxCostUsd: null, sizing: { maxRunTokens: 20_000_000, extendToTokens: 30_000_000 } };
+    store.setPolicy(runId, explainPolicy);
+    store.transaction(() => {
+      store.syncTasks(runId, { schemaVersion: 1, featureId: "explain", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [task("T001"), task("T002")] });
+      store.taskStatus(runId, "T001", "implemented");
+    });
+    // A call that needs 9M: auto-growth would take the run to 9M on its 20M bound.
+    expect(growBudgetOnProgress(store, runId, explainPolicy, 9_000_000)).toBe(false);
+    expect(explainPolicy.maxTotalTokens).toBe(5_500_000);
+    expect(store.tokenHold?.(runId)).toBe(5_500_000);
+    const growth = store.artifacts(runId).filter((a) => a.logical_path.startsWith("policy-revisions/auto-")).map((a) => JSON.parse(store.readArtifact(runId, a.id)));
+    expect(growth.map((g) => [g.kind, g.next.maxTotalTokens, g.poolHoldTokens])).toEqual([["auto-growth", 5_500_000, 5_500_000]]);
+    // Another task finishes: still no growth past the hold.
+    store.transaction(() => store.taskStatus(runId, "T002", "implemented"));
+    expect(growBudgetOnProgress(store, runId, explainPolicy, 5_600_000)).toBe(false);
+    expect(explainPolicy.maxTotalTokens).toBe(5_500_000);
   });
 });

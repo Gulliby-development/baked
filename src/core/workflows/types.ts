@@ -27,7 +27,7 @@ export type IssueSource = z.infer<typeof IssueSourceSchema>;
 
 export const WorktreeStateSchema = z
   .object({
-    /** Path relative to the project root, `.baked/worktrees/RUN_ID/main`. */
+    /** Path relative to the project root, `.baked/worktrees/RUN/main` (`runWorktreeDir`). */
     path: z.string().min(1),
     branch: z.string().min(1),
     /** The baseline HEAD the branch was created from. */
@@ -161,6 +161,13 @@ export const RuntimeStateSchema = z
     extraCorrectiveTasks: z.number().int().nonnegative().default(0),
     /** Rounds the `assume` rule granted by itself after a contradiction stop (at most one). */
     autoExtensions: z.number().int().nonnegative().default(0),
+    /**
+     * Findings a refused correction left without a repair task, handed over by a person's repair
+     * grant (#2878). The next review or convergence pass retires those it does not raise again.
+     */
+    strandedFindings: z
+      .array(z.object({ id: z.string(), pass: z.enum(["review", "convergence"]) }))
+      .default([]),
     /** Findings a person already decided to repair; the convergence stop does not ask again. */
     decidedFindings: z.array(z.string()).default([]),
     /** Findings the run is accepted with (known limitations). */
@@ -593,6 +600,15 @@ export const RuntimeStateSchema = z
      */
     autoApprovalDeclined: z.string().nullable().default(null),
     /**
+     * The provider accounts the run asked for (`--account codex=work`, #2303); every model turn
+     * of the run uses them instead of the project's. Null: the project's accounts.
+     */
+    accounts: z
+      .object({ codex: z.string().optional(), "claude-code": z.string().optional() })
+      .strict()
+      .nullable()
+      .default(null),
+    /**
      * An initiative feature run started under `workflows.planAhead` before every feature it
      * depends on was finished (#1834): its worktree starts from a provisional base and its tasks
      * wait until the initiative moves it to their results (`released`); the run then takes its
@@ -682,6 +698,11 @@ export interface ExecutionRequest {
    * that runs in the checks stage rather than after the task (#799); null for any other check.
    */
   attributeCheck?: (check: Check, output: string) => string[] | null;
+  /**
+   * The task's required checks the attempt can run with `request_check` (#2470): the latest state
+   * on which every one passed is kept as the attempt's checkpoint (`attempt-checkpoint.ts`).
+   */
+  checkpointChecks?: string[];
   /** Ownership advice for failed checks, including test updates and upstream defects. */
   failureOwner?: (output: string) => import("./task-graph.js").FailureOwner;
   /** Directory the agent reads, edits and checks in; defaults to the run's workspace. */
@@ -696,6 +717,11 @@ export interface ExecutionRequest {
    * the previous text: the snapshot hash and the evidence ids a result may cite.
    */
   formatHints?: string;
+  /**
+   * What the bound on the input's evidence section did (`boundEvidence`, #2617), recorded as
+   * `prompt.evidence` in the attempt's usage and named by its large-prompt notice.
+   */
+  evidenceBound?: import("./evidence-budget.js").EvidenceBound;
   /** Reasoning effort from the attempt's model route; unset keeps the configured default. */
   effort?: RouteEffort;
   /**

@@ -5,6 +5,7 @@ import { getCwd } from "../core/cwd.js";
 import { gitInitSummary, initWorkspaceGit } from "../core/git/init.js";
 import { loadModelCatalog } from "../core/llm/model-catalog.js";
 import { parseRouteOverrides, type RoutingEntry } from "../core/llm/model-routing.js";
+import { type AccountChoice, parseAccountChoice } from "../core/llm/provider-accounts.js";
 import { clarificationAnswers, clarificationKeys } from "../core/workflows/answers.js";
 import { WorkflowArtifacts } from "../core/workflows/artifacts.js";
 import { withModelReview } from "../core/workflows/auto-approval.js";
@@ -40,6 +41,7 @@ import {
   type ProjectMemoryView,
   projectMemoryView,
 } from "../core/workflows/project-memory.js";
+import { type QueuedResume, queuedResume } from "../core/workflows/queued-resume.js";
 import type { ResumeRemedy } from "../core/workflows/remedies-model.js";
 import { ROLLBACK_ARTIFACT_KIND } from "../core/workflows/rollback.js";
 import {
@@ -108,6 +110,25 @@ export function workflowExit(
     snapshot.status
   ];
 }
+/**
+ * The exit code of a workflow command that answered `result`: a command that drove the run exits
+ * as the run stopped (`workflowExit`), any other with 0. A change applied at the parallel-run cap
+ * whose run waits for a slot (`queued`) is no refusal and exits 0 (#2415).
+ */
+export function commandExit(
+  args: WorkflowArgs,
+  result: unknown,
+  maxActiveMs: (runId: string) => number,
+): number {
+  if ((result as { queued?: unknown } | null)?.queued) return 0;
+  const drove =
+    ["run", "quick", "resume"].includes(args.command) ||
+    (["revise", "extend", "reroute", "continue", ...DECISION_COMMANDS].includes(args.command) &&
+      args.flags.resume === true);
+  if (!drove) return 0;
+  const snapshot = result as RunSnapshot;
+  return workflowExit(snapshot, maxActiveMs(snapshot.runId));
+}
 const stringFlag = (args: WorkflowArgs, name: string, fallback?: string): string => {
   const value = args.flags[name] ?? fallback;
   if (typeof value !== "string")
@@ -138,6 +159,27 @@ export function quickRunArgs(service: NativeWorkflowService, args: WorkflowArgs)
       feature,
       prompt,
     },
+  };
+}
+/** `--account codex=work,claude-code=client`, refused as a bad request when malformed. */
+const accountFlag = (value: string): AccountChoice => {
+  try {
+    return parseAccountChoice(value);
+  } catch (error) {
+    throw new WorkflowFault(
+      "INVALID_REFERENCE",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+};
+/** `--worktree-root PATH` (#2461) in place of `workflows.worktreeRoot` for this command. */
+function withWorktreeRoot(config: AppConfig, flag: unknown): AppConfig {
+  if (typeof flag !== "string") return config;
+  if (!flag.trim())
+    throw new WorkflowFault("INVALID_DEFINITION", "--worktree-root requires a folder");
+  return {
+    ...config,
+    workflows: { ...config.workflows, worktreeRoot: flag.trim() } as AppConfig["workflows"],
   };
 }
 const modelFlag = (args: WorkflowArgs, config: AppConfig): string =>
@@ -289,17 +331,37 @@ export async function executeWorkflowCommand(
   const runId = args.positional[0] ?? "";
   const artifacts = new WorkflowArtifacts(service);
   /**
-   * Records a decision; with `--resume` the run continues from it when nothing else is pending.
-   * On a feature run of an initiative the answer also carries the initiative's next step, since
-   * only a drive advances it (#2024).
+   * The answer of a command that decides on or drives the run: on a feature run of an initiative
+   * it carries the initiative's next step, since only a drive advances it (#2024, #2880).
    */
+  const finish = <T extends object>(result: T): T => withInitiativeStep(service, runId, result);
+  /**
+   * Drives the run after a change the command applied. At the workspace's parallel run cap the
+   * change stays and the run waits for a slot: the answer is the run with `queued` (exit 0),
+   * never the bare `WORKSPACE_BUSY` refusal (#2415).
+   */
+  const driveAfter = async (change: string): Promise<RunSnapshot & { queued?: QueuedResume }> => {
+    onDrive?.(runId);
+    try {
+      return finish(await service.drive(runId, signal));
+    } catch (error) {
+      const queued = queuedResume(error, service.store, runId, change);
+      if (!queued) throw error;
+      process.stderr.write(`${queued.message}\n`);
+      return finish({ ...service.store.snapshot(runId), queued });
+    }
+  };
+  /** Resumes the run after a change the command applied, then drives it (`driveAfter`). */
+  const resumeAfter = async (revision: number, change: string) => {
+    await service.resume(runId, { commandId: newId(), expectedRevision: revision });
+    return driveAfter(change);
+  };
+  /** Records a decision; with `--resume` the run continues from it when nothing else is pending. */
   const decideThenResume = async (decision: Decision): Promise<unknown> => {
     const decided = await service.decide(runId, identity(), decision);
     if (args.flags.resume !== true || !service.canResumeAfterDecision(runId))
-      return withInitiativeStep(service, runId, decided);
-    await service.resume(runId, { commandId: newId(), expectedRevision: decided.revision });
-    onDrive?.(runId);
-    return withInitiativeStep(service, runId, await service.drive(runId, signal));
+      return finish(decided);
+    return resumeAfter(decided.revision, "The decision is recorded");
   };
   const identity = () => {
     const revision = Number(stringFlag(args, "expected-revision"));
@@ -383,6 +445,9 @@ export async function executeWorkflowCommand(
           : {}),
         ...(args.flags.worktree === true ? { executionMode: "worktree" as const } : {}),
         ...(args.flags["model-strict"] === true ? { modelStrict: true } : {}),
+        ...(typeof args.flags.account === "string"
+          ? { accounts: accountFlag(args.flags.account) }
+          : {}),
         ...(typeof args.flags.route === "string"
           ? { routes: parseRouteOverrides(args.flags.route) }
           : {}),
@@ -476,8 +541,13 @@ export async function executeWorkflowCommand(
           ? { remedy: args.flags.remedy as ResumeRemedy }
           : {}),
       });
+      // A plain resume applied nothing else, so its refusal at the cap is the answer; a remedy
+      // or accepted workspace changes took effect and the run waits for a slot (#2415).
+      if (typeof args.flags.remedy === "string") return driveAfter("The remedy is recorded");
+      if (args.flags["accept-workspace"] === true)
+        return driveAfter("The workspace changes are accepted");
       onDrive?.(runId);
-      return service.drive(runId, signal);
+      return finish(await service.drive(runId, signal));
     case "pause":
       return service.pause(runId, identity());
     case "cancel":
@@ -500,8 +570,7 @@ export async function executeWorkflowCommand(
     case "repair": {
       const repaired = await service.repair(runId, identity(), Number(args.flags.rounds ?? 1));
       if (args.flags["no-resume"] === true) return repaired;
-      onDrive?.(runId);
-      return service.drive(runId, signal);
+      return driveAfter("The repair round is granted");
     }
     case "extend": {
       const number = (flag: string): number | undefined =>
@@ -513,9 +582,7 @@ export async function executeWorkflowCommand(
         ...(number("cost-usd") !== undefined ? { maxCostUsd: number("cost-usd") } : {}),
       } as Partial<BudgetLimits> & { maxCostUsd?: number });
       if (args.flags.resume !== true) return extended;
-      await service.resume(runId, { commandId: newId(), expectedRevision: extended.revision });
-      onDrive?.(runId);
-      return service.drive(runId, signal);
+      return resumeAfter(extended.revision, "The extension is applied");
     }
     case "reroute": {
       const rerouted = await service.reroute(runId, identity(), {
@@ -524,17 +591,16 @@ export async function executeWorkflowCommand(
           ? { routes: parseRouteOverrides(args.flags.route) }
           : {}),
       });
+      // Configured routes the reroute left on another model, as the start prints them (#2960).
+      for (const warning of readRoutingSummary(service.store, runId)?.warnings ?? [])
+        process.stderr.write(`warning: ${warning}\n`);
       if (args.flags.resume !== true) return rerouted;
-      await service.resume(runId, { commandId: newId(), expectedRevision: rerouted.revision });
-      onDrive?.(runId);
-      return service.drive(runId, signal);
+      return resumeAfter(rerouted.revision, "The new routes are applied");
     }
     case "revise": {
       const revised = await service.revise(runId, identity(), stringFlag(args, "candidate"));
       if (args.flags.resume !== true) return revised;
-      await service.resume(runId, { commandId: newId(), expectedRevision: revised.revision });
-      onDrive?.(runId);
-      return service.drive(runId, signal);
+      return resumeAfter(revised.revision, "The revision is applied");
     }
     case "undo": {
       const snapshot = await service.undo(
@@ -620,12 +686,13 @@ export async function executeWorkflowCommand(
         process.stderr.write(
           "warning: --resolution cancel cancels the whole run, not only this effect. To settle one effect and keep the run, use record-not-applied (the change is not in the file) or record-applied.\n",
         );
-      return service.decide(runId, identity(), {
+      // Evidence is optional (#2415): a retry has nothing to say, and the decision records a note.
+      return decideThenResume({
         kind: "recovery",
         requestId: stringFlag(args, "request"),
         effectId: stringFlag(args, "effect"),
         resolution,
-        evidence: readFlagFile("file"),
+        ...(args.flags.file ? { evidence: readFlagFile("file") } : {}),
       } as Decision);
     }
     case "profiles":
@@ -964,7 +1031,10 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     if (argv[0] === "routing") return runRoutingCli(argv.slice(1));
     const args = parseWorkflowArgs(argv);
     const cwd = getCwd();
-    const config = mergeConfigs(loadConfig(), loadEffectiveProjectConfig(cwd));
+    const config = withWorktreeRoot(
+      mergeConfigs(loadConfig(), loadEffectiveProjectConfig(cwd)),
+      args.flags["worktree-root"],
+    );
     const readonly = [
       "status",
       "list",
@@ -1107,16 +1177,12 @@ export async function runWorkflowCli(argv: string[]): Promise<number> {
     // An initiative's ready work waits for a drive after a decision on its feature run (#2024).
     const step = (result as { initiative?: InitiativeStep } | null)?.initiative;
     if (step?.drive?.command) process.stderr.write(`next: ${step.drive.command}\n`);
-    return ["run", "quick", "resume"].includes(args.command) ||
-      (["revise", "extend", "reroute", "continue", ...DECISION_COMMANDS].includes(args.command) &&
-        args.flags.resume === true)
-      ? workflowExit(
-          result as RunSnapshot,
-          PolicySchema.parse(
-            JSON.parse(service.store.run((result as RunSnapshot).runId).policy_json),
-          ).maxActiveMs,
-        )
-      : 0;
+    const store = service.store;
+    return commandExit(
+      args,
+      result,
+      (id) => PolicySchema.parse(JSON.parse(store.run(id).policy_json)).maxActiveMs,
+    );
   } catch (error) {
     process.stderr.write(
       `${JSON.stringify({ code: error instanceof WorkflowFault ? error.code : "ERROR", message: error instanceof Error ? error.message : String(error) })}\n`,

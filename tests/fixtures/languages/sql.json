@@ -13,7 +13,11 @@
     "sql/test_gen.sql": "SELECT repeat('\\', 3);\nSELECT '\\\\\\';\n-- SELECT repeat('\\', 3);\n"
   },
   "expected": {
+    "rowIndent": null,
+    "languagePitfalls": ["SQL"],
     "generatedValues": ["sql/test_gen.sql:1 repeat"],
+    "exampleBuild": null,
+    "runtimePaths": null,
     "memberSyntax": null,
     "suppressions": [
       "SELECT * FROM t -- noqa: AM04: lint, linted, prescribable"
@@ -73,7 +77,9 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": null,
     "testClasses": null,
-    "testDeclarations": null
+    "testDeclarations": null,
+    "rowFileShapes": null
   }
 }

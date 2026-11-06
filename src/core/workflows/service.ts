@@ -4,6 +4,7 @@ import type { AppConfig } from "../../types/index.js";
 import { SharedRootContext } from "../context/shared-root.js";
 import { ROUTING_ARTIFACT, type RoutingRecord, RoutingRecordSchema } from "../llm/model-routing.js";
 import { resolveModel } from "../llm/provider.js";
+import { checkAccountChoice, runWithAccounts } from "../llm/provider-accounts.js";
 import { probeProvider, providerBackoffMs } from "../llm/provider-health.js";
 import { displayPath } from "../projects/paths.js";
 import { activeProject } from "../projects/resolve.js";
@@ -24,6 +25,7 @@ import {
 } from "../verification/convergence-stop.js";
 import { noteSiblingFindings } from "../verification/initiative-ownership.js";
 import { hostDiff, sourceManifest } from "../verification/snapshot.js";
+import { acceptanceRefused } from "./acceptance-refusal.js";
 import { NativeAgentExecutor } from "./agent-executor.js";
 import { supersedeResearch } from "./analysis-notes.js";
 import { approvalDigest } from "./approval.js";
@@ -83,11 +85,15 @@ import { isStoreError, recordHostError } from "./host-error.js";
 import { InitiativeService } from "./initiatives/service.js";
 import { InitiativeStore } from "./initiatives/store.js";
 import {
+  INVALID_OUTPUT_BUILD_CHANGE,
   INVALID_OUTPUT_KEY,
+  invalidOutputInputs,
+  invalidOutputKey,
   invalidOutputRepeat,
   repeatedInvalidOutputAdvice,
 } from "./invalid-output-repeat.js";
 import {
+  commandLiveness,
   commandProcessMayRun,
   executionLeaseFor,
   leaseOwnerAlive,
@@ -102,6 +108,13 @@ import {
   PROJECT_MEMORY_ARTIFACT,
   renderProjectMemory,
 } from "./project-memory.js";
+import { checkRecoveryNote, noteInterruptedChecks, withRecoveryNote } from "./recovery.js";
+import { refusalInRunRoot } from "./refused-edit.js";
+import {
+  recordReleasedCreates,
+  releasedCreatesBetween,
+  staleReleasedCreates,
+} from "./release-writes.js";
 import { recoveryAdvice } from "./remedies.js";
 import type { ResumeRemedy } from "./remedies-model.js";
 import { canRepairRun } from "./repairable.js";
@@ -114,6 +127,7 @@ import {
 } from "./retry.js";
 import {
   REFUSED_EDIT_PREFIX,
+  readKept,
   runWrittenHash,
   UNFINISHED_BLOCK_PREFIX,
   undoRunEdits,
@@ -124,9 +138,12 @@ import {
   type RerouteRequest,
   type RouteChange,
   rerouteRecord,
+  rerouteShadowWarnings,
   routeChanges,
   strictRoutingConfig,
 } from "./routing.js";
+import { repairRowClaims, repairRunRows } from "./row-claim-repair.js";
+import { ROW_RESTORE_KIND, ROW_RESTORE_RESUME_DIR, rowRunRestores } from "./row-restore.js";
 import {
   GATES_ARTIFACT,
   SPEC_PUBLICATION_FILES,
@@ -183,7 +200,13 @@ import {
   produces,
   stageKind,
 } from "./v2/runtime.js";
-import { moveRunWorktree, placeBaseFiles, removeRunWorktree, runRoot } from "./worktree.js";
+import {
+  moveRunWorktree,
+  placeBaseFiles,
+  removeRunWorktree,
+  runRoot,
+  worktreeRootDir,
+} from "./worktree.js";
 import {
   cleanWorktrees,
   type WorktreeCleanup,
@@ -276,6 +299,8 @@ export class NativeWorkflowService implements WorkflowService {
     );
     this.scheduler.growLimits = (runId) => this.growLimits?.(runId);
     this.store.reserveStages = (runId, requestedUsd) => this.reserveStages?.(runId, requestedUsd);
+    this.store.tokenHold = (runId) => this.tokenHold?.(runId) ?? null;
+    this.store.planShareGate = (runId) => this.planShareGate?.(runId) ?? false;
   }
   /**
    * Raises a run's host-derived limits before its deadline stops it: an initiative's feature run
@@ -301,6 +326,26 @@ export class NativeWorkflowService implements WorkflowService {
     if (this.store.readonly) return;
     this.initiatives ??= new InitiativeService(this);
     this.initiatives.reserveStages(runId, requestedUsd);
+  };
+  /**
+   * The most tokens a run's limit may reach by the host's own growth: an initiative's feature run
+   * stays inside what the pool leaves after the other runs (#2468). Held by the service for the
+   * same reason as `growLimits`. A read-only store grows nothing, so it has no hold to read.
+   */
+  tokenHold: ((runId: string) => number | null) | undefined = (runId) => {
+    if (this.store.readonly) return null;
+    this.initiatives ??= new InitiativeService(this);
+    return this.initiatives.tokenHold(runId);
+  };
+  /**
+   * The plan-time share gate (#2488): a started initiative feature run whose plan needs more than
+   * its ceiling asks its initiative before its first task. Held by the service for the same
+   * reason as `growLimits`. A read-only store grows nothing.
+   */
+  planShareGate: ((runId: string) => boolean) | undefined = (runId) => {
+    if (this.store.readonly) return false;
+    this.initiatives ??= new InitiativeService(this);
+    return this.initiatives.planShareGate(runId);
   };
   private initiatives: InitiativeService | null = null;
   private enabled(): void {
@@ -331,8 +376,20 @@ export class NativeWorkflowService implements WorkflowService {
     const previous = this.store.previousCommand(request.commandId, request);
     if (previous) return previous;
     await this.refreshOutcomes();
+    const accounts =
+      request.accounts && Object.keys(request.accounts).length ? request.accounts : null;
+    if (accounts) {
+      try {
+        checkAccountChoice(accounts, this.workspace);
+      } catch (error) {
+        throw new WorkflowFault(
+          "INVALID_REFERENCE",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
     const prepared = await prepareStart(this.workspace, this.config, request);
-    const smoke = await this.preflight(prepared);
+    const smoke = await runWithAccounts(accounts, () => this.preflight(prepared));
     const {
       policy,
       registry,
@@ -440,6 +497,7 @@ export class NativeWorkflowService implements WorkflowService {
       correctedSinceRepair: false,
       extraCorrectiveTasks: 0,
       decidedFindings: [],
+      strandedFindings: [],
       autoExtensions: 0,
       limitations: [],
       reviewNotes: [],
@@ -503,6 +561,7 @@ export class NativeWorkflowService implements WorkflowService {
       testsFirst: null,
       presetChoice: request.presetChoice ?? null,
       autoApprovalDeclined: request.autoApprovalDeclined ?? null,
+      accounts,
       planAhead:
         request.planAhead && request.baseCommit ? { released: false, baselined: false } : null,
     };
@@ -614,7 +673,10 @@ export class NativeWorkflowService implements WorkflowService {
    */
   private async smokeChecks(prepared: PreparedStart): Promise<CheckSmoke[]> {
     const smoke = await smokeChecks(prepared.policy.checks, this.workspace);
-    const failed = smoke.filter((s) => s.status === "not_found" || s.status === "cannot_start");
+    const failed = smoke.filter(
+      (s) =>
+        s.status === "not_found" || s.status === "cannot_start" || s.status === "missing_package",
+    );
     const missing = failed.filter((s) => s.required);
     if (missing.length)
       throw new WorkflowFault(
@@ -934,6 +996,8 @@ export class NativeWorkflowService implements WorkflowService {
     const limit = stallSettings(this.config).autoResumes;
     const attempt = state.stallResumes + 1;
     const resumes = attempt <= limit;
+    // The resume below checks the gone driver's commands.
+    using _liveness = resumes ? this.deadOwnerLiveness(runId) : null;
     return this.store.transaction(() => {
       this.store.artifact(
         runId,
@@ -1130,9 +1194,11 @@ export class NativeWorkflowService implements WorkflowService {
     if (primary) this.primaryBusy = true;
     const scheduler = primary ? this.scheduler : this.lane();
     scheduler.maxParallelRuns = parallelRunCap(this.config);
-    const promise = scheduler
-      .drive(runId, controller.signal)
-      .then(() => this.store.snapshot(runId));
+    scheduler.worktreeRoot = worktreeRootDir(this.workspace, this.config.workflows?.worktreeRoot);
+    // A run started with `--account` keeps its accounts on every resume (#2303).
+    const promise = runWithAccounts(state.accounts, () =>
+      scheduler.drive(runId, controller.signal),
+    ).then(() => this.store.snapshot(runId));
     this.active.set(runId, { controller, promise });
     try {
       return await promise;
@@ -1176,12 +1242,7 @@ export class NativeWorkflowService implements WorkflowService {
     command: CommandIdentity,
     status: "paused" | "cancelled",
   ): Promise<RunSnapshot> {
-    const result = this.store.command(runId, command, { runId, ...command, action: status }, () => {
-      assertMutable(this.store.run(runId).status);
-      this.store.transition(runId, status, "user_pause");
-      // A crashed owner must not keep the workspace locked for ordinary edits after the user stops the run.
-      if (!this.active.has(runId)) releaseDeadOwnerLeases(this.store, runId);
-    });
+    const result = this.stopCommand(runId, command, status);
     const active = this.active.get(runId);
     const providerWait = this.providerWaits.get(runId);
     providerWait?.controller.abort();
@@ -1190,6 +1251,26 @@ export class NativeWorkflowService implements WorkflowService {
     if (providerWait) await providerWait.promise;
     return result;
   }
+  private stopCommand(
+    runId: string,
+    command: CommandIdentity,
+    status: "paused" | "cancelled",
+  ): RunSnapshot {
+    // A crashed owner's leases are released only once its commands are read as stopped, and
+    // that read runs before the write lock (see `commandLiveness`).
+    const crashed =
+      !this.active.has(runId) &&
+      this.store
+        .leases()
+        .some((lease) => lease.run_id === runId && leaseOwnerAlive(lease) === false);
+    using _liveness = commandLiveness(this.store, crashed ? [runId] : []);
+    return this.store.command(runId, command, { runId, ...command, action: status }, () => {
+      assertMutable(this.store.run(runId).status);
+      this.store.transition(runId, status, "user_pause");
+      // A crashed owner must not keep the workspace locked for ordinary edits after the user stops the run.
+      if (!this.active.has(runId)) releaseDeadOwnerLeases(this.store, runId);
+    });
+  }
   async resume(
     runId: string,
     command: CommandIdentity,
@@ -1197,7 +1278,121 @@ export class NativeWorkflowService implements WorkflowService {
   ): Promise<RunSnapshot> {
     this.enabled();
     const outside = options.acceptWorkspace ? await this.outsideChanges(runId) : null;
+    await this.convertStaleReleasedCreates(runId);
+    this.recheckRowRuns(runId);
+    this.recheckRowClaims(runId);
     return this.resumeCommand(runId, command, outside, options.remedy);
+  }
+  /**
+   * A run blocked `invalid_output` that settled a conflict, recorded a decision or confirmed a
+   * finding against the request's prescribed rows before they were checked (R82 tinyflate deflate
+   * 82f19908 rev 56: `decisions/clarification-reaudited-T009.json` gives rows 7 and 8 306 and 283
+   * bytes for the request's 300 and 259, #2561) resumes into the same demand. The resume checks
+   * them against the request (`repairRowClaims`): each that contradicts a row records
+   * `conflicts/row-claims/resume-<ref>.json`, an input of the invalid-output repeat key; under
+   * `rowClaimCheck` on (absent) the decision is overridden, the finding refuted and the run's
+   * prompt names the rows as the request gives them. Not while the run executes; a failure to read
+   * records nothing.
+   */
+  private recheckRowClaims(runId: string): void {
+    const run = this.store.run(runId);
+    if (this.active.has(runId) || run.status !== "blocked" || run.reason !== "invalid_output")
+      return;
+    const state = this.store.state(runId);
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return;
+    const mode =
+      PolicySchema.parse(JSON.parse(run.policy_json)).rowClaimCheck === "off" ? "shadow" : "on";
+    let repaired: ReturnType<typeof repairRowClaims>;
+    try {
+      repaired = repairRowClaims(this.store, runId, state.requestText || state.prompt, graph, mode);
+    } catch {
+      return;
+    }
+    const note = repaired.note;
+    this.store.transaction(() => {
+      const current = this.store.state(runId);
+      // Once a restatement is overridden, the spec's and the prompt's stale citations of the rows
+      // are put back from the request too (#2563: R82 rev 73 overrode the decision, and T009 still
+      // read ab1805240200 in the spec and 306 in the settled notes).
+      let changed = false;
+      if (mode === "on")
+        try {
+          changed = repairRunRows(
+            this.store,
+            runId,
+            current,
+            current.requestText || current.prompt,
+          );
+        } catch {}
+      if (note) current.prompt += `\n${note}`;
+      if (note || changed) this.store.saveState(runId, current);
+    });
+  }
+  /**
+   * A planned-ahead run released before #2514 kept its planned creates of files the release
+   * brought in, so its tasks were refused with "Create target already exists" (R82 slotprompt
+   * blocks, #2540). The resume converts them as the release does now, before the repeat guard
+   * reads the run's inputs: the conversion is an input change, so the retry is no repeat. Not
+   * while the run executes; idempotent.
+   */
+  private async convertStaleReleasedCreates(runId: string): Promise<void> {
+    if (this.active.has(runId) || this.store.run(runId).status === "running") return;
+    const stale = await staleReleasedCreates(this.store, runId, this.store.state(runId));
+    if (!stale.length) return;
+    this.store.transaction(() => {
+      const state = this.store.state(runId);
+      if (recordReleasedCreates(this.store, runId, state, stale).length)
+        this.store.saveState(runId, state);
+    });
+  }
+  /**
+   * A run blocked `invalid_output` at a task resumes into that task's session, so the checks
+   * stage's comparison of a test file's prescribed rows never runs (R82 tinyflate deflate
+   * 82f19908 T007 blocked again on the same 303- and 238-byte runs, #2543). The resume compares
+   * the delivered files' rows run-length aware (`rowRunRestores`) and records each file with a
+   * miscounted row under `row-restores/resume/<path>.json`, naming the blocked tasks, before the
+   * repeat guard reads the run's inputs: the drive restores those rows before the tasks run, so
+   * the retry is no repeat. The same file content records nothing new. Not while the run
+   * executes; a failure to read records nothing.
+   */
+  private recheckRowRuns(runId: string): void {
+    const run = this.store.run(runId);
+    if (this.active.has(runId) || run.status !== "blocked" || run.reason !== "invalid_output")
+      return;
+    const state = this.store.state(runId);
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return;
+    const root = runRoot(this.workspace, state);
+    let found: ReturnType<typeof rowRunRestores>;
+    try {
+      found = rowRunRestores(
+        state.requestText || state.prompt,
+        graph,
+        (path) => {
+          try {
+            return readFileSync(workspacePath(root, path), "utf8");
+          } catch {
+            return null;
+          }
+        },
+        "shadow",
+      );
+    } catch {
+      return;
+    }
+    const blocked = this.store
+      .tasks(runId)
+      .filter((t) => t.status === "blocked")
+      .map((t) => t.id);
+    for (const { record } of found) {
+      if (!record.restore.length) continue;
+      const path = `${ROW_RESTORE_RESUME_DIR}${record.path}.json`;
+      const body = canonical({ ...record, at: "resume", blocked });
+      const last = this.store.latestArtifact(runId, path);
+      if (last && last.content_hash === hashBytes(body)) continue;
+      this.store.transaction(() => this.store.artifact(runId, ROW_RESTORE_KIND, path, body));
+    }
   }
   /**
    * A person's answer to a corrective blocked on files it may not write (#2155): the remedy must
@@ -1273,6 +1468,8 @@ export class NativeWorkflowService implements WorkflowService {
   /** A person's grant applies only to the operation refused by the current diagnostic. */
   async repair(runId: string, command: CommandIdentity, rounds = 1): Promise<RunSnapshot> {
     this.enabled();
+    // The resume inside the repair command checks a dead owner's commands.
+    using _liveness = this.deadOwnerLiveness(runId);
     return this.store.command(
       runId,
       command,
@@ -1316,6 +1513,11 @@ export class NativeWorkflowService implements WorkflowService {
             state.extraRepeatRepairs += extra;
             break;
         }
+        // The findings the refused correction was for have no repair task: the next pass of their
+        // scope retires those it does not raise again (#2878).
+        for (const id of block.stranded?.findingIds ?? [])
+          if (block.stranded && !state.strandedFindings.some((f) => f.id === id))
+            state.strandedFindings.push({ id, pass: block.stranded.pass });
         this.store.artifact(
           runId,
           "recovery",
@@ -1353,6 +1555,7 @@ export class NativeWorkflowService implements WorkflowService {
       ...(outside ? { acceptWorkspace: true } : {}),
       ...(remedy ? { remedy } : {}),
     };
+    using _liveness = this.deadOwnerLiveness(runId);
     return this.store.command(runId, command, body, () => {
       assertMutable(this.store.run(runId).status);
       if (remedy === "accept-limitation") this.acceptCheckLimitation(runId, command);
@@ -1375,17 +1578,27 @@ export class NativeWorkflowService implements WorkflowService {
             this.store.request(runId, "recovery", this.store.run(runId).input_hash, {
               effectId: effect.id,
               intent: JSON.parse(effect.intent_json),
+              ...checkRecoveryNote(this.store, runId, effect.id),
             });
+          noteInterruptedChecks(
+            this.store,
+            runId,
+            uncertain.map((effect) => effect.id),
+            "resume",
+          );
           this.store.transition(runId, "waiting", "interrupted_effect");
           return;
         }
       }
       const blocked = this.store.run(runId);
-      // A remedy changes what the next attempt does, so it is no repeat of the same attempt.
+      // A remedy changes what the next attempt does, so it is no repeat of the same attempt. A
+      // refusal of acceptance is no model's output: no note goes to a model and no guard applies
+      // (#2879); acceptance decides again.
       if (
         !remedy &&
         blocked.status === "blocked" &&
         blocked.reason === "invalid_output" &&
+        !acceptanceRefused(this.store, runId) &&
         !this.noteInvalidOutput(runId)
       )
         throw new WorkflowFault("STALE_DECISION", repeatedInvalidOutputAdvice(runId), {
@@ -1401,14 +1614,47 @@ export class NativeWorkflowService implements WorkflowService {
     });
   }
   /**
+   * A resume asks a person about the commands of an execution lease's dead owner, which reads
+   * their processes: this reads them before the command's write lock (see `commandLiveness`).
+   */
+  private deadOwnerLiveness(runId: string): Disposable {
+    const lease = this.store.lease(executionLeaseFor(this.store, runId));
+    const gone = lease?.run_id === runId && leaseOwnerAlive(lease) === false;
+    return commandLiveness(this.store, gone ? [runId] : []);
+  }
+  /**
    * A plain resume after a stop by repeated hash refusals (#954) would start an attempt whose edits
    * of that file are refused again, while the run root still holds the refused content: that is a
    * decision for a person, keep the file or restore it (#1269). A file in a task worktree is
-   * rebuilt on resume, so only a refusal in the run root is held.
+   * rebuilt on resume, so only a refusal in the run root is held. The refusal is the one
+   * `outsideChanges` lists, so `--accept-workspace` can always keep what this refuses (#2609).
    */
   private assertNoRefusedEdit(runId: string): void {
+    const refused = this.heldRefusal(runId);
+    if (!refused) return;
+    const wrote = this.runWroteNote(runId, refused);
+    throw new WorkflowFault(
+      "STALE_DECISION",
+      recoveryAdvice(
+        `${refused.path} still differs from what the run recorded, so its edits would be refused again. ${wrote}Keep it as it is now with \`baked workflow resume ${runId} --accept-workspace\`, or put back the content the run wrote and resume`,
+        `${refused.path} still differs from what the run recorded. Keep these changes, or restore the content the run wrote before retrying.`,
+        { action: "accept-workspace", runId },
+      ),
+      { path: refused.path },
+    );
+  }
+  /**
+   * The refused file a stop by repeated hash refusals left in the run root, while the run root
+   * still holds the refused content. The one predicate of both the resume gate and
+   * `outsideChanges` (#2609): a file the run created and that is now missing, or a file the run
+   * changed that is back at its baseline, is no difference from the baseline, yet its edits are
+   * refused, so the difference check alone would never offer it to accept.
+   */
+  private heldRefusal(
+    runId: string,
+  ): { path: string; current: string | null; written: string | null | undefined } | null {
     const run = this.store.run(runId);
-    if (run.status !== "blocked" || run.reason !== "input_changed") return;
+    if (run.status !== "blocked" || run.reason !== "input_changed") return null;
     const diagnostic = this.store
       .artifacts(runId)
       .filter((a) => a.logical_path.startsWith("errors/"))
@@ -1416,25 +1662,45 @@ export class NativeWorkflowService implements WorkflowService {
     const last = diagnostic
       ? this.store.latestArtifact(runId, `${REFUSED_EDIT_PREFIX}${diagnostic.id}.json`)
       : null;
-    if (!last) return;
+    if (!last) return null;
     const refused = JSON.parse(this.store.readArtifact(runId, last.id)) as {
       path: string;
       root: string;
       hash: string | null;
     };
     const state = this.store.state(runId);
-    if (refused.root !== (state.worktree?.path ?? "")) return;
-    if (fileHash(workspacePath(runRoot(this.workspace, state), refused.path)) !== refused.hash)
-      return;
-    throw new WorkflowFault(
-      "STALE_DECISION",
-      recoveryAdvice(
-        `${refused.path} still differs from what the run recorded, so its edits would be refused again. Keep it with \`baked workflow resume ${runId} --accept-workspace\`, or put back the content the run wrote and resume`,
-        `${refused.path} still differs from what the run recorded. Keep these changes, or restore the content the run wrote before retrying.`,
-        { action: "accept-workspace", runId },
-      ),
-      { path: refused.path },
-    );
+    if (!refusalInRunRoot(state, refused.root)) return null;
+    const current = fileHash(workspacePath(runRoot(this.workspace, state), refused.path));
+    if (current !== refused.hash) return null;
+    return {
+      path: refused.path,
+      current,
+      written: runWrittenHash(this.store, runId, refused.path),
+    };
+  }
+  /**
+   * What the run last wrote to a held refused file, for the resume refusal: the person would
+   * otherwise have to rewrite a file the run made without knowing its content (#2609). The run
+   * keeps the content an edit overwrites, not the content it writes, so the written content can
+   * be named only when a later edit of the file kept it as its pre-image.
+   */
+  private runWroteNote(
+    runId: string,
+    refused: { path: string; current: string | null; written: string | null | undefined },
+  ): string {
+    if (refused.written === undefined || refused.written === refused.current) return "";
+    if (refused.written === null) return `The run last deleted ${refused.path}. `;
+    // Text content only: `artifacts --file` prints an artifact as text.
+    const row = this.store.latestArtifact(runId, `pre-images/${refused.written}`);
+    const kept =
+      row && readKept(this.store, runId, refused.written)
+        ? ` It is kept: \`baked workflow artifacts ${runId} --file ${row.id}\` prints it.`
+        : " The run did not keep that content.";
+    const now =
+      refused.current === null
+        ? `${refused.path} is missing now`
+        : `${refused.path} now has hash ${refused.current.slice(0, 12)}`;
+    return `The run last wrote ${refused.path} with hash ${refused.written.slice(0, 12)}, and ${now}.${kept} `;
   }
   /**
    * The source files that differ from what the run expects and that none of the run's own
@@ -1454,6 +1720,12 @@ export class NativeWorkflowService implements WorkflowService {
           .sort()
           .map((path) => ({ path, before: expected[path] ?? null, after: files[path] ?? null })),
       );
+      // The file the run's edits were refused on is a change to accept even when it matches the
+      // baseline (#2609): a file the run created and that is now missing has no baseline entry,
+      // yet a plain resume refuses on it.
+      const held = this.heldRefusal(runId);
+      if (held && !changes.some((change) => change.path === held.path))
+        changes.push({ path: held.path, before: expected[held.path] ?? null, after: held.current });
     }
     // A changed instruction or configuration file the run froze is accepted too (#1654), named
     // relative to the workspace when it lies there.
@@ -1548,11 +1820,34 @@ export class NativeWorkflowService implements WorkflowService {
     if (!repeat) return true;
     if (repeat.repeats) return false;
     const state = this.store.state(runId);
-    if (!state.prompt.includes(repeat.note)) {
+    // The key is recorded with the inputs the next attempt runs on: the repair of the note below
+    // is one of them (`claims`), so the same stop after it is a repeat (#2696).
+    let key = repeat.key;
+    if (!repeat.record.noted) {
       state.prompt += repeat.note;
+      // A diagnostic that restates the request's rows otherwise is put back from them once the
+      // run overrode that restatement (#2563: R82 rev 73's T009 diagnostic, "restore the exact
+      // prescribed 306-byte x input").
+      if (PolicySchema.parse(JSON.parse(this.store.run(runId).policy_json)).rowClaimCheck !== "off")
+        try {
+          if (repairRunRows(this.store, runId, state, state.requestText || state.prompt))
+            key = invalidOutputKey({
+              ...repeat.record,
+              inputs: invalidOutputInputs(this.store, runId),
+            });
+        } catch {}
       this.store.saveState(runId, state);
     }
-    this.store.artifact(runId, "recovery", INVALID_OUTPUT_KEY, repeat.key);
+    // A resume on another build than the last one's tries what that build changed in the host
+    // checks, so it is one attempt even with the same diagnostic; record why it passed (#2587).
+    if (repeat.buildChange)
+      this.store.artifact(
+        runId,
+        "recovery",
+        INVALID_OUTPUT_BUILD_CHANGE,
+        canonical({ diagnosticId: repeat.record.diagnosticId, ...repeat.buildChange }),
+      );
+    this.store.artifact(runId, "recovery", INVALID_OUTPUT_KEY, key);
     return true;
   }
   /**
@@ -1609,7 +1904,12 @@ export class NativeWorkflowService implements WorkflowService {
       !this.store.requests(runId).some(blocksRun)
     );
   }
-  async decide(runId: string, command: CommandIdentity, decision: Decision): Promise<RunSnapshot> {
+  async decide(runId: string, command: CommandIdentity, given: Decision): Promise<RunSnapshot> {
+    // A recovery decision needs no evidence: it records a generated note instead (#2415).
+    const decision = withRecoveryNote(given);
+    // A recovery decision checks the run's command processes: read them before the write lock,
+    // since a Windows process-table read takes seconds and would block every other writer.
+    using _liveness = commandLiveness(this.store, decision.kind === "recovery" ? [runId] : []);
     return this.store.command(runId, command, { runId, ...command, decision }, () => {
       const named = this.store.requests(runId).find((r) => r.id === decision.requestId);
       // The decision on an acceptance test is advisory work beside the run, at any status.
@@ -1814,15 +2114,8 @@ export class NativeWorkflowService implements WorkflowService {
             "WORKSPACE_BUSY",
             "Recovery must wait until the command process is confirmed stopped",
           );
-        if (
-          request.kind !== "recovery" ||
-          body.effectId !== decision.effectId ||
-          !decision.evidence.trim()
-        )
-          throw new WorkflowFault(
-            "STALE_DECISION",
-            "Recovery evidence required for the requested effect",
-          );
+        if (request.kind !== "recovery" || body.effectId !== decision.effectId)
+          throw new WorkflowFault("STALE_DECISION", "The recovery request is for another effect");
         const lease = this.store.lease(executionLeaseFor(this.store, runId));
         if (lease && leaseOwnerAlive(lease) !== false)
           throw new WorkflowFault(
@@ -2063,6 +2356,8 @@ export class NativeWorkflowService implements WorkflowService {
       }
       state.hostDependencies = pinned;
       state.initiativeBounds = previous.initiativeBounds;
+      // The accounts the run was started on are the person's choice, not the candidate's.
+      state.accounts = previous.accounts;
       const policy = PolicySchema.parse(candidate.policy);
       if (
         executionModeOf(policy) !==
@@ -2133,6 +2428,7 @@ export class NativeWorkflowService implements WorkflowService {
         state.correctedSinceRepair = false;
         state.extraCorrectiveTasks = 0;
         state.decidedFindings = [];
+        state.strandedFindings = [];
         state.autoExtensions = 0;
         state.limitations = [];
         state.reviewNotes = [];
@@ -2291,7 +2587,13 @@ export class NativeWorkflowService implements WorkflowService {
           maxCostUsd: costCap,
           ...(autoApproval === undefined ? {} : { autoApproval }),
         });
-        if (limits.maxActiveMs > MAX_EXTENDED_MS || limits.maxTotalTokens > MAX_EXTENDED_TOKENS)
+        // The ceilings bound what one extension raises a limit to. A limit it keeps is not checked:
+        // a `checkpoints` run keeps its uncapped 1e9 tokens when its calls or cost cap grow (#2667).
+        if (
+          (limits.maxActiveMs > current.maxActiveMs && limits.maxActiveMs > MAX_EXTENDED_MS) ||
+          (limits.maxTotalTokens > current.maxTotalTokens &&
+            limits.maxTotalTokens > MAX_EXTENDED_TOKENS)
+        )
           throw new WorkflowFault(
             "INVALID_DEFINITION",
             "Requested limits are above the allowed ceiling",
@@ -2385,7 +2687,9 @@ export class NativeWorkflowService implements WorkflowService {
     const changes = routeChanges(before, after);
     if (!changes.length && after.runModel === before.runModel) return null;
     assertCostCapPriced(PolicySchema.parse(JSON.parse(row.policy_json)), after);
-    const warnings: string[] = [];
+    const gates = loadGateLibrary(this.workspace, policy).gates;
+    // Configured routes that still name another model, with the stage routes that move them (#2960).
+    const warnings: string[] = rerouteShadowWarnings(after, definition, policy, gates, profiles);
     // A strict run checks independence on the configuration its start used (#2230).
     const independence = independentReviewMode(
       before.strict ? strictRoutingConfig(this.config) : this.config,
@@ -2395,7 +2699,7 @@ export class NativeWorkflowService implements WorkflowService {
         after,
         definition,
         policy,
-        loadGateLibrary(this.workspace, policy).gates,
+        gates,
         profiles,
         // A reroute names its models, so `provider` only warns about a shared vendor.
         independence === "provider" ? "provider" : "model",
@@ -2583,10 +2887,16 @@ export class NativeWorkflowService implements WorkflowService {
     if (from !== baseCommit) await moveRunWorktree(this.workspace, state.worktree, baseCommit);
     // Upstream specs of the features accepted since the provisional base (#2046); idempotent.
     await placeBaseFiles(this.workspace, state.worktree, baseCommit, baseFiles);
+    // A planned create of a file an accepted upstream feature wrote since the plan (#2514), or a
+    // planned modify of one it removed (#2517).
+    const stale = await releasedCreatesBetween(this.workspace, state, from, baseCommit);
     return this.store.command(runId, command, body, () => {
       const current = this.store.state(runId);
       if (!current.worktree || !current.planAhead)
         throw new WorkflowFault("STALE_DECISION", "The run changed during its release");
+      const released = recordReleasedCreates(this.store, runId, current, stale);
+      const modified = released.filter((r) => r.action !== "create");
+      const created = released.filter((r) => r.action === "create");
       current.worktree = { ...current.worktree, baseHead: baseCommit };
       current.worktreeBase = baseCommit;
       current.baseFiles = baseFiles;
@@ -2597,7 +2907,13 @@ export class NativeWorkflowService implements WorkflowService {
         runId,
         "plan-ahead",
         "plan-ahead/release.json",
-        canonical({ from, to: baseCommit, requests: held.map((r) => r.id) }),
+        canonical({
+          from,
+          to: baseCommit,
+          requests: held.map((r) => r.id),
+          ...(modified.length ? { modified } : {}),
+          ...(created.length ? { created } : {}),
+        }),
       );
       for (const request of held)
         this.store.decideRequest(
@@ -2697,6 +3013,7 @@ export class NativeWorkflowService implements WorkflowService {
       state.correctedSinceRepair = false;
       state.extraCorrectiveTasks = 0;
       state.decidedFindings = [];
+      state.strandedFindings = [];
       state.autoExtensions = 0;
       state.limitations = [];
       state.reviewNotes = [];
@@ -2894,11 +3211,19 @@ export class NativeWorkflowService implements WorkflowService {
   }
   /** Run and task worktrees on disk with their size and run status (`baked workflow worktrees`). */
   worktrees(): Promise<WorktreeReport> {
-    return worktreeUsage(this.store, (runId) => this.active.has(runId));
+    return worktreeUsage(
+      this.store,
+      (runId) => this.active.has(runId),
+      worktreeRootDir(this.workspace, this.config.workflows?.worktreeRoot),
+    );
   }
   /** Removes the worktrees of ended and unknown runs; their branches stay. */
   cleanWorktrees(dryRun: boolean): Promise<WorktreeCleanup> {
-    return cleanWorktrees(this.store, { dryRun, isActive: (runId) => this.active.has(runId) });
+    return cleanWorktrees(this.store, {
+      dryRun,
+      isActive: (runId) => this.active.has(runId),
+      worktreeRoot: worktreeRootDir(this.workspace, this.config.workflows?.worktreeRoot),
+    });
   }
   events(runId: string, afterSeq: number, signal: AbortSignal) {
     return replayEvents(this.store, runId, afterSeq, signal);

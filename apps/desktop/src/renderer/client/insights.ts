@@ -1,4 +1,5 @@
 import type { HighCalibration } from "../../../../../src/core/workflows/initiatives/estimate-budget.js";
+import type { SplitBudgetPreview } from "../../../../../src/core/workflows/initiatives/split-preview.js";
 import type { RecoveryAdvice } from "../../../../../src/core/workflows/remedies-model.js";
 import { ApiError, call } from "./api.js";
 
@@ -248,6 +249,8 @@ export interface InitiativeView {
     calls?: InitiativeCalls | null;
     /** Set while the calls forecast is above the shared calls; absent on older backends. */
     callsNotice?: string | null;
+    /** The split's budget before approval (#2502); absent on older backends. */
+    preview?: SplitBudgetPreview | null;
   };
   next: InitiativeNext;
   drive?: InitiativeDrive | null;

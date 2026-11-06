@@ -23,7 +23,7 @@ describe("written-tests check of compiled stacks (#1396)", () => {
     dirs.push(root);
     const path = "tests/Dieodds.Tests/ParserTests.cs";
     mkdirSync(dirname(join(root, path)), { recursive: true });
-    writeFileSync(join(root, path), "public class ParserTests {}\n");
+    writeFileSync(join(root, path), "public class ParserTests\n{\n    [Fact]\n    public void Parses() { }\n}\n");
     const checks = [check("build", "dotnet", ["build"]), check("tests", "dotnet", ["test", "Dieodds.sln", "--nologo"])];
     expect(writtenTestsCheck(root, checks, [{ path, action: "create" }, { path: "src/Dieodds/Parser.cs", action: "modify" }])).toMatchObject({
       id: "tests-written",
