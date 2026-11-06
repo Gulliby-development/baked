@@ -66,6 +66,8 @@ import { packageNeeds } from "../src/core/workflows/package-probe.js";
 import { extractFixtures, nodeUnderBun, redirectFixture, writeIntoCopy } from "../src/core/verification/doc-examples.js";
 import { anchorLine, placedWhere, placeRows } from "../src/core/tools/place-rows.js";
 import { joinedRows } from "../src/core/workflows/initiatives/plan.js";
+import { oldStringRange, rangeText } from "../src/core/tools/line-range.js";
+import { watchSteps } from "../src/core/workflows/progress-watch.js";
 import { keepFixerRange } from "../src/core/workflows/range-fixer-scope.js";
 import { measureFileRows, rowMoveDecision } from "../src/core/workflows/row-block-drift.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
@@ -6676,6 +6678,38 @@ describe("place_rows twin gate: a repeated row's twin in another list is not the
     test(name, () => {
       const got = placeRows({ path, after: '{"a", 1},', rows: [2], ...extra }, targets, frame);
       expect("refusal" in got ? got.refusal : "placed").toContain(want);
+    });
+});
+
+describe("edit range gate: an oldString that ends in a newline takes its line break (#2981)", () => {
+  // R106 tokenpare filters T005: lineStart 11 with two rows and a final newline never matched.
+  const lines = ["a", "b", "c", "d"];
+  const cases: [string, string, number, string | null][] = [
+    ["two lines and their newline", "b\nc\n", 2, "b\nc\n"],
+    ["two lines, no newline", "b\nc", 2, "b\nc"],
+    ["one line and its newline", "a\n", 1, "a\n"],
+    ["the last line has no newline to take", "d\n", 4, null],
+  ];
+  for (const [name, oldStr, lineStart, text] of cases)
+    test(name, () => {
+      const range = oldStringRange(lines, oldStr, lineStart);
+      expect(range ? rangeText(lines, range) : null).toBe(text);
+    });
+});
+
+describe("progress watch gate: a failed edit is no edit (#2981)", () => {
+  const input = { path: "a.cs", oldString: "x\n", newString: "", lineStart: 1 };
+  const step = (success: boolean) => ({
+    toolCalls: [{ toolName: "edit_file", input }],
+    toolResults: [{ toolName: "edit_file", input, output: { success, output: "" } }],
+  });
+  const cases: [string, boolean, string | null][] = [
+    ["three failed edits with one input", false, "repeated-reads"],
+    ["three successful edits", true, null],
+  ];
+  for (const [name, success, signal] of cases)
+    test(name, () => {
+      expect(watchSteps([step(success), step(success), step(success)], { mustEdit: true })?.signal ?? null).toBe(signal);
     });
 });
 
