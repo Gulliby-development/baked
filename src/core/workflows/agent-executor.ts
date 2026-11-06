@@ -110,6 +110,7 @@ import {
 import { ProcessScope } from "./process-scope.js";
 import { EDIT_TOOLS } from "./progress-watch.js";
 import { evidenceCut, largePrompt, promptSections } from "./prompt-sections.js";
+import { putBackOutsideRange } from "./range-fixer-scope.js";
 import { isTargetedRead, outlineLargeReads } from "./read-outline.js";
 import { settleInterruptedEdits } from "./recovery.js";
 import { refusalInRunRoot, refusedEditAdvice } from "./refused-edit.js";
@@ -1163,9 +1164,47 @@ export class NativeAgentExecutor implements AgentExecutor {
                 return [...new Set(paths)].reduceRight<() => Promise<unknown>>(
                   (inner, path) => () => guard.execute("edit_file", { path }, inner),
                   async () => {
+                    // A range fixer's file as it was, to put back its changes outside the range
+                    // (#2970).
+                    const ranged = check.fixLines && targets.length === 1 ? targets[0] : undefined;
+                    const absolute = ranged ? workspacePath(root, ranged) : "";
+                    const rangedBefore =
+                      ranged && existsSync(absolute) ? readFileSync(absolute, "utf8") : null;
                     // A fixer that writes text mode on Windows turns a LF file into CRLF (#2214).
                     const endings = captureEndings(paths.map((path) => workspacePath(root, path)));
                     const result = await once().finally(() => restoreEndings(endings));
+                    if (ranged) {
+                      const done = await putBackOutsideRange(
+                        absolute,
+                        ranged,
+                        rangedBefore,
+                        check.fixLines,
+                        async () =>
+                          (
+                            await runFixer(
+                              scope,
+                              { executable: check.executable, args: check.args },
+                              {
+                                cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                                env: buildCheckEnv(check),
+                                timeoutMs: check.timeoutMs,
+                                signal: request.signal,
+                                sandbox: runSandbox(policy, root, {
+                                  gitWrite: root !== this.store.workspace,
+                                }),
+                              },
+                            )
+                          ).exitCode === 0,
+                      );
+                      if (done)
+                        recordPutBack(
+                          this.store,
+                          request.runId,
+                          request.attemptId,
+                          `apply_fix ${check.id} range`,
+                          [done],
+                        );
+                    }
                     outputs.push({
                       target: targets.join(", "),
                       exitCode: result.timedOut ? null : result.exitCode,

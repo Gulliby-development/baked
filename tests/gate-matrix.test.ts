@@ -65,6 +65,7 @@ import { docFindingRepairs, documentationFinding, reproAllows, reproExecutables,
 import { packageNeeds } from "../src/core/workflows/package-probe.js";
 import { extractFixtures, nodeUnderBun, redirectFixture, writeIntoCopy } from "../src/core/verification/doc-examples.js";
 import { placedWhere, placeRows } from "../src/core/tools/place-rows.js";
+import { keepFixerRange } from "../src/core/workflows/range-fixer-scope.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
@@ -6584,6 +6585,20 @@ describe("place_rows anchor: a quoted line survives an earlier insert (#2956)", 
       if ("refusal" in second) throw new Error(second.refusal);
       expect(second.list?.text).toBe(`static const std::vector<Row> ${list} = {`);
       expect(placedWhere(second)).toContain(list === "rows" ? "in the list opened at line 1" : "which opens their list");
+    });
+});
+
+describe("format-written gate: a range fixer's change outside its range is put back (#2970)", () => {
+  // R104 logslice-update: `ruff format --range` rewrote the `--summary` call below the new one.
+  const before = ["a(", "  1)", "b(2,", "  3)", "c(4,", "  5)", ""].join("\n");
+  const cases: [string, string, [number, number][], string][] = [
+    ["the next statement, split at the range's code", ["a(1)", "b(2, 3)", "c(4,", "  5)", ""].join("\n"), [[1, 2]], ["a(1)", "b(2,", "  3)", "c(4,", "  5)", ""].join("\n")],
+    ["a change in its own hunk", ["a(", "  1)", "b(2,", "  3)", "c(4, 5)", ""].join("\n"), [[1, 2]], before],
+    ["a change inside the range stays", ["a(1)", "b(2,", "  3)", "c(4,", "  5)", ""].join("\n"), [[1, 2]], ["a(1)", "b(2,", "  3)", "c(4,", "  5)", ""].join("\n")],
+  ];
+  for (const [name, after, ranges, kept] of cases)
+    test(name, () => {
+      expect(keepFixerRange(before, after, ranges).text).toBe(kept);
     });
 });
 

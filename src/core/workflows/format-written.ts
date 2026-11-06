@@ -794,7 +794,9 @@ function formatWrittenOf(
               range.fix(fixArgs, ranges, edited.text),
               [path],
             );
-            if (check) found.push(check);
+            // A range formatter grows the range to whole statements, sometimes to the next one:
+            // its changes outside these lines are put back (#2970).
+            if (check) found.push({ ...check, fixLines: ranges.map(([s, e]) => [s, e]) });
           }
         }
       if (!found.length) continue;
