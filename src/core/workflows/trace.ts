@@ -29,6 +29,7 @@ import {
   providerFirstByteMs,
 } from "../llm/provider-health.js";
 import { streamOutputDecision } from "../llm/providers/output-limit.js";
+import { processTempDir } from "../platform/process-temp.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { replayUnselectedTests } from "../verification/check-runner.js";
@@ -4947,7 +4948,8 @@ function preparedTrace(path: string): string {
   const known = PREPARED.get(path);
   if (known?.key === key && existsSync(known.file)) return known.file;
   if (!preparedDir || !existsSync(preparedDir)) {
-    const dir = mkdtempSync(join(tmpdir(), "baked-trace-cache-"));
+    // The exit hook frees it on a normal exit; a killed process leaves it for the next process's sweep (#2967).
+    const dir = processTempDir("baked-trace-cache-");
     preparedDir = dir;
     process.once("exit", () => rmSync(dir, { recursive: true, force: true }));
   }
@@ -4973,7 +4975,7 @@ export function openTrace(path: string): {
   workspace: string;
   dispose: () => void;
 } {
-  const workspace = mkdtempSync(join(tmpdir(), "baked-replay-"));
+  const workspace = processTempDir("baked-replay-");
   mkdirSync(join(workspace, ".baked"), { recursive: true });
   copyFileSync(preparedTrace(path), join(workspace, ".baked", "workflows.sqlite"));
   const store = new WorkflowStore(workspace);
