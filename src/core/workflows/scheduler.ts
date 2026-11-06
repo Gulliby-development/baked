@@ -985,9 +985,11 @@ import {
   ROW_RUN_DIR,
   ROW_RUN_KIND,
   type RowBlockDrift,
+  rowBlockDecision,
   rowBlockDriftSummary,
   rowBlockDrifts,
   rowBlockExtraSummary,
+  rowMoveDecision,
   rowRunFindings,
   rowRunText,
   rowTupleHeld,
@@ -5631,6 +5633,10 @@ export class WorkflowScheduler {
         graph,
         (path) => readText(workspacePath(root, path)),
         mode,
+        rowBlockDecision,
+        rowMoveDecision,
+        // A row the file held before the run (a scaffold's placeholder) is not added (#2969).
+        (path) => runBaseContent(this.store, runId, path) ?? null,
       );
       for (const { record, drifts, extras } of compared) {
         found.push(...drifts);
