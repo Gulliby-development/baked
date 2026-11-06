@@ -514,3 +514,58 @@ describe("ciCheckDrift: a README path inside the check's broader path is no drif
     expect(missing("go vet ./cmd/...", "go vet ./internal/...")).toEqual([["./cmd/..."]]);
   });
 });
+
+// #2982, R106 netsieve docs run 517b97ff: the README ran `sbt --server -batch compile`, the checks
+// ran `sbt --server -batch scalafmtCheckAll` and `testFull`. The subcommand was read only before
+// any flag, so all three were the tool `sbt` and the README's `compile` was a missing word of the
+// scalafmt check; without the flags `sbt compile` was its own tool and recorded nothing.
+describe("ci_check_drift: a subcommand after leading flags (#2982)", () => {
+  const parse = (command: string) => {
+    const [executable = "", ...args] = command.split(" ");
+    return toolCommand(executable, args);
+  };
+  const cases: [string, string, string, string[]][] = [
+    ["Scala", "sbt --server -batch compile", "sbt compile", ["--server", "-batch"]],
+    ["Java (Maven)", "mvn -B -q verify", "mvn verify", ["-B"]],
+    ["Maven, a flag with a value", "mvn -f sub/pom.xml -B test", "mvn test", ["-f", "sub/pom.xml", "-B"]],
+    ["Kotlin (Gradle)", "gradle --console=plain build", "gradle build", ["--console", "plain"]],
+    ["Gradle, a project dir", "gradle -p app check", "gradle check", ["-p", "app"]],
+    ["Go", "go -C sub test ./...", "go test", ["-C", "sub", "./..."]],
+    ["C#", "dotnet --nologo test", "dotnet test", ["--nologo"]],
+    ["Rust", "cargo --locked test", "cargo test", []],
+    ["Rust, -C with a value", "cargo -C crates/core clippy -- -D warnings", "cargo clippy", ["-C", "crates/core", "--", "-D", "warnings"]],
+    ["TypeScript (bun)", "bun --cwd web test", "bun test", ["--cwd", "web"]],
+    ["npm, a script after --prefix", "npm --prefix web run lint", "npm run lint", ["--prefix", "web"]],
+  ];
+  for (const [name, command, tool, words] of cases)
+    test(`${name}: ${command}`, () => {
+      expect(parse(command)).toEqual({ tool, words });
+    });
+
+  test("the flag-first and flag-last spellings read the same tool and words", () => {
+    for (const [first, last] of [
+      ["sbt --server -batch compile", "sbt compile --server -batch"],
+      ["mvn -B -q verify", "mvn verify -B -q"],
+      ["go -C sub test ./...", "go test -C sub ./..."],
+      ["dotnet --nologo test", "dotnet test --nologo"],
+    ] as const) {
+      const a = parse(first);
+      const b = parse(last);
+      expect(a?.tool).toBe(b?.tool ?? "");
+      expect([...(a?.words ?? [])].sort()).toEqual([...(b?.words ?? [])].sort());
+    }
+  });
+
+  test("Scala, R106 netsieve: the README's sbt --server -batch compile records nothing", () => {
+    const readme = ["# netsieve", "", "```sh", "sbt --server -batch compile", "```", ""].join("\n");
+    const checks = [check("scalafmt", "sbt --server -batch scalafmtCheckAll"), check("tests", "sbt --server -batch testFull")];
+    expect(ciCheckDrift([{ path: "README.md", text: readme }], checks)).toEqual([]);
+    // A gate the checks run with a word the README lacks is still drift, flags first or not.
+    const ci = workflow("sbt --server -batch scalafmtCheckAll", "sbt --server -batch -Dstrict=true testFull");
+    expect(ciCheckDrift([{ path: CI, text: ci }], checks).map((d) => [d.tool, d.check?.id, d.missing])).toEqual([["sbt testfull", "tests", ["-Dstrict=true"]]]);
+  });
+
+  test("Java: mvn -B -q verify in CI against a check that runs mvn -B verify: same tool, no drift", () => {
+    expect(ciCheckDrift([{ path: CI, text: workflow("mvn -B -q verify") }], [check("verify", "mvn -B verify")])).toEqual([]);
+  });
+});

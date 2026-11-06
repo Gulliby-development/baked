@@ -133,6 +133,53 @@ const SUBCOMMAND_TOOLS = new Set([
   "lein",
   "R",
 ]);
+/**
+ * Programs whose users put flags before the subcommand (`sbt --server -batch compile`, `mvn -B
+ * verify`, `go -C sub test`), with the leading flags that take the next word as their value
+ * (#2982). The subcommand is the first word after those flags; a program not listed here reads
+ * its subcommand only as the first word. A new `SUBCOMMAND_TOOLS` program whose users write flags
+ * first adds its row here and a flag-first case to `tests/workflow-scenario-ci-check-drift.test.ts`.
+ */
+const LEADING_VALUE_FLAGS: Record<string, readonly string[]> = {
+  sbt: [],
+  mvn: [
+    "-f",
+    "--file",
+    "-s",
+    "--settings",
+    "-pl",
+    "--projects",
+    "-P",
+    "--activate-profiles",
+    "-T",
+    "--threads",
+    "-rf",
+    "--resume-from",
+  ],
+  gradle: [
+    "-p",
+    "--project-dir",
+    "-b",
+    "--build-file",
+    "-c",
+    "--settings-file",
+    "-x",
+    "--exclude-task",
+    "-I",
+    "--init-script",
+  ],
+  go: ["-C"],
+  dotnet: [],
+  cargo: ["-C", "--config", "-Z"],
+  bun: ["--cwd", "--config", "-c"],
+  npm: ["--prefix", "-w", "--workspace"],
+  pnpm: ["-C", "--dir", "--filter", "-F"],
+  yarn: ["--cwd"],
+  make: ["-C", "--directory", "-f", "--file", "--makefile"],
+  just: ["-f", "--justfile", "-d", "--working-directory"],
+  composer: ["-d", "--working-dir"],
+  rake: ["-f", "--rakefile", "-C", "--directory"],
+};
 /** Package-manager and task-runner subcommands that run a named script (`npm run lint`). */
 const RUN_SCRIPT = new Set(["run", "run-script"]);
 /** Programs whose own subcommand runs a named script: `deno task lint` (#2416). */
@@ -210,13 +257,25 @@ export function toolCommand(executable: string, args: readonly string[]): ToolCo
   const tool = [program];
   // A toolchain pick (`cargo +nightly clippy`) is not part of the gate.
   if (program === "cargo") rest = rest.filter((w) => !w.startsWith("+"));
-  if (SUBCOMMAND_TOOLS.has(program) && rest[0] && !rest[0].startsWith("-")) {
-    tool.push(rest[0]);
-    rest = rest.slice(1);
-    const runs = RUN_SCRIPT.has(tool[1] ?? "") || SCRIPT_SUBCOMMAND[program] === tool[1];
-    if (runs && rest[0] && !rest[0].startsWith("-")) {
-      tool.push(rest[0]);
-      rest = rest.slice(1);
+  if (SUBCOMMAND_TOOLS.has(program)) {
+    // The subcommand after the flags its users write first (#2982); the flags stay words.
+    const valued = LEADING_VALUE_FLAGS[program];
+    let at = 0;
+    if (valued) {
+      const takes = new Set([...valued, ...BENIGN_VALUE_FLAGS]);
+      while (rest[at]?.startsWith("-") && rest[at] !== "--")
+        at += takes.has(rest[at] ?? "") ? 2 : 1;
+    }
+    const sub = rest[at];
+    if (sub && !sub.startsWith("-")) {
+      tool.push(sub);
+      let after = rest.slice(at + 1);
+      const runs = RUN_SCRIPT.has(sub) || SCRIPT_SUBCOMMAND[program] === sub;
+      if (runs && after[0] && !after[0].startsWith("-")) {
+        tool.push(after[0]);
+        after = after.slice(1);
+      }
+      rest = [...rest.slice(0, at), ...after];
     }
   }
   const out: string[] = [];
