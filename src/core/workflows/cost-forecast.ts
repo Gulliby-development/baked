@@ -6,7 +6,12 @@ import { forecastStageCost, runForecastStages } from "./forecast-price.js";
 import { hostGrowth } from "./host-growth.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { type SizingReport, verificationTokens } from "./sizing.js";
-import { runPrices } from "./stage-price.js";
+import {
+  DEFAULT_PROVIDER_TOKEN_MIX,
+  forecastRate,
+  providerFamily,
+  runPrices,
+} from "./stage-price.js";
 import { recordWouldStop, stopFault, stopMode } from "./stop-reasons.js";
 import type { WorkflowStore } from "./store.js";
 
@@ -48,6 +53,28 @@ export interface CostForecast {
    * attempts already used or hold in flight, and verification.
    */
   remainingTokens: number;
+  /**
+   * The forecast at each model's own provider family mix (`providerTokenMix`, #2963), absent when
+   * the setting is `off` or a model has no price. Under `shadow` `projectedUsd` above stays the
+   * blended forecast and this records the per-provider one beside it for the bench to compare;
+   * under `on` `projectedUsd` is this one's and `blendedProjectedUsd` keeps the blended one.
+   */
+  providerMix?: ProviderMixForecast;
+}
+
+/** The per-provider forecast beside the blended one (#2963). */
+export interface ProviderMixForecast {
+  mode: "shadow" | "on";
+  projectedUsd: number;
+  blendedProjectedUsd: number;
+  /** Each remaining stage and model's dollars per token, per provider and blended. */
+  rates: {
+    stage: string;
+    model: string;
+    provider: string;
+    rateUsd: number;
+    blendedRateUsd: number;
+  }[];
 }
 
 const FINISHED = new Set(["implemented", "verified"]);
@@ -151,16 +178,60 @@ export function costForecast(
   const { spentUsd, reservedUsd } = store.costUsage(runId, undefined, prices);
   const remainingUsd = forecastStageCost(prices.samples, costs);
   if (remainingUsd === null) return null;
+  const blendedProjectedUsd = spentUsd + reservedUsd + remainingUsd;
+  const providerMix = providerMixForecast(
+    policy,
+    prices.samples,
+    costs,
+    spentUsd + reservedUsd,
+    blendedProjectedUsd,
+  );
   return {
     capUsd: cap,
     ceilingUsd: costCeilingUsd(store, runId, policy) ?? cap,
     spentUsd,
-    projectedUsd: spentUsd + reservedUsd + remainingUsd,
+    projectedUsd: providerMix?.mode === "on" ? providerMix.projectedUsd : blendedProjectedUsd,
     ratio,
     measuredTasks: measured.length,
     openTasks: open.length,
     remainingTokens,
+    ...(providerMix ? { providerMix } : {}),
   };
+}
+
+/**
+ * The forecast with every remaining stage priced at its model's own provider family mix
+ * (`forecastRate` per provider, #2963), or null under `providerTokenMix: off` or without a price.
+ */
+function providerMixForecast(
+  policy: RunPolicy,
+  samples: Parameters<typeof forecastStageCost>[0],
+  costs: { id: string; models: string[]; tokens: number }[],
+  committedUsd: number,
+  blendedProjectedUsd: number,
+): ProviderMixForecast | null {
+  const mode = policy.providerTokenMix ?? DEFAULT_PROVIDER_TOKEN_MIX;
+  if (mode === "off") return null;
+  const remaining = forecastStageCost(samples, costs, true);
+  if (remaining === null) return null;
+  const rates: ProviderMixForecast["rates"] = [];
+  const seen = new Set<string>();
+  for (const stage of costs) {
+    if (stage.tokens <= 0) continue;
+    for (const model of stage.models) {
+      const key = `${stage.id}\u0000${model}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rates.push({
+        stage: stage.id,
+        model,
+        provider: providerFamily(model),
+        rateUsd: forecastRate(samples, stage.id, model, true) ?? 0,
+        blendedRateUsd: forecastRate(samples, stage.id, model) ?? 0,
+      });
+    }
+  }
+  return { mode, projectedUsd: committedUsd + remaining, blendedProjectedUsd, rates };
 }
 
 /**
