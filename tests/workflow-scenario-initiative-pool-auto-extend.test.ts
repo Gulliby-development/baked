@@ -51,7 +51,7 @@ const plan: InitiativePlan = {
 };
 
 /**
- * deltaglue with chunks at its sizing ceiling: the other features used `othersUsed`, chunks has
+ * deltaglue with chunks at its sizing ceiling: the other features used `othersUsed` and finished, chunks has
  * used just under its 8M limit, and every call past it finishes a task first. Returns the limits
  * the run's auto-extends reach.
  */
@@ -72,6 +72,9 @@ async function deltaglue(othersUsed: typeof OTHERS) {
     const runId = runOf(id);
     store.transaction(() => store.transition(runId, "running"));
     if (tokens > 0) spend(store, runId, tokens);
+    // Finished, as R79's frames was: a finished run takes its use from the pool, an open one its
+    // granted limit (#2481, the open-run case is in the growth-refresh scenario test).
+    store.transaction(() => store.transition(runId, "completed"));
   }
   const runId = runOf("chunks");
   store.transaction(() => store.transition(runId, "running"));
