@@ -102,6 +102,9 @@ export function stuckPulls(pulls: readonly PullInfo[], now: Date, idleHours = DE
 
 const CLAIM = /\bclaim(?:ed|ing)?\b|\bберу\b|\bвзял[аи]?\b/i;
 
+/** The report's own tracking issue, which is not a work item. */
+export const isTrackingIssue = (body: string | null | undefined): boolean => (body ?? "").includes(MARKER);
+
 /** Issue numbers an open pull request names in its title or body (Fixes #N, Refs #N, #N). */
 export function referencedIssues(pulls: readonly Pick<PullInfo, "title" | "body">[]): Set<number> {
   const numbers = new Set<number>();
@@ -177,7 +180,9 @@ async function fetchPulls(): Promise<PullInfo[]> {
 }
 
 async function fetchIssues(): Promise<IssueInfo[]> {
-  const list = (await gh<Json[]>(`repos/${REPO}/issues?state=open&per_page=100`)).filter((i) => !i.pull_request);
+  const list = (await gh<Json[]>(`repos/${REPO}/issues?state=open&per_page=100`)).filter(
+    (i) => !i.pull_request && !isTrackingIssue(i.body),
+  );
   return Promise.all(
     list.map(async (i): Promise<IssueInfo> => ({
       number: i.number,
