@@ -102,10 +102,13 @@ describe.each(FAULT_PROVIDERS.map((provider) => [provider]))("provider fault mat
   if (shapes.length) test.each(shapes.map((shape) => [shape.stage, shape.effort, shape.p99Ms, shape]))(
     "a recorded %s call at %s effort answering after its p99 (%d ms) is an answer",
     async (_stage, _effort, p99Ms, shape) => {
-      const { result, error } = await call(provider, { kind: "slow", afterMs: p99Ms }, p99Ms + 2_000, {
-        stage: shape.stage ?? "",
-        effort: shape.effort ?? "",
-      });
+      // The clock stops at the answer before it goes on: an answer and a deadline due in the same
+      // simulated second would otherwise both fire before the answer's continuation runs. R76's
+      // codex research call answered at 299.6 s of its 300 s ceiling.
+      const running = await start(provider, { kind: "slow", afterMs: p99Ms }, { stage: shape.stage ?? "", effort: shape.effort ?? "" });
+      await running.advance(p99Ms);
+      await running.advance(2_000);
+      const { result, error } = await running.outcome();
       expect(error).toBeUndefined();
       expect(result?.text).toBe("OK");
     },
