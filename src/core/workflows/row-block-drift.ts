@@ -748,11 +748,14 @@ export function measureFileRows(
   );
   const kept = all.filter((r) => heads.has(r.fileRow.head) && r.literals.length);
   // The rows the file held before the run, by text, each held as often as the base holds it.
+  // A row is keyed without its list separator: a placeholder that becomes the last row of a list
+  // whose last row takes none (Ruby, Elixir, Scala, R, Java, Kotlin, C++) loses its comma (#2974).
+  const unseparated = (text: string) => text.trim().replace(/\s*[,;]$/, "");
   const before = new Map<string, number>();
   for (const row of base === null ? [] : fileRowsOf(base))
-    before.set(row.text.trim(), (before.get(row.text.trim()) ?? 0) + 1);
+    before.set(unseparated(row.text), (before.get(unseparated(row.text)) ?? 0) + 1);
   const measures: FileRowMeasure[] = kept.map((r) => {
-    const text = r.fileRow.text.trim();
+    const text = unseparated(r.fileRow.text);
     const held = !r.matches.length && (before.get(text) ?? 0) > 0;
     if (held) before.set(text, (before.get(text) ?? 0) - 1);
     return {

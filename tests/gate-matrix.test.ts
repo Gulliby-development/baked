@@ -67,7 +67,7 @@ import { extractFixtures, nodeUnderBun, redirectFixture, writeIntoCopy } from ".
 import { anchorLine, placedWhere, placeRows } from "../src/core/tools/place-rows.js";
 import { joinedRows } from "../src/core/workflows/initiatives/plan.js";
 import { keepFixerRange } from "../src/core/workflows/range-fixer-scope.js";
-import { rowMoveDecision } from "../src/core/workflows/row-block-drift.js";
+import { measureFileRows, rowMoveDecision } from "../src/core/workflows/row-block-drift.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
@@ -6644,6 +6644,22 @@ describe("feature rows gate: one gapped entry reads as its runs in separate entr
   for (const [name, entries] of cases)
     test(name, () => {
       expect(joinedRows(entries)).toEqual(joinedRows([{ path: "t.php", rows: [1, 2, 5, 8] }]));
+    });
+});
+
+describe("row_block_drift gate: a base row is matched without its list separator (#2974)", () => {
+  // R105 cidrlist2 core: the kept placeholder `y` became its list's last row and lost its comma.
+  const rows = ['row(["mask", "a"], "1")', 'row(["mask", "b"], "2")'];
+  const base = ["rows = [", '  row(["mask", "a"], "1"),', '  row(["mask", "b"], "2")', "]", "totals = [", '  row(["y"], "c"),', '  row(["z"], "d")', "]", ""].join("\n");
+  const cases: [string, string, boolean][] = [
+    ["kept with its comma", base.replace('  row(["z"], "d")\n', '  row(["y2"], "e")\n'), true],
+    ["kept as the last row, comma lost", base.replace('  row(["y"], "c"),\n  row(["z"], "d")', '  row(["y"], "c")'), true],
+    ["changed", base.replace('  row(["y"], "c"),\n  row(["z"], "d")', '  row(["y"], "changed")'), false],
+  ];
+  for (const [name, file, marked] of cases)
+    test(name, () => {
+      const at = file.split("\n").findIndex((l) => l.includes('["y"]')) + 1;
+      expect(measureFileRows(rows, file, base).find((r) => r.line === at)?.base === true).toBe(marked);
     });
 });
 
