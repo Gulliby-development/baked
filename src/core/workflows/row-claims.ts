@@ -1,6 +1,7 @@
 import { LONG_RUN, runSpans } from "../verification/byte-runs.js";
 import type { TaskGraph } from "./schemas.js";
 import { suppliedRows } from "./sizing.js";
+import { namesPath } from "./task-graph.js";
 
 /**
  * A restatement of a prescribed row checked against the request's own text (#2561). R82 tinyflate
@@ -193,9 +194,12 @@ function prescribedRuns(rows: Map<string, string[]>): PrescribedRun[] {
   );
 }
 
-/** The files of `rows` a text names, or all of them when it names none. */
+/**
+ * The files of `rows` a text names, or all of them when it names none. A file is named by its whole
+ * name (`namesPath`): `long_match_test.c` does not name `match_test.c` (#2672).
+ */
 function scoped(rows: Map<string, string[]>, text: string): Map<string, string[]> {
-  const named = [...rows].filter(([path]) => text.includes(path));
+  const named = [...rows].filter(([path]) => namesPath(text, path));
   return named.length ? new Map(named) : rows;
 }
 

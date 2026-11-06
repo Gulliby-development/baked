@@ -22,6 +22,7 @@ import {
   reviewPrompt,
   runReview,
   sweepChecklist,
+  withAreaRules,
 } from "../scripts/adversarial-review";
 
 const root = join(import.meta.dir, "..");
@@ -53,7 +54,7 @@ describe("adversarial sweep review (#1722)", () => {
       rules,
     );
     expect(prompt.startsWith("# Adversarial sweep review")).toBe(true);
-    expect(prompt).toContain("# Repository rules (AGENTS.md)");
+    expect(prompt).toContain("# Repository rules (AGENTS.md and .agents/rules/)");
     expect(prompt).not.toContain("# Configuration changes in this PR");
     expect(prompt).toContain("## 3. Sweep every supported language");
     expect(prompt).toContain("# Issue #7: gofmt stubs refused");
@@ -207,6 +208,17 @@ describe("adversarial review: inputs from the base commit (#1845)", () => {
     expect(prompt).toContain(`# Configuration changes in this PR\n\nThe pull request edits \`${REVIEW_INPUTS.instructions}\``);
     expect(review).toContain(`## Configuration changes in this PR\n\n\`${REVIEW_INPUTS.instructions}\`: the review read it from the base commit.`);
     expect(configurationChanges(DIFF)).toEqual([]);
+  });
+
+  test("the area rule files are review inputs too: listed when a pull request edits one, and read after AGENTS.md", () => {
+    const rule = ".agents/rules/workflows/stop-reasons-shadow.md";
+    const edit = `diff --git a/${rule} b/${rule}\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-Ships in shadow.\n+Ships enforced.\n${DIFF}`;
+    expect(configurationChanges(edit)).toEqual([rule]);
+    const text = withAreaRules("# Working on BAKED\n", [
+      { path: ".agents/rules/workflows/b.md", text: "Rule B.\n" },
+      { path: ".agents/rules/desktop/a.md", text: "Rule A.\n" },
+    ]);
+    expect(text).toBe("# Working on BAKED\n\n## .agents/rules/desktop/a.md\n\nRule A.\n\n## .agents/rules/workflows/b.md\n\nRule B.");
   });
 
   test("a file's diff is only that file's part", () => {

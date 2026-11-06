@@ -1,0 +1,1 @@
+Every headless mode (a single run, `--chat`, `--watch`) exits with the codes in `docs/headless.md`: a chat that a failed turn ended exits with that turn's code (`1`, or `2` when its own `--timeout` fired), never `0`, and each chat turn's timeout timer aborts only that turn and is cleared when it ends; `tests/headless-chat-exit.test.ts` holds the case (#2814).

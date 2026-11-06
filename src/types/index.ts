@@ -375,6 +375,8 @@ export interface QualityConfig {
   rowFileWrite?: "off" | "on";
   /** Let the host write a task the request gives verbatim (exact diffs, whole files, a README section) instead of starting an implementer, when every diff applies: `on` or `off` (default, recorded in shadow). */
   hostApply?: "off" | "on";
+  /** When one file of a task the host would apply or write from its rows declines, let the host write the task's other files and give a session only the declined ones: `on`, `shadow` (default: the host records the split and a session writes every file) or `off` (no record). */
+  hostApplyPartial?: "off" | "shadow" | "on";
   /** Before the test tasks, run extreme legal inputs a small call proposes against each planned source task's code; a failing one is corrected at once (edge-input probe): `on` or `off` (default). */
   edgeProbe?: "off" | "on";
   /** Keep a list of defect classes earlier runs corrected, by domain, in the BAKED data directory and show a run of the same domain its classes as examples (cross-run defect classes): `on` or `off` (default). */
@@ -391,6 +393,8 @@ export interface QualityConfig {
   sourceDefectRoute?: "off" | "on";
   /** Send a failing check's correction to the test's task when the test counts a long byte run of a prescribed row differently: `on` or `off` (default, recorded in shadow). */
   rowRunRoute?: "off" | "on";
+  /** Answer a spec conflict about a test file whose rows the request prescribes with the row diff, keeping the request's rows, instead of a model settle: `on` or `off` (default, recorded in shadow). */
+  conflictRowReply?: "off" | "on";
   /** Restore a prescribed row whose long byte run a test counts differently on resume of a run blocked at a task and before a task's session, kept when the writing task's checks pass: `on` (default) or `off` (recorded in shadow, the brief names the miscount). */
   rowRunRestore?: "off" | "on";
   /** Put back a session's edit after which a prescribed test row the file held no longer holds: `on` (default) or `off`. */

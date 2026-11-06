@@ -11,6 +11,7 @@ import { newId } from "../src/core/workflows/store.js";
 import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
 import { exportTrace, replayTrace } from "../src/core/workflows/trace.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
+import { wholeUnitCascade } from "./helpers/whole-unit-cascade-scenario.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
 // Scenario of bench round 64, cfgquill lint a843cc11 (#1996): the corrective chain T003 -> T005 ->
@@ -155,6 +156,29 @@ describe("scenario: cfgquill lint a843cc11, a corrective chain repeating one fai
     ]);
     expect(records[2]?.hash).toBe(records[0]?.hash ?? "");
     expect(wouldStops).toEqual([]);
+  }, 90000);
+});
+
+// Scenario of R101 turntrim c1633b0b (#2948): the host's styler fixer restyled R/input.R (T001's)
+// after each corrective, so `lintr` failed every later planned task's check on it with the same
+// line, and each failure opened a corrective of its own (16, 3.79M tokens). Each chain was one
+// corrective long, so the chain comparison above recorded nothing. Here T002 to T004 each fail on
+// T001's file after the previous corrective's fix: the second identical failure records the
+// would-stop once, naming T001 as the one owner. Shadow mode: the correctives open as before.
+describe("scenario: R101 turntrim, a whole-unit check failing on an earlier task's file after each corrective (#2948)", () => {
+  test("the second planned task failing as a finished corrective's task did records one would-stop, owned by T001", async () => {
+    const run = await wholeUnitCascade({ chained: true, holds: false });
+    cleanups.push(run.dispose);
+    expect(run.done.status).toBe("completed");
+    expect(run.correctives.map((t) => t.id)).toEqual(["T005", "T006", "T007"]);
+    expect(run.sessions).toEqual(["T001", "T002", "T005", "T003", "T006", "T004", "T007"]);
+    expect(run.wouldStops).toHaveLength(1);
+    expect(run.wouldStops[0]).toMatchObject({
+      mode: "shadow",
+      inputs: { rounds: ["T005", "T003"], correctives: ["T005"], failed: ["T002", "T003"], failureOwner: ["T001"], checks: ["lintr"], files: ["R/input.R"], firstDifference: null },
+    });
+    expect(run.wouldStops[0]?.key).toStartWith("defect-lintr-");
+    expect(run.wouldStops[0]?.summary).toBe("T003 failed lintr on R/input.R, written by T001, exactly as T002 did before T005 corrected it: a correction of T003 would not start another model session");
   }, 90000);
 });
 

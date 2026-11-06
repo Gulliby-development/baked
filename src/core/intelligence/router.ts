@@ -298,9 +298,13 @@ export class CodeIntelligenceRouter {
 
   /**
    * Eagerly initialize all backends for the detected project language.
-   * Call at startup so LSP servers are warm before the first tool call.
+   * Call at startup so LSP servers are warm before the first tool call. `BAKED_NO_LSP_WARMUP=1`
+   * (set for the test suite) turns it off: a test's intelligence worker must not start the
+   * machine's own servers, such as the runner image's clangd for a C++ fixture (#2656, #2268).
+   * Backends still start lazily on the first call that needs them.
    */
   async warmup(): Promise<void> {
+    if (process.env.BAKED_NO_LSP_WARMUP === "1") return;
     const languages = await this.detectAllLanguages();
     if (languages.length === 0) return;
 
@@ -421,13 +425,13 @@ export class CodeIntelligenceRouter {
   }
 
   /** Dispose all backends */
-  dispose(): void {
-    for (const backend of this.backends) {
-      backend.dispose?.();
-    }
+  /** Disposes every backend; resolves once the processes they stop (language servers) exited. */
+  async dispose(): Promise<void> {
+    const backends = this.backends;
     this.backends = [];
     this.initialized.clear();
     this.fileCache.clear();
+    await Promise.all(backends.map((backend) => backend.dispose?.()));
   }
 
   /**

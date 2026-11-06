@@ -29,6 +29,7 @@ import {
   InitiativeService,
   type InitiativeView,
   initiativeCostTolerance,
+  type RerouteResult,
   runFeatureId,
   type ShareGateRecord,
   shareShortfall,
@@ -48,6 +49,7 @@ import {
   initiativeExit,
   initiativeHelp,
   parseInitiativeArgs,
+  rerouteWarnings,
 } from "../src/headless/workflow-initiative.js";
 import { workflowHelp } from "../src/headless/workflow-parse.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
@@ -2895,6 +2897,22 @@ describe("initiative reroute", () => {
     for (const feature of later) expect(runModel(t.workflows, feature.runId ?? "")).toBe("spare/model");
 
     await expect(t.initiatives.reroute("values", t.id(), { model: "spare/model" })).rejects.toThrow("already uses this model");
+  });
+
+  test("the initiative.rerouted event carries the warning about class routes left on the old model (#2960)", async () => {
+    const t = setup();
+    // The review class names the provider the initiative moves away from.
+    t.workflows.config.modelRouting = { classes: { review: "fixture/model" } };
+    await t.start({ plan: threeFeatures });
+    await t.approveSplit();
+    const core = t.featureOf(await t.drive(), "core");
+    await t.initiatives.reroute("values", t.id(), { model: "spare/model" });
+    const event = t.initiatives.events("values").find((e) => e.type === "initiative.rerouted");
+    const runs = (event?.payload as { runs: RerouteResult[] }).runs;
+    const warning = runs.find((r) => r.runId === core.runId)?.warnings?.find((line) => line.includes("modelRouting.classes.review"));
+    expect(warning).toContain("fixture/model");
+    expect(warning).toContain("--route review=spare/model");
+    expect(rerouteWarnings(t.initiatives, "values").some((line) => line.startsWith("core: ") && line.includes("--route review=spare/model"))).toBe(true);
   });
 
   test("a feature blocked by its provider continues on the new model with --resume", async () => {

@@ -3,6 +3,7 @@ import { isMock } from "./client/bridge.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { TitleBar } from "./components/TitleBar.js";
 import { Alert } from "./components/ui/alert.js";
+import { ContextMenu } from "./components/ui/context-menu.js";
 import { TitleTooltips } from "./components/ui/title-tooltips.js";
 import { prefetchModels } from "./lib/models.js";
 import { useRoute } from "./router.js";
@@ -53,6 +54,7 @@ export function App() {
         </main>
       </div>
       <TitleTooltips />
+      <ContextMenu />
     </div>
   );
 }

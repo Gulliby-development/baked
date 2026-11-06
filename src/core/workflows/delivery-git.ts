@@ -226,15 +226,39 @@ export function fileHead(path: string): Uint8Array | null {
   }
 }
 
-/** Modes keyed by literal path from one recursive, NUL-delimited ls-tree read. */
+/** A submodule's entry (a gitlink) in `git ls-tree` output. */
+const GITLINK = "160000 ";
+
+/** Modes keyed by literal path from one recursive, NUL-delimited ls-tree read; gitlinks are no files. */
 export function treeModes(output: string): Map<string, "100755" | "100644"> {
   const modes = new Map<string, "100755" | "100644">();
   for (const entry of output.split("\0")) {
     const tab = entry.indexOf("\t");
-    if (tab >= 0)
+    if (tab >= 0 && !entry.startsWith(GITLINK))
       modes.set(entry.slice(tab + 1), entry.startsWith("100755 ") ? "100755" : "100644");
   }
   return modes;
+}
+
+/** The submodule paths (gitlinks) of one recursive, NUL-delimited ls-tree read. */
+export function treeSubmodules(output: string): string[] {
+  const paths: string[] = [];
+  for (const entry of output.split("\0")) {
+    const tab = entry.indexOf("\t");
+    if (tab >= 0 && entry.startsWith(GITLINK)) paths.push(entry.slice(tab + 1));
+  }
+  return paths;
+}
+
+/**
+ * Whether `path` is a submodule of the tree or lies inside one (#2798). Such a path never goes into
+ * a temporary index: `update-index --index-info` replaces the gitlink with the file without a word,
+ * so the commit would drop the submodule. Every path that builds a commit that way filters by this.
+ */
+export function inSubmodule(path: string, submodules: Iterable<string>): boolean {
+  for (const submodule of submodules)
+    if (path === submodule || path.startsWith(`${submodule}/`)) return true;
+  return false;
 }
 
 /** Paths of `git status --porcelain=v1 -z` output; a rename or copy lists its target path. */

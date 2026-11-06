@@ -17,6 +17,7 @@ import { availableVendorModels } from "../../llm/vendor-models.js";
 import { matchGlob } from "../../platform/index.js";
 import { canonical, hashBytes, hashJson } from "../../specs/hash.js";
 import { specPublication } from "../../specs/render.js";
+import { acceptanceRefused } from "../acceptance-refusal.js";
 import { type BudgetLimits, budgetUsage, limitsOf } from "../budget.js";
 import { cleanInitiativePace, cleanRates } from "../clean-pace.js";
 import { autoCostTolerance } from "../cost-tolerance.js";
@@ -39,6 +40,7 @@ import {
   type TokenRange,
   tokenText,
 } from "../estimate.js";
+import { featureRowsLines } from "../feature-rows.js";
 import { forecastSamples, forecastStageCost, runForecastStages } from "../forecast-price.js";
 import { executingLeases } from "../leases.js";
 import { FEATURE_REQUEST_HEADING } from "../person-request.js";
@@ -93,13 +95,19 @@ import {
 } from "./calls-pool.js";
 import { criticalPathSummary, planWidth, remainingPath } from "./critical-path.js";
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
-import { documentedSurfaceRate, documentsProgram, requestCommands } from "./documented-surface.js";
+import {
+  boundaryKindOf,
+  documentedSurfaceRate,
+  documentsProgram,
+  requestCommands,
+} from "./documented-surface.js";
 import { type InitiativeDriveState, initiativeDriveState } from "./drive-state.js";
 import {
   calibrationLagText,
   estimateInitiative,
   type FeatureEstimate,
   type FeatureRunSample,
+  fewPathPriceOn,
   highCalibrationText,
   type InitiativeEstimate,
   type InitiativeProgress,
@@ -108,6 +116,7 @@ import {
   SIZE_TASK_FACTOR,
   testVolumeText,
 } from "./estimate.js";
+import type { FewPathShareRecord } from "./few-path-record.js";
 import { initiativePriceSamples, taskCallRate } from "./forecast.js";
 import {
   chargeHold,
@@ -125,6 +134,7 @@ import {
   boundaryPathCounts,
   type FeatureSize,
   featureDigest,
+  featureRowFiles,
   foldSkeletonFeatures,
   hostRowCases,
   type InitiativeFeature,
@@ -277,6 +287,8 @@ export interface RerouteResult {
   /** The run model before, for a rerouted run. */
   from?: string;
   reason?: string;
+  /** What the run's reroute warned about, such as configured routes left on the old model (#2960). */
+  warnings?: string[];
 }
 
 /** How often a drive with plan ahead looks for a feature that became ready to plan (#1834). */
@@ -387,6 +399,11 @@ export interface FeatureView {
   shareUsd: number | null;
   /** Priced low and high estimates, independent of the allocated dollar share. */
   needUsd?: TokenRange | null;
+  /**
+   * What `sizing.fewPathPrice` did to its estimate (#2640): applied or not, why, and its range
+   * before and after. Absent with the knob off, once it has a run, or before approval.
+   */
+  fewPathShare?: FewPathShareRecord;
   /** The workflow feature ID of this feature's runs. */
   runFeatureId: string;
   /** The GitHub issue the feature's runs start from and their delivery closes; null without one. */
@@ -568,16 +585,20 @@ export interface InitiativeStep {
 /**
  * How a blocked run's line tells a person to resolve it: the command, or, when its recorded advice
  * offers no plain resume because one would repeat the stop (#2201, #2520), that advice's summary.
+ * A refusal of acceptance (`refused`) offers its own remedies, so the line gives its summary
+ * (#2879).
  */
 function resolveWith(
   run: { status: string; reason?: string | null },
   runId: string,
   recorded: RecoveryAdvice | undefined,
   verb: "repair" | "resume",
+  refused = false,
 ): string {
-  return verb === "resume" && recorded && retryRefused(run, recorded)
-    ? `a plain resume would repeat its stop: ${recorded.summary}`
-    : `resolve it with baked workflow ${verb} ${runId}`;
+  if (verb === "resume" && recorded && retryRefused(run, recorded))
+    return `a plain resume would repeat its stop: ${recorded.summary}`;
+  if (verb === "resume" && refused && recorded) return recorded.summary;
+  return `resolve it with baked workflow ${verb} ${runId}`;
 }
 
 /** True when a feature would start with less than the smallest share a run can work with. */
@@ -634,7 +655,20 @@ export interface ShareGateRecord {
   >;
   view: ShareGateView;
   feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd"> &
-    Partial<Pick<FeatureView, "needUsd">>;
+    Partial<Pick<FeatureView, "needUsd" | "fewPathShare">>;
+}
+
+/** The few-path share records of `features`' estimates, by feature id (#2640). */
+function fewPathShares(
+  estimated: FeatureEstimate[],
+  features: Pick<FeatureView, "id">[],
+): Record<string, FewPathShareRecord> {
+  const ids = new Set(features.map((f) => f.id));
+  return Object.fromEntries(
+    estimated.flatMap((e) =>
+      e.fewPathShare && ids.has(e.featureId) ? [[e.featureId, e.fewPathShare]] : [],
+    ),
+  );
 }
 
 /** The waiting features (no run yet) with an estimate, as the token pool reads them. */
@@ -1590,7 +1624,7 @@ export class InitiativeService {
             : `The split cannot be edited while the initiative is ${row.status}`,
         );
       const latest = this.store.plan(this.store.revision(id, row.plan_revision));
-      const edited = applySplitEdit(latest, parsed);
+      const edited = applySplitEdit(latest, parsed, row.prompt);
       // Features the edit left as they were keep their settings, also those of a plan stored
       // before features had workflows, so their runs are not superseded; the others are fitted.
       const before = new Map(latest.features.map((f) => [f.id, featureDigest(f)] as const));
@@ -1841,7 +1875,12 @@ export class InitiativeService {
         { model },
         plan,
       );
-      const result: RerouteResult = { ...run, result: "rerouted", from: plan.before.runModel };
+      const result: RerouteResult = {
+        ...run,
+        result: "rerouted",
+        from: plan.before.runModel,
+        ...(plan.after.warnings?.length ? { warnings: plan.after.warnings } : {}),
+      };
       // The switch stands even when the run cannot continue yet; its next drive reports why.
       if (resume && after.status === "blocked")
         await this.workflows
@@ -2309,6 +2348,7 @@ export class InitiativeService {
       throw new WorkflowFault("ARTIFACT_MISSING", "The decompose run has no initiative plan");
     const written = InitiativePlanSchema.parse(JSON.parse(state.initiativePlan));
     const settings = this.store.settings(row);
+    const request = state.requestText || state.prompt;
     // Skeleton lines the project's formatter would sort get a blank line before them, so the
     // host-written content stays a fixed point of the format check (#2222); in shadow (absent)
     // the layout is only recorded.
@@ -2322,11 +2362,12 @@ export class InitiativeService {
     // A feature that is only skeleton runs inside a dependent instead of a run of its own (#1662).
     const folded = settings.keepFeatures
       ? { plan: decomposed, merged: [] }
-      : foldSkeletonFeatures(decomposed);
+      : foldSkeletonFeatures(decomposed, request);
     const siblings = settings.keepFeatures
       ? { plan: folded.plan, merged: [] }
       : mergeSmallSiblings(folded.plan, {
           byDependents: settings.splitCriticalPath || settings.basePolicy.criticalPath === "split",
+          request,
         });
     const floored = { plan: siblings.plan, merged: [...folded.merged, ...siblings.merged] };
     const proposed = floored.plan;
@@ -2337,7 +2378,7 @@ export class InitiativeService {
     let unavailable: string[] = [];
     try {
       const ownership = testOwnershipProblems(proposed, {
-        request: state.requestText || state.prompt,
+        request,
         mode: rowOwnerMode,
       });
       if (ownership.length) throw new WorkflowFault("OUTPUT_INVALID", ownership.join("\n"));
@@ -2385,8 +2426,7 @@ export class InitiativeService {
           ...(unavailable.length ? { unavailable } : {}),
         });
       // Enforced, testOwnershipProblems refused the split above; in shadow it is recorded (#2487).
-      if (rowOwnerMode !== "enforce")
-        this.noteRowOwnerWouldStop(id, plan, state.requestText || state.prompt, rowOwnerMode);
+      if (rowOwnerMode !== "enforce") this.noteRowOwnerWouldStop(id, plan, request, rowOwnerMode);
     });
   }
 
@@ -2408,7 +2448,7 @@ export class InitiativeService {
         reason: "initiative-row-owner",
         mode,
         featureId: found.owner,
-        key: `row-owner-r${revision}-${found.path}`,
+        key: `row-owner-r${revision}-${found.path}${found.shape === "row-split" ? `-split-${found.owner}-${found.needs}` : ""}`,
         summary: found.problem,
         inputs: {
           path: found.path,
@@ -2417,6 +2457,7 @@ export class InitiativeService {
           row: found.row,
           literal: found.literal,
           rows: found.rows,
+          ...(found.shape === "row-split" ? { shape: found.shape } : {}),
         },
       });
   }
@@ -2480,6 +2521,8 @@ export class InitiativeService {
         need: feature.need,
         shareUsd: feature.shareUsd,
         needUsd: feature.needUsd ?? null,
+        // The few-path share its need was priced with (#2640), so a bench round can count it.
+        ...(feature.fewPathShare ? { fewPathShare: feature.fewPathShare } : {}),
       },
     };
     this.store.emit(id, "feature.share_gate", record);
@@ -4151,13 +4194,18 @@ export class InitiativeService {
    * and a token range per feature and in total, from this project's run history. Null before a
    * split exists.
    */
-  estimate(id: string): InitiativeEstimate | null {
+  /**
+   * The estimate of the initiative's split. A caller that just took `view(id)` and changed nothing
+   * since passes it, so its accepted features are not computed a second time (the replay corpus
+   * takes both at every rewound start).
+   */
+  estimate(id: string, view?: Pick<InitiativeView, "features">): InitiativeEstimate | null {
     const row = this.store.get(id);
     const latest = row.plan_revision ? this.store.revision(id, row.plan_revision) : null;
     const plan = this.approvedPlan(row) ?? (latest ? this.store.plan(latest) : null);
     if (!plan) return null;
-    const accepted = this.view(id)
-      .features.filter((f) => f.state === "accepted")
+    const accepted = (view ?? this.view(id)).features
+      .filter((f) => f.state === "accepted")
       .map((f) => f.id);
     // Asked for rarely and right after runs finish, so it reads the store fresh.
     return this.estimateOf(row, plan, new Set(accepted), 0);
@@ -4239,6 +4287,7 @@ export class InitiativeService {
         dependsOn: feature.dependsOn,
         ...(testCases ? { testCases } : {}),
         ...(commands && documentsProgram(feature) ? { documentedCommands: commands } : {}),
+        ...boundaryKindOf(feature),
       };
     });
     const history = estimateHistory(
@@ -4287,6 +4336,7 @@ export class InitiativeService {
       ...(settings.basePolicy?.sizing?.recencyHalfLife
         ? { recencyHalfLife: settings.basePolicy.sizing.recencyHalfLife }
         : {}),
+      fewPathPrice: fewPathPriceOn(settings.basePolicy?.sizing),
       // Read only when the request demands a test volume: the sizing history opens every store.
       ...(features.some((f) => f.testCases)
         ? {
@@ -4353,6 +4403,8 @@ export class InitiativeService {
       feature.need = needs.get(feature.id) ?? null;
       feature.needUsd = estimate.features.find((f) => f.featureId === feature.id)?.costUsd ?? null;
     }
+    // What `sizing.fewPathPrice` did to each waiting feature (#2640); none with the knob set off.
+    const fewPathShare = fewPathShares(estimate.features, waiting);
     const cost = this.costView(row, settings, plan, runIds, used, accepted, estimate, null);
     const shares = splitShares(waiting, remaining, cost.remainingUsd);
     for (const [index, feature] of waiting.entries()) Object.assign(feature, shares[index]);
@@ -4439,6 +4491,7 @@ export class InitiativeService {
           }
         : null,
       suggestedTokens,
+      ...(Object.keys(fewPathShare).length ? { fewPathShare } : {}),
       // The post-approval forecast notice's sentence, so both read alike (#2042, #2244).
       notice:
         suggestedTokens === null
@@ -4506,6 +4559,11 @@ export class InitiativeService {
     for (const feature of waitingForRun) {
       feature.need = needs?.get(feature.id) ?? null;
       feature.needUsd = estimate?.features.find((f) => f.featureId === feature.id)?.costUsd ?? null;
+    }
+    const fewPathShare = estimate ? fewPathShares(estimate.features, waitingForRun) : {};
+    for (const feature of waitingForRun) {
+      const record = fewPathShare[feature.id];
+      if (record) feature.fewPathShare = record;
     }
     const cost = this.costView(row, settings, plan, runIds, used, accepted, estimate, charge);
     const shares = splitShares(waitingForRun, remaining, cost.remainingUsd);
@@ -4985,7 +5043,7 @@ export class InitiativeService {
           return action(
             "blocked",
             recoveryAdvice(
-              `The decompose run is blocked (${run.reason}); ${resolveWith(run, run.runId, recorded, "resume")}`,
+              `The decompose run is blocked (${run.reason}); ${resolveWith(run, run.runId, recorded, "resume", acceptanceRefused(this.workflows.store, run.runId))}`,
               `The decompose run is blocked (${run.reason}).${recorded ? ` ${recorded.summary}` : ""}`,
               ...(recorded?.remedies ?? [{ action: "resume" as const, runId: run.runId }]),
             ),
@@ -5274,7 +5332,7 @@ export class InitiativeService {
         view.blockers = [
           deadline
             ? `run ${link.run_id} is blocked (${run.reason}): ${deadline.message}`
-            : `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; ${resolveWith(run, link.run_id, recorded, canRepairRun(run) ? "repair" : "resume")}`,
+            : `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; ${resolveWith(run, link.run_id, recorded, canRepairRun(run) ? "repair" : "resume", acceptanceRefused(this.workflows.store, link.run_id))}`,
         ];
         const wait = costRefusalWaitOf(this.workflows.store, link.run_id);
         if (wait)
@@ -6309,6 +6367,8 @@ export function featurePrompt(
       : "The split names no paths for this feature; stay within the boundary above.",
     `Contract this feature provides to the features that depend on it: ${feature.contract}`,
     ...(feature.skeleton?.length ? skeletonLines(plan, feature) : []),
+    // The rows of each shared row file this run delivers; `suppliedRows` reads them back (#2898).
+    ...featureRowsLines(featureRowFiles(plan, row.prompt, feature)),
     ...amendmentLines(amendments),
   ];
   for (const { feature: dependency, contract } of upstream) {

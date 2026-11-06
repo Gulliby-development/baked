@@ -80,6 +80,15 @@
     "diagnosticFormats": ["/p/.baked/worktrees/e7760f1b/main/src/Evaluate.res: This has type: value"],
     "testClasses": null,
     "testDeclarations": ["__tests__/Sum_test.res: 2 tests"],
-    "rowFileShapes": null
+    "rowFileShapes": [
+      "tests/CliTest.res",
+      "let rows = [",
+      "  Harness.row([\"--help\"], \"\", 0, \"usage: csp [--strict] FILE\\n\", \"\"),",
+      "  Harness.row([\"--nope\"], \"\", 2, \"\", \"csp: unknown option --nope\\n\"),",
+      "]",
+      "",
+      "Harness.run(rows)",
+      ""
+    ]
   }
 }
