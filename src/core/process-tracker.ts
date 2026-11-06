@@ -46,11 +46,12 @@ export function killAllTracked(): void {
     }
   }
   // SIGTERM all Bun subprocesses. Bun.spawn accepts a signal name or number.
-  // On Windows every signal funnels to TerminateProcess on that one process, so its tree goes
-  // first through taskkill /T, while the parent still links the children (#2826).
+  // The tree goes first (#2826): on Windows every signal funnels to TerminateProcess on that one
+  // process, so taskkill /T runs while the parent still links the children; on POSIX a detached
+  // command (a bounded shell) leads its own process group, which is signalled whole.
   for (const proc of trackedBun) {
     try {
-      if (IS_WIN && proc.pid) killTree(proc.pid, "SIGKILL");
+      if (proc.pid) killTree(proc.pid, IS_WIN ? "SIGKILL" : "SIGTERM");
       proc.kill("SIGTERM");
     } catch {
       try {
