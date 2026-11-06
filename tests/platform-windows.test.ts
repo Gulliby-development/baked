@@ -28,6 +28,7 @@ import {
   userDataDir,
 } from "../src/core/platform/index.js";
 import { makeIpcSocketPath, shouldCleanupSocketFile } from "../src/core/platform/socket.js";
+import { exitOnInput, firstLine, pinPid, release } from "./helpers/pin-pid.js";
 import {
   extractArchive,
   extractTarGz,
@@ -625,9 +626,15 @@ describe("platform shim: process tree liveness", () => {
       const since = Date.now();
       expect(processTreeAlive(child.pid, since)).toBe(true);
       expect(tableReads).toBe(0);
-      child.kill();
-      await child.exited;
-      expect(processTreeAlive(child.pid, since)).toBe(false);
+      // A busy runner can hand the stopped child's PID to a new process, which reads as alive.
+      const unpin = pinPid(child.pid);
+      try {
+        child.kill();
+        await child.exited;
+        expect(processTreeAlive(child.pid, since)).toBe(false);
+      } finally {
+        unpin();
+      }
     } finally {
       child.kill();
       await child.exited;
@@ -656,9 +663,14 @@ describe.skipIf(!IS_WIN)("platform shim: Windows process table in process (#2839
     const since = Date.now();
     // The parent starts a long child, prints its PID and exits; Windows keeps the dead parent's
     // PID on the orphan. `detached` keeps the child out of the parent's job, which kills it on exit.
-    const script = `const c = Bun.spawn([process.execPath, "-e", "setTimeout(() => {}, 30000)"], { stdout: "ignore", stderr: "ignore", detached: true }); c.unref(); console.log(c.pid);`;
-    const parent = Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", stderr: "ignore" });
-    const orphan = Number((await new Response(parent.stdout).text()).trim());
+    // The parent waits for a line on its input before it exits, so the test opens a handle to it
+    // first: Windows does not hand a PID to a new process while a handle to the old one is open.
+    // Without it, a busy runner reused the dead parent's PID and the tree read as alive (#2900).
+    const script = exitOnInput(`const c = Bun.spawn([process.execPath, "-e", "setTimeout(() => {}, 30000)"], { stdout: "ignore", stderr: "ignore", detached: true }); c.unref(); console.log(c.pid);`);
+    const parent = Bun.spawn([process.execPath, "-e", script], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+    const orphan = Number(await firstLine(parent.stdout));
+    const unpin = pinPid(parent.pid);
+    release(parent);
     await parent.exited;
     try {
       const { processTreeAlive } = await import(`../src/core/platform/index.ts?t=${Date.now()}`);
@@ -670,6 +682,7 @@ describe.skipIf(!IS_WIN)("platform shim: Windows process table in process (#2839
       expect(processTreeAlive(parent.pid, since)).toBe(false);
       expect(tableReads).toBe(0);
     } finally {
+      unpin();
       try {
         process.kill(orphan);
       } catch {}

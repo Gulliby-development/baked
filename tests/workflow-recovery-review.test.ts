@@ -13,6 +13,7 @@ import { PlanSchema, type RunPolicy, type Spec } from "../src/core/workflows/sch
 import { newId } from "../src/core/workflows/store.js";
 import { WorkflowToolPolicy } from "../src/core/workflows/tool-policy.js";
 import type { AgentExecutor, ExecutionRequest } from "../src/core/workflows/types.js";
+import { exitOnInput, firstLine, pinPid, release } from "./helpers/pin-pid.js";
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
 const spec: Spec = { schemaVersion: 1, featureId: "fixture", revision: 1, title: "Fixture", problem: "Missing value", outcome: "Value exists", inScope: ["Create value"], outOfScope: [], assumptions: [], openQuestions: [], requirements: [{ id: "FR-001", text: "Value is ready", priority: "must", verification: "automated", sourceRefs: [] }], criteria: [{ id: "AC-001", requirementIds: ["FR-001"], given: "a workspace", when: "the task completes", then: "value is ready", method: "automated" }], dependencies: [] };
@@ -217,12 +218,16 @@ test("an orphaned descendant of an exited command still blocks recovery and leas
     service.store.prepareEffect(run.runId, attempt, "command", { checkId: "check" }, null, null),
   );
   // The command starts a detached long-lived grandchild and exits at once; the grandchild outlives it.
-  const script = `const { spawn } = require("node:child_process"); const g = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore", detached: true }); g.unref(); console.log(g.pid);`;
+  // It waits for a line on its input before it exits, so its PID is pinned first: Windows reuses
+  // a dead process's PID, and a stranger under it read as the command still running (#2901).
+  const script = exitOnInput(`const { spawn } = require("node:child_process"); const g = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore", detached: true }); g.unref(); console.log(g.pid);`);
   // A detached grandchild leaves the command's process group on POSIX; the inherited scope marker still links it.
   const scope = newId();
-  const child = Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", stderr: "ignore", env: { ...process.env, [PROCESS_SCOPE_ENV]: scope } });
+  const child = Bun.spawn([process.execPath, "-e", script], { stdin: "pipe", stdout: "pipe", stderr: "ignore", env: { ...process.env, [PROCESS_SCOPE_ENV]: scope } });
   service.store.transaction(() => service.store.recordProcess(run.runId, effectId, child.pid, scope));
-  const grandchild = Number((await new Response(child.stdout).text()).trim());
+  const grandchild = Number(await firstLine(child.stdout));
+  const unpin = pinPid(child.pid);
+  release(child);
   await child.exited;
   try {
     expect(grandchild).toBeGreaterThan(0);
@@ -241,7 +246,11 @@ test("an orphaned descendant of an exited command still blocks recovery and leas
     try { process.kill(grandchild, 0); } catch { break; }
     await Bun.sleep(100);
   }
-  expect(commandMayBeRunning(service.store, run.runId)).toBe(false);
+  try {
+    expect(commandMayBeRunning(service.store, run.runId)).toBe(false);
+  } finally {
+    unpin();
+  }
 });
 
 // Windows has no readable process environment, so a descendant there is linked only by parent PID.
