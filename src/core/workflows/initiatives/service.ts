@@ -10,12 +10,14 @@ import { canRepairRun } from "../repairable.js";
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { isTestFile } from "../../intelligence/language-traits.js";
 import { ROUTING_ARTIFACT } from "../../llm/model-routing.js";
 import { getCachedProviderStatuses } from "../../llm/provider.js";
 import { availableVendorModels } from "../../llm/vendor-models.js";
 import { matchGlob } from "../../platform/index.js";
 import { canonical, hashBytes, hashJson } from "../../specs/hash.js";
 import { specPublication } from "../../specs/render.js";
+import { acceptanceRefused } from "../acceptance-refusal.js";
 import { type BudgetLimits, budgetUsage, limitsOf } from "../budget.js";
 import { cleanInitiativePace, cleanRates } from "../clean-pace.js";
 import { autoCostTolerance } from "../cost-tolerance.js";
@@ -38,11 +40,14 @@ import {
   type TokenRange,
   tokenText,
 } from "../estimate.js";
+import { featureRowsLines } from "../feature-rows.js";
 import { forecastSamples, forecastStageCost, runForecastStages } from "../forecast-price.js";
 import { executingLeases } from "../leases.js";
+import { FEATURE_REQUEST_HEADING } from "../person-request.js";
 import { plannedRunTokens } from "../plan-cost.js";
 import { plannedStages } from "../pre-run.js";
 import { type RecoveryAdvice, recoveryAdvice } from "../remedies.js";
+import { retryRefused } from "../remedies-model.js";
 import {
   explicitModelConfig,
   reviewIndependence,
@@ -90,12 +95,19 @@ import {
 } from "./calls-pool.js";
 import { criticalPathSummary, planWidth, remainingPath } from "./critical-path.js";
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
+import {
+  boundaryKindOf,
+  documentedSurfaceRate,
+  documentsProgram,
+  requestCommands,
+} from "./documented-surface.js";
 import { type InitiativeDriveState, initiativeDriveState } from "./drive-state.js";
 import {
   calibrationLagText,
   estimateInitiative,
   type FeatureEstimate,
   type FeatureRunSample,
+  fewPathPriceOn,
   highCalibrationText,
   type InitiativeEstimate,
   type InitiativeProgress,
@@ -104,6 +116,7 @@ import {
   SIZE_TASK_FACTOR,
   testVolumeText,
 } from "./estimate.js";
+import type { FewPathShareRecord } from "./few-path-record.js";
 import { initiativePriceSamples, taskCallRate } from "./forecast.js";
 import {
   chargeHold,
@@ -117,10 +130,13 @@ import {
 } from "./growth.js";
 import {
   applySplitEdit,
+  boundaryCovers,
   boundaryPathCounts,
   type FeatureSize,
   featureDigest,
+  featureRowFiles,
   foldSkeletonFeatures,
+  hostRowCases,
   type InitiativeFeature,
   InitiativeId,
   type InitiativePlan,
@@ -170,11 +186,13 @@ import {
   affordableClause,
   affordableTokens,
   DEFAULT_EXTEND_WITHIN_DOLLARS,
+  DEFAULT_PLAN_CHARGE_EXPECTED,
   DEFAULT_STAGE_RESERVE,
   DEFAULT_TIME_POOL_GROWTH,
   dollarTokens,
   type ExtendWithinDollars,
   NO_DOLLAR_FORECAST,
+  type PlanChargeExpected,
   type PlanChargeView,
   type PlanShareDecision,
   type PlanShareInputs,
@@ -187,7 +205,7 @@ import {
   poolForecast,
   poolNoticeText,
   poolShortText,
-  roundUp,
+  splitExtension,
   type TimePoolGrowthInputs,
   type TokenPoolView,
   timePoolExtensionDecision,
@@ -199,6 +217,7 @@ import {
   type AmendmentRequest,
   amendmentAnswer,
   amendmentLines,
+  plannedFiles,
   type UpstreamSymbolGap,
   upstreamFiles,
   upstreamSymbolGaps,
@@ -268,6 +287,8 @@ export interface RerouteResult {
   /** The run model before, for a rerouted run. */
   from?: string;
   reason?: string;
+  /** What the run's reroute warned about, such as configured routes left on the old model (#2960). */
+  warnings?: string[];
 }
 
 /** How often a drive with plan ahead looks for a feature that became ready to plan (#1834). */
@@ -378,6 +399,11 @@ export interface FeatureView {
   shareUsd: number | null;
   /** Priced low and high estimates, independent of the allocated dollar share. */
   needUsd?: TokenRange | null;
+  /**
+   * What `sizing.fewPathPrice` did to its estimate (#2640): applied or not, why, and its range
+   * before and after. Absent with the knob off, once it has a run, or before approval.
+   */
+  fewPathShare?: FewPathShareRecord;
   /** The workflow feature ID of this feature's runs. */
   runFeatureId: string;
   /** The GitHub issue the feature's runs start from and their delivery closes; null without one. */
@@ -556,6 +582,25 @@ export interface InitiativeStep {
   drive: InitiativeDriveState | null;
 }
 
+/**
+ * How a blocked run's line tells a person to resolve it: the command, or, when its recorded advice
+ * offers no plain resume because one would repeat the stop (#2201, #2520), that advice's summary.
+ * A refusal of acceptance (`refused`) offers its own remedies, so the line gives its summary
+ * (#2879).
+ */
+function resolveWith(
+  run: { status: string; reason?: string | null },
+  runId: string,
+  recorded: RecoveryAdvice | undefined,
+  verb: "repair" | "resume",
+  refused = false,
+): string {
+  if (verb === "resume" && recorded && retryRefused(run, recorded))
+    return `a plain resume would repeat its stop: ${recorded.summary}`;
+  if (verb === "resume" && refused && recorded) return recorded.summary;
+  return `resolve it with baked workflow ${verb} ${runId}`;
+}
+
 /** True when a feature would start with less than the smallest share a run can work with. */
 function shareTooSmall(share: UsageView | null): boolean {
   return (
@@ -610,7 +655,20 @@ export interface ShareGateRecord {
   >;
   view: ShareGateView;
   feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd"> &
-    Partial<Pick<FeatureView, "needUsd">>;
+    Partial<Pick<FeatureView, "needUsd" | "fewPathShare">>;
+}
+
+/** The few-path share records of `features`' estimates, by feature id (#2640). */
+function fewPathShares(
+  estimated: FeatureEstimate[],
+  features: Pick<FeatureView, "id">[],
+): Record<string, FewPathShareRecord> {
+  const ids = new Set(features.map((f) => f.id));
+  return Object.fromEntries(
+    estimated.flatMap((e) =>
+      e.fewPathShare && ids.has(e.featureId) ? [[e.featureId, e.fewPathShare]] : [],
+    ),
+  );
 }
 
 /** The waiting features (no run yet) with an estimate, as the token pool reads them. */
@@ -1079,29 +1137,6 @@ export function expectedSplitUsd(
   };
 }
 
-/**
- * The pool a split's dollar cap implies (#2244): the tokens used so far plus what the dollars left
- * under the cap pay for at the price the estimate gives the waiting features (their priced low
- * dollars over their low tokens), rounded down to the pool step; null without a cap or a priced
- * waiting feature, or when the pool already holds that many. Advice only: the split approval
- * names it.
- */
-export function splitDollarPool(
-  view: {
-    budget: { used: Pick<UsageView, "tokens">; cost: Pick<CostView, "capUsd" | "spentUsd"> };
-  },
-  waiting: readonly (Pick<FeatureEstimate, "costUsd" | "tokens"> | undefined)[],
-  limitTokens: number,
-): { capUsd: number; usdPerMillion: number; tokens: number } | null {
-  const capUsd = view.budget.cost.capUsd;
-  if (capUsd === null) return null;
-  const usdPerMillion = splitDollarPrice(waiting);
-  if (usdPerMillion === null) return null;
-  const left = tokensForUsd(Math.max(0, capUsd - view.budget.cost.spentUsd), usdPerMillion);
-  const tokens = dollarTokens(left === null ? null : view.budget.used.tokens + left, limitTokens);
-  return tokens === null ? null : { capUsd, usdPerMillion, tokens };
-}
-
 /** The estimate's dollars per million tokens for the waiting features, at their lows (#2244). */
 function splitDollarPrice(
   waiting: readonly (Pick<FeatureEstimate, "costUsd" | "tokens"> | undefined)[],
@@ -1242,6 +1277,21 @@ export function planChargedGate(view: ShareGateView): ShareGateView | null {
       f.share === null ? f : { ...f, share: { ...f.share, tokens: shares.get(f.id) ?? 0 } },
     ),
   };
+}
+
+/**
+ * The share gate with the open runs' unmeasured plans held at their expected need instead of
+ * their high end (`budget.planCharge.expected`, `workflows.planChargeExpected: shadow`, #2534):
+ * `planChargedGate` on that charge. Null without one, or while the pool does not hold the plan
+ * charge (`initiative-plan-charge` in shadow), where the gate compares the limits instead.
+ */
+export function expectedChargedGate(view: ShareGateView): ShareGateView | null {
+  const charge = view.budget.planCharge;
+  if (!charge?.expected || charge.mode !== "enforce") return null;
+  return planChargedGate({
+    ...view,
+    budget: { ...view.budget, planCharge: { ...charge.expected, mode: "shadow" } },
+  });
 }
 
 /**
@@ -1412,6 +1462,12 @@ const add = (a: UsageView, b: UsageView): UsageView => ({
  */
 const DRIVES = new WeakMap<NativeWorkflowService, Map<string, AbortController>>();
 
+/**
+ * The plan-share holds already asked again in this process (#2523), by workflow service, keyed
+ * `initiative:run:measuredFeatures`: the gate is asked again once per accepted feature.
+ */
+const PLAN_SHARE_REASKS = new WeakMap<NativeWorkflowService, Set<string>>();
+
 export class InitiativeService {
   readonly store: InitiativeStore;
   private readonly active: Map<string, AbortController>;
@@ -1568,7 +1624,7 @@ export class InitiativeService {
             : `The split cannot be edited while the initiative is ${row.status}`,
         );
       const latest = this.store.plan(this.store.revision(id, row.plan_revision));
-      const edited = applySplitEdit(latest, parsed);
+      const edited = applySplitEdit(latest, parsed, row.prompt);
       // Features the edit left as they were keep their settings, also those of a plan stored
       // before features had workflows, so their runs are not superseded; the others are fitted.
       const before = new Map(latest.features.map((f) => [f.id, featureDigest(f)] as const));
@@ -1819,7 +1875,12 @@ export class InitiativeService {
         { model },
         plan,
       );
-      const result: RerouteResult = { ...run, result: "rerouted", from: plan.before.runModel };
+      const result: RerouteResult = {
+        ...run,
+        result: "rerouted",
+        from: plan.before.runModel,
+        ...(plan.after.warnings?.length ? { warnings: plan.after.warnings } : {}),
+      };
       // The switch stands even when the run cannot continue yet; its next drive reports why.
       if (resume && after.status === "blocked")
         await this.workflows
@@ -1968,6 +2029,7 @@ export class InitiativeService {
       this.noteCallsForecast(view, null);
       this.notePlanCharge(view, null);
       this.noteStoredLimitResumes(view);
+      if (this.reaskPlanShare(id, () => view)) view = this.view(id);
       for (;;) {
         const row = this.store.get(id);
         const ready = this.byPath(
@@ -2286,6 +2348,7 @@ export class InitiativeService {
       throw new WorkflowFault("ARTIFACT_MISSING", "The decompose run has no initiative plan");
     const written = InitiativePlanSchema.parse(JSON.parse(state.initiativePlan));
     const settings = this.store.settings(row);
+    const request = state.requestText || state.prompt;
     // Skeleton lines the project's formatter would sort get a blank line before them, so the
     // host-written content stays a fixed point of the format check (#2222); in shadow (absent)
     // the layout is only recorded.
@@ -2299,11 +2362,12 @@ export class InitiativeService {
     // A feature that is only skeleton runs inside a dependent instead of a run of its own (#1662).
     const folded = settings.keepFeatures
       ? { plan: decomposed, merged: [] }
-      : foldSkeletonFeatures(decomposed);
+      : foldSkeletonFeatures(decomposed, request);
     const siblings = settings.keepFeatures
       ? { plan: folded.plan, merged: [] }
       : mergeSmallSiblings(folded.plan, {
           byDependents: settings.splitCriticalPath || settings.basePolicy.criticalPath === "split",
+          request,
         });
     const floored = { plan: siblings.plan, merged: [...folded.merged, ...siblings.merged] };
     const proposed = floored.plan;
@@ -2314,7 +2378,7 @@ export class InitiativeService {
     let unavailable: string[] = [];
     try {
       const ownership = testOwnershipProblems(proposed, {
-        request: state.requestText || state.prompt,
+        request,
         mode: rowOwnerMode,
       });
       if (ownership.length) throw new WorkflowFault("OUTPUT_INVALID", ownership.join("\n"));
@@ -2362,8 +2426,7 @@ export class InitiativeService {
           ...(unavailable.length ? { unavailable } : {}),
         });
       // Enforced, testOwnershipProblems refused the split above; in shadow it is recorded (#2487).
-      if (rowOwnerMode !== "enforce")
-        this.noteRowOwnerWouldStop(id, plan, state.requestText || state.prompt, rowOwnerMode);
+      if (rowOwnerMode !== "enforce") this.noteRowOwnerWouldStop(id, plan, request, rowOwnerMode);
     });
   }
 
@@ -2385,7 +2448,7 @@ export class InitiativeService {
         reason: "initiative-row-owner",
         mode,
         featureId: found.owner,
-        key: `row-owner-r${revision}-${found.path}`,
+        key: `row-owner-r${revision}-${found.path}${found.shape === "row-split" ? `-split-${found.owner}-${found.needs}` : ""}`,
         summary: found.problem,
         inputs: {
           path: found.path,
@@ -2394,6 +2457,7 @@ export class InitiativeService {
           row: found.row,
           literal: found.literal,
           rows: found.rows,
+          ...(found.shape === "row-split" ? { shape: found.shape } : {}),
         },
       });
   }
@@ -2415,7 +2479,11 @@ export class InitiativeService {
         .eventsOfType(id, "feature.share_gate")
         .filter((p) => (p as ShareGateRecord | null)?.featureId === feature.id)
         .at(-1) as ShareGateRecord | undefined;
-      if (last?.verdict === "park") return false;
+      // A park held for `no measurement` (#2471) is decided again once a feature is measured, the
+      // moment the hold lifts (#2523); the new record carries no hold, so it is decided once.
+      const lifted =
+        last?.poolGrowth?.hold === "no measurement" && view.budget.cost.measuredFeatures > 0;
+      if (last?.verdict === "park" && !lifted) return false;
     }
     const gateView = shareGateViewOf(view);
     const mode = this.extendWithinDollars();
@@ -2453,6 +2521,8 @@ export class InitiativeService {
         need: feature.need,
         shareUsd: feature.shareUsd,
         needUsd: feature.needUsd ?? null,
+        // The few-path share its need was priced with (#2640), so a bench round can count it.
+        ...(feature.fewPathShare ? { fewPathShare: feature.fewPathShare } : {}),
       },
     };
     this.store.emit(id, "feature.share_gate", record);
@@ -2462,6 +2532,7 @@ export class InitiativeService {
       this.noteCallsForecast(view, feature.id);
     }
     this.notePlanCharge(view, { view: gateView, feature, verdict });
+    if (verdict === "park") this.noteExpectedCharge(gateView, feature);
     if (!growth?.wouldExtend) return false;
     if (mode === "on") return this.extendWithinDollarsOn(gateView, feature.id, growth);
     this.noteWouldExtend(gateView, feature.id, growth);
@@ -2532,6 +2603,11 @@ export class InitiativeService {
   /** `workflows.extendWithinDollars`: whether a token park records the host's extension (#2042). */
   private extendWithinDollars(): ExtendWithinDollars {
     return this.workflows.config.workflows?.extendWithinDollars ?? DEFAULT_EXTEND_WITHIN_DOLLARS;
+  }
+
+  /** Which plan point the pool holds unmeasured plans at (`workflows.planChargeExpected`, #2534). */
+  private planChargeExpected(): PlanChargeExpected {
+    return this.workflows.config.workflows?.planChargeExpected ?? DEFAULT_PLAN_CHARGE_EXPECTED;
   }
 
   /**
@@ -2763,6 +2839,53 @@ export class InitiativeService {
       wouldStart,
       wouldPark,
       summary: `Holding the open runs with a sized plan at their plan's need ${amount(charge.releasedTokens)}: ${tokenText(charged.budget.remaining.tokens)} of the ${tokenText(limit)} pool would remain and ${gate.feature.id} would ${wouldStart ? "start" : "not start"}.`,
+    });
+  }
+
+  /**
+   * `workflows.planChargeExpected: shadow` at a share gate that parks (#2534): when holding the
+   * open runs' unmeasured plans at their expected need instead of their high end
+   * (`budget.planCharge.expected`) would start the feature, a `decision.would_release` event with
+   * `point: "expected"` records it, once per feature. Nothing changes: the pool keeps the high end.
+   * R83 pnmforge parked geometry at minute 36 on charges of 18.98M of the 19.6M pool for runs that
+   * had used 4.7M, and it started at minute 66.
+   */
+  private noteExpectedCharge(gateView: ShareGateView, feature: FeatureView): void {
+    const charge = gateView.budget.planCharge;
+    const expected = charge?.expected;
+    if (!charge || !expected || charge.mode !== "enforce") return;
+    const id = gateView.initiativeId;
+    const key = `expected-start-${feature.id}`;
+    const seen = this.store
+      .eventsOfType(id, "decision.would_release")
+      .some((p) => (p as { key?: string } | null)?.key === key);
+    if (seen) return;
+    const charged = expectedChargedGate(gateView);
+    if (!charged) return;
+    const own = charged.features.find((f) => f.id === feature.id);
+    if (shareShortfall(charged, { ...feature, share: own?.share ?? null })) return;
+    const freed = charge.planCommittedTokens - expected.planCommittedTokens;
+    const limit = gateView.budget.limits?.maxTotalTokens ?? 0;
+    this.store.emit(id, "decision.would_release", {
+      reason: "initiative-plan-charge",
+      mode: "shadow",
+      point: "expected",
+      key,
+      featureId: feature.id,
+      ratio: expected.ratio,
+      planCommittedTokens: charge.planCommittedTokens,
+      expectedCommittedTokens: expected.planCommittedTokens,
+      releasedTokens: freed,
+      wouldStart: true,
+      wouldPark: false,
+      runs: expected.runs.map(({ featureId, runId, usedTokens, chargeTokens }) => ({
+        featureId,
+        runId,
+        usedTokens,
+        chargeTokens,
+        highTokens: charge.runs.find((r) => r.runId === runId)?.chargeTokens ?? chargeTokens,
+      })),
+      summary: `Holding the open runs' unmeasured plans at their expected need instead of their high end frees ${tokenText(freed)} tokens: ${tokenText(charged.budget.remaining.tokens)} of the ${tokenText(limit)} pool would remain and ${feature.id} would start (workflows.planChargeExpected: on).`,
     });
   }
 
@@ -3422,7 +3545,9 @@ export class InitiativeService {
    * `on` grows the pool (a `budget.extended` by `host`, reason `extend-within-dollars`, `gate:
    * "plan-share"`) and the run's ceiling together and returns true, so the scheduler sizes the plan
    * again; `off`, or a pool the cap cannot grow, records an `initiative-plan-share` would-stop with
-   * the extend that answers it, and the run goes on under assume as before. Once per run and ceiling.
+   * the extend that answers it, and the run goes on under assume as before. Once per run and ceiling;
+   * a would-stop held for `no measurement` is asked again when a feature is accepted (#2523,
+   * `reaskPlanShare`).
    */
   planShareGate(runId: string): boolean {
     if (!this.store.available()) return false;
@@ -3452,12 +3577,37 @@ export class InitiativeService {
       baseCeilingTokens: settings.basePolicy.sizing?.maxRunTokens ?? null,
       plan,
       planRatio: charge?.ratio ?? null,
+      ...(charge?.point ? { planPoint: charge.point } : {}),
       heldTokens: own ? own.chargeTokens : Math.max(used, policy.maxTotalTokens),
       othersUsedTokens: this.othersUsedTokens(id, runId),
       pool,
     };
     const decision = planShareDecision(inputs);
     if (!decision.over) return false;
+    // `planChargeExpected: shadow` (#2534): what the gate decides with the plans at their expected
+    // need, recorded beside the decision it makes; R82 tinyflate's deflate would not have asked.
+    const atExpected = charge?.expected;
+    const ownExpected =
+      atExpected && charge?.mode === "enforce"
+        ? atExpected.runs.find((r) => r.runId === runId)
+        : null;
+    const expectedDecision = atExpected
+      ? planShareDecision({
+          ...inputs,
+          planPoint: "expected",
+          ...(ownExpected ? { heldTokens: ownExpected.chargeTokens } : {}),
+        })
+      : null;
+    const expected =
+      expectedDecision && expectedDecision.needTokens !== decision.needTokens
+        ? {
+            expected: {
+              needTokens: expectedDecision.needTokens,
+              over: expectedDecision.over,
+              wouldExtend: expectedDecision.over && expectedDecision.wouldExtend,
+            },
+          }
+        : {};
     const mode = this.extendWithinDollars();
     const key = `${decision.reason}-${runId}-${ceiling}`;
     const seen = (type: string) =>
@@ -3476,6 +3626,7 @@ export class InitiativeService {
           byTokens: decision.byTokens,
           ceilingTokens: decision.ceilingTokens,
           needTokens: decision.needTokens,
+          ...expected,
           summary: `${decision.why} ${featureId} would run its tasks within its plan.`,
           inputs,
         });
@@ -3483,8 +3634,9 @@ export class InitiativeService {
     }
     const stop = stopMode(settings.basePolicy, "initiative-plan-share");
     if (stop === "enforce" || seen("decision.would_stop")) return false;
-    // `on` waits for the first accepted feature's dollar forecast, as at a park (#2471).
-    const hold = mode === "on" ? poolGrowthHold(decision.extension, view.budget.cost) : null;
+    // `on` waits for the first accepted feature's dollar forecast, as at a park (#2471); `shadow`
+    // records the same hold, and both are asked again once a feature is accepted (#2523).
+    const hold = mode !== "off" ? poolGrowthHold(decision.extension, view.budget.cost) : null;
     this.store.emit(id, "decision.would_stop", {
       reason: "initiative-plan-share",
       mode: stop,
@@ -3492,7 +3644,7 @@ export class InitiativeService {
       runId,
       key,
       ...(hold ? { hold } : {}),
-      summary: `${decision.why} ${featureId} would park before its tasks with the extend that answers it; it goes on under assume within its ${ceiling} tokens.${hold ? ` ${FIRST_WAVE_HOLD_TEXT}` : ""}`,
+      summary: `${decision.why} ${featureId} would park before its tasks with the extend that answers it; it goes on under assume within its ${ceiling} tokens.${hold && mode === "on" ? ` ${FIRST_WAVE_HOLD_TEXT}` : ""}`,
       remedy: {
         action: "extend",
         initiativeId: id,
@@ -3500,9 +3652,62 @@ export class InitiativeService {
         ...(decision.suggestedUsd !== null ? { suggestedUsd: decision.suggestedUsd } : {}),
       },
       needTokens: decision.needTokens,
+      ...expected,
       inputs,
     });
     return false;
+  }
+
+  /**
+   * The plan-time share gate asked again (#2523) for each open feature run whose
+   * `initiative-plan-share` would-stop held for `no measurement` and that no `plan-share`
+   * extension answered since, once per accepted feature: the hold lifts when the first feature is
+   * measured, and nothing else asks the gate of a run already past its plan sizing (the first
+   * wave's planned-ahead starts). With a measured dollar forecast `on` grows the pool and the
+   * run's ceiling together and `shadow` records its `decision.would_extend`. R82 tinyflate's
+   * deflate held at 22:21 and was never asked again after core was accepted at 22:25. True when
+   * the pool grew.
+   */
+  private reaskPlanShare(id: string, view: () => InitiativeView): boolean {
+    if (this.extendWithinDollars() === "off") return false;
+    const answered = new Set(
+      [
+        ...this.store
+          .eventsOfType(id, "decision.would_extend")
+          .filter((p) => (p as { reason?: string } | null)?.reason === "plan-share"),
+        ...this.store
+          .eventsOfType(id, "budget.extended")
+          .filter((p) => (p as { gate?: string } | null)?.gate === "plan-share"),
+      ].map((p) => (p as { runId?: string }).runId),
+    );
+    const held = new Set(
+      this.store.eventsOfType(id, "decision.would_stop").flatMap((p) => {
+        const stop = p as { reason?: string; hold?: string; runId?: unknown } | null;
+        return stop?.reason === "initiative-plan-share" &&
+          stop.hold === "no measurement" &&
+          typeof stop.runId === "string" &&
+          !answered.has(stop.runId)
+          ? [stop.runId]
+          : [];
+      }),
+    );
+    if (!held.size) return false;
+    const measured = view().budget.cost.measuredFeatures;
+    if (measured === 0) return false;
+    const asked = PLAN_SHARE_REASKS.get(this.workflows) ?? new Set<string>();
+    PLAN_SHARE_REASKS.set(this.workflows, asked);
+    let grew = false;
+    for (const runId of held) {
+      const key = `${id}:${runId}:${measured}`;
+      if (asked.has(key)) continue;
+      asked.add(key);
+      try {
+        grew = this.planShareGate(runId) || grew;
+      } catch {
+        // As at the scheduler's ask: without the gate the run goes on as sized.
+      }
+    }
+    return grew;
   }
 
   /**
@@ -3677,6 +3882,7 @@ export class InitiativeService {
       { baseCommit, baseFiles: this.upstreamSpecs(id, feature, []) },
     );
     this.store.emit(id, "feature.released", { featureId, runId, baseCommit });
+    this.reaskPlanShare(id, () => this.view(id));
     await this.checkUpstreamSymbols(runId, feature, this.approvedPlan(row), baseCommit);
     return true;
   }
@@ -3715,7 +3921,8 @@ export class InitiativeService {
     plan: InitiativePlan | null,
     baseCommit: string,
   ): Promise<UpstreamSymbolGap[]> {
-    const spec = this.workflows.store.state(runId).spec;
+    const state = this.workflows.store.state(runId);
+    const spec = state.spec;
     if (!spec || !plan) return [];
     const files = upstreamFiles(plan, feature);
     if (!files.length) return [];
@@ -3725,7 +3932,27 @@ export class InitiativeService {
         return { ...file, text: shown.code === 0 ? shown.stdout : null };
       }),
     );
-    return upstreamSymbolGaps(spec, upstream, feature.boundary.paths);
+    // The files the run and the base know besides the plan's paths (#2619): host-written files,
+    // task writes, and the base's test files a boundary glob covers (`test/**` holds
+    // `test/support/row_case.ex`). Source files a glob covers stay out: `src/**` would make every
+    // stem of the tree a module and hide real gaps.
+    const tree = await git(this.workflows.workspace, [
+      "ls-tree",
+      "-r",
+      "-z",
+      "--name-only",
+      baseCommit,
+    ]);
+    const known = [
+      ...(state.hostFiles ?? []).map((file) => file.path),
+      ...[state.graph, state.rootGraph].flatMap(
+        (graph) => graph?.tasks.flatMap((task) => task.writes.map((write) => write.path)) ?? [],
+      ),
+      ...(tree.code === 0 ? tree.stdout.split("\0").filter(Boolean) : []).filter(
+        (path) => isTestFile(path) && plan.features.some((f) => boundaryCovers(f, path)),
+      ),
+    ];
+    return upstreamSymbolGaps(spec, upstream, feature.boundary.paths, plannedFiles(plan, known));
   }
 
   /** The amendment requests of the approved split (#2157), oldest first. */
@@ -3967,13 +4194,18 @@ export class InitiativeService {
    * and a token range per feature and in total, from this project's run history. Null before a
    * split exists.
    */
-  estimate(id: string): InitiativeEstimate | null {
+  /**
+   * The estimate of the initiative's split. A caller that just took `view(id)` and changed nothing
+   * since passes it, so its accepted features are not computed a second time (the replay corpus
+   * takes both at every rewound start).
+   */
+  estimate(id: string, view?: Pick<InitiativeView, "features">): InitiativeEstimate | null {
     const row = this.store.get(id);
     const latest = row.plan_revision ? this.store.revision(id, row.plan_revision) : null;
     const plan = this.approvedPlan(row) ?? (latest ? this.store.plan(latest) : null);
     if (!plan) return null;
-    const accepted = this.view(id)
-      .features.filter((f) => f.state === "accepted")
+    const accepted = (view ?? this.view(id)).features
+      .filter((f) => f.state === "accepted")
       .map((f) => f.id);
     // Asked for rarely and right after runs finish, so it reads the store fresh.
     return this.estimateOf(row, plan, new Set(accepted), 0);
@@ -4036,10 +4268,15 @@ export class InitiativeService {
     const settings = this.store.settings(row);
     const facts = this.workflowFacts(settings);
     const models = settings.model ? [settings.model] : [];
-    const counts = boundaryPathCounts(plan, row.prompt);
+    // The prescribed row files the host writes with no session are neither paths nor test cases
+    // a session pays for (#2640), as task-plan sizing prices their tasks at nothing (#2633).
+    const counts = boundaryPathCounts(plan, row.prompt, settings.basePolicy);
+    const hostRows = hostRowCases(plan, row.prompt, settings.basePolicy);
     const language = planLanguage(plan);
+    const commands = requestCommands(row.prompt).length;
     const features = plan.features.map((feature) => {
       const workflowId = featureWorkflowId(settings, feature);
+      const testCases = Math.max(0, (feature.testCases ?? 0) - (hostRows.get(feature.id) ?? 0));
       return {
         id: feature.id,
         title: feature.title,
@@ -4048,7 +4285,9 @@ export class InitiativeService {
         stages: (facts(workflowId)?.stages ?? []).map((stage) => ({ ...stage, models })),
         ...counts.get(feature.id),
         dependsOn: feature.dependsOn,
-        ...(feature.testCases ? { testCases: feature.testCases } : {}),
+        ...(testCases ? { testCases } : {}),
+        ...(commands && documentsProgram(feature) ? { documentedCommands: commands } : {}),
+        ...boundaryKindOf(feature),
       };
     });
     const history = estimateHistory(
@@ -4076,16 +4315,17 @@ export class InitiativeService {
       if (planned) entry.planned = planned;
       spent[link.feature_id] = entry;
     }
+    const samples = [
+      ...featureRunSamples(this.store, this.workflows.store, history),
+      ...sharedFeatureRunSamples(
+        historyStorePaths(this.workflows.workspace, settings.basePolicy),
+        history,
+      ),
+    ].filter((s) => !own.has(s.runId));
     const estimate = estimateInitiative({
       features,
       history,
-      samples: [
-        ...featureRunSamples(this.store, this.workflows.store, history),
-        ...sharedFeatureRunSamples(
-          historyStorePaths(this.workflows.workspace, settings.basePolicy),
-          history,
-        ),
-      ].filter((s) => !own.has(s.runId)),
+      samples,
       maxTotalTokens: this.limits(row).maxTotalTokens,
       progress: {
         features: spent,
@@ -4096,12 +4336,23 @@ export class InitiativeService {
       ...(settings.basePolicy?.sizing?.recencyHalfLife
         ? { recencyHalfLife: settings.basePolicy.sizing.recencyHalfLife }
         : {}),
+      fewPathPrice: fewPathPriceOn(settings.basePolicy?.sizing),
       // Read only when the request demands a test volume: the sizing history opens every store.
       ...(features.some((f) => f.testCases)
         ? {
             testCaseRate: testCaseRate(
               sizingHistory(this.workflows.workspace, settings.basePolicy),
             ),
+          }
+        : {}),
+      // A documentation feature's listed commands (#2569): priced with `sizing.documentedSurface`,
+      // recorded on the feature's estimate in shadow otherwise.
+      ...(features.some((f) => f.documentedCommands)
+        ? {
+            documentedSurface: {
+              rate: documentedSurfaceRate(samples),
+              mode: settings.basePolicy?.sizing?.documentedSurface ? "on" : "shadow",
+            },
           }
         : {}),
     });
@@ -4152,6 +4403,8 @@ export class InitiativeService {
       feature.need = needs.get(feature.id) ?? null;
       feature.needUsd = estimate.features.find((f) => f.featureId === feature.id)?.costUsd ?? null;
     }
+    // What `sizing.fewPathPrice` did to each waiting feature (#2640); none with the knob set off.
+    const fewPathShare = fewPathShares(estimate.features, waiting);
     const cost = this.costView(row, settings, plan, runIds, used, accepted, estimate, null);
     const shares = splitShares(waiting, remaining, cost.remainingUsd);
     for (const [index, feature] of waiting.entries()) Object.assign(feature, shares[index]);
@@ -4177,16 +4430,16 @@ export class InitiativeService {
     const capTokens = left === null ? null : used.tokens + left;
     const limit = limits.maxTotalTokens;
     const forecast = Math.max(estimate.expectedTokens, used.tokens);
-    const startsAll = committed.tokens + total(lows);
-    // The cap's pool when it also starts every waiting feature at its low, else the expected
-    // forecast: the lows alone are no pool (R81 ratdec's were 1.8x over and 2.7x under).
-    const byDollars = dollarTokens(capTokens, limit);
-    const suggestedTokens =
-      byDollars !== null && byDollars >= startsAll
-        ? byDollars
-        : forecast > limit || startsAll > limit
-          ? roundUp(Math.max(forecast, startsAll))
-          : null;
+    // The one amount of the split approval (#2525): the high end with margin, held to what the
+    // cap pays for; none when the pool covers the high end (R82 slotprompt's 14.2M pool against
+    // 12.5M of highs was still told to extend to the cap's 23.5M).
+    const extension = splitExtension({
+      limitTokens: limit,
+      highTokens: estimate.tokens.high,
+      withMargin: estimate.withMargin,
+      capTokens,
+    });
+    const suggestedTokens = extension?.tokens ?? null;
     const pool = tokenPool({
       initiativeId: row.id,
       limitTokens: limit,
@@ -4238,6 +4491,7 @@ export class InitiativeService {
           }
         : null,
       suggestedTokens,
+      ...(Object.keys(fewPathShare).length ? { fewPathShare } : {}),
       // The post-approval forecast notice's sentence, so both read alike (#2042, #2244).
       notice:
         suggestedTokens === null
@@ -4255,9 +4509,10 @@ export class InitiativeService {
                 usdPerMillion: price === null ? null : Math.round(price * 100) / 100,
               },
               suggestedTokens,
-              byDollars: suggestedTokens === byDollars,
+              byDollars: extension?.byDollars === true,
               exactUsdPerMillion: price,
               cost,
+              highTokens: estimate.tokens.high,
             }),
     };
   }
@@ -4304,6 +4559,11 @@ export class InitiativeService {
     for (const feature of waitingForRun) {
       feature.need = needs?.get(feature.id) ?? null;
       feature.needUsd = estimate?.features.find((f) => f.featureId === feature.id)?.costUsd ?? null;
+    }
+    const fewPathShare = estimate ? fewPathShares(estimate.features, waitingForRun) : {};
+    for (const feature of waitingForRun) {
+      const record = fewPathShare[feature.id];
+      if (record) feature.fewPathShare = record;
     }
     const cost = this.costView(row, settings, plan, runIds, used, accepted, estimate, charge);
     const shares = splitShares(waitingForRun, remaining, cost.remainingUsd);
@@ -4671,21 +4931,30 @@ export class InitiativeService {
         ? "until its plan is sized"
         : "until the run ends";
     const reservations = ` The share gate holds a started feature's run limit (its start share) against the pool ${held}, not what it uses: an extension to the high end is for those reservations, the ${tokenText(estimate.expectedTokens)} above is what it expects to be used.`;
-    // The pool the dollar cap implies at the estimate's price for the waiting features (#2244): R71
-    // xmlvet's $30 paid for about 35M tokens against a 30.0M pool, the approval said nothing and
-    // the pool stopped every feature for 19.6 minutes with dollars left.
-    const byDollars = splitDollarPool(
-      view,
-      waiting.map((f) => estimate.features.find((e) => e.featureId === f.id)),
-      limit,
-    );
+    // One amount answers the token warning (#2525): the budget preview's (`splitExtension`), the
+    // high end with margin held to what the dollar cap pays for. R82 tinyflate extended to the
+    // preview's 19.6M, what its $25 cap paid for, and was then told to extend to 29.6M "including
+    // margin", 50 percent above what the unchanged cap pays for.
+    const preview = view.budget.preview;
+    const suggestedPool = preview?.suggestedTokens ?? null;
+    const capPool = preview ? dollarTokens(preview.capTokens, preview.limitTokens) : null;
+    // The pool the dollar cap implies (#2244): R71 xmlvet's $30 paid for about 35M tokens against
+    // a 30.0M pool, the approval said nothing and the pool stopped every feature for 19.6 minutes
+    // with dollars left.
+    const byDollars = suggestedPool !== null && capPool === suggestedPool;
+    const capUsd = view.budget.cost.capUsd;
+    const unpaid =
+      suggestedPool === null && preview?.capTokens != null && capUsd !== null
+        ? ` The ${usd(capUsd)} cap pays for about ${tokenText(preview.capTokens)} tokens${preview.usdPerMillion !== null ? ` at ${usd(preview.usdPerMillion)} per million` : ""}, no more than the shared pool: a larger pool would go unpaid at that price, so approve with this risk or raise the dollar budget.`
+        : "";
     const tokenWarning =
       estimate.tokens.high > limit
-        ? `The estimate expects about ${tokenText(estimate.expectedTokens)} tokens${estimate.expectedTokens <= limit ? ", within" : ", above"} the shared budget (${tokenText(limit)}); its high end (${tokenText(estimate.tokens.high)} tokens; ${highCalibrationText(estimate.highCalibration)}) exceeds the shared budget.${calibrationLagText(estimate)}${reservations}${byDollars ? "" : ` Consider extending to ${estimate.withMargin} tokens, including margin, before approving, or approve with this risk.`}`
+        ? `The estimate expects about ${tokenText(estimate.expectedTokens)} tokens${estimate.expectedTokens <= limit ? ", within" : ", above"} the shared budget (${tokenText(limit)}); its high end (${tokenText(estimate.tokens.high)} tokens; ${highCalibrationText(estimate.highCalibration)}) exceeds the shared budget.${calibrationLagText(estimate)}${reservations}${unpaid}`
         : "";
-    const dollarPoolWarning = byDollars
-      ? `The ${usd(byDollars.capUsd)} cap pays for about ${tokenText(byDollars.tokens)} tokens at ${usd(byDollars.usdPerMillion)} per million, the estimate's price for the waiting features, more than the shared pool (${tokenText(limit)}): the pool, not the dollar cap, would stop features first. Consider extending the pool to ${byDollars.tokens} tokens, what the cap pays for, before approving, or approve with this risk.`
-      : "";
+    const dollarPoolWarning =
+      byDollars && capUsd !== null
+        ? `The ${usd(capUsd)} cap pays for about ${tokenText(suggestedPool)} tokens${preview?.usdPerMillion != null ? ` at ${usd(preview.usdPerMillion)} per million` : ""}, less than the high end with margin and more than the shared pool (${tokenText(limit)}): the pool, not the dollar cap, would stop features first.`
+        : "";
     // The lows alone read as what the split costs: R70 evalpin extended to their $30.11 sum while
     // its seven features were expected to cost about $36.5 (#2218).
     const expected = dollarWarnings.length
@@ -4704,7 +4973,6 @@ export class InitiativeService {
       .join(" ");
     // The text ends with the budget preview's extend command (#2502), the forecast notice's own
     // sentence, so the one extend before approval is exact rather than a guess.
-    const preview = view.budget.preview;
     const notice = preview?.notice ? ` ${preview.notice}` : "";
     if (!warning)
       return preview?.notice && preview.suggestedTokens !== null
@@ -4714,18 +4982,11 @@ export class InitiativeService {
             suggestedTokens: preview.suggestedTokens,
           })
         : message;
-    // The amounts that answer the warnings (#2042): the token estimate with its margin, and a
-    // dollar cap raised by what the warned shares miss of their low estimates.
-    const capUsd = view.budget.cost.capUsd;
+    // The amounts that answer the warnings (#2042): the preview's one pool (#2525), and a dollar
+    // cap raised by what the warned shares miss of their low estimates.
     const suggestedUsd =
       !tokenWarning && dollarGap > 0 && capUsd !== null ? centsUp(capUsd + dollarGap) : null;
-    // With a dollar cap that pays for more than the pool, the pool it implies: tokens above it
-    // would go unpaid at that price, and below it the pool stops features first (#2244).
-    const suggestedTokens = byDollars
-      ? byDollars.tokens
-      : tokenWarning
-        ? estimate.withMargin
-        : null;
+    const suggestedTokens = tokenWarning ? suggestedPool : null;
     const amount =
       suggestedTokens === null
         ? ` --budget-usd ${suggestedUsd ?? "N"}`
@@ -4782,7 +5043,7 @@ export class InitiativeService {
           return action(
             "blocked",
             recoveryAdvice(
-              `The decompose run is blocked (${run.reason}); resolve it with baked workflow resume ${run.runId}`,
+              `The decompose run is blocked (${run.reason}); ${resolveWith(run, run.runId, recorded, "resume", acceptanceRefused(this.workflows.store, run.runId))}`,
               `The decompose run is blocked (${run.reason}).${recorded ? ` ${recorded.summary}` : ""}`,
               ...(recorded?.remedies ?? [{ action: "resume" as const, runId: run.runId }]),
             ),
@@ -5067,10 +5328,11 @@ export class InitiativeService {
             ? stopDetail(this.workflows.store, link.run_id)
             : null;
         const deadline = this.deadlineExtension(row.id, link.run_id);
+        const recorded = stopRecovery(this.workflows.store, link.run_id);
         view.blockers = [
           deadline
             ? `run ${link.run_id} is blocked (${run.reason}): ${deadline.message}`
-            : `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; resolve it with baked workflow ${canRepairRun(run) ? "repair" : "resume"} ${link.run_id}`,
+            : `run ${link.run_id} is blocked (${run.reason})${refusal ? `: ${refusal.split("\n")[0]?.slice(0, 600)}` : ""}; ${resolveWith(run, link.run_id, recorded, canRepairRun(run) ? "repair" : "resume", acceptanceRefused(this.workflows.store, link.run_id))}`,
         ];
         const wait = costRefusalWaitOf(this.workflows.store, link.run_id);
         if (wait)
@@ -5080,7 +5342,8 @@ export class InitiativeService {
             stageId: wait.stageId,
             mode: wait.mode,
           };
-        const recorded = stopRecovery(this.workflows.store, link.run_id);
+        // A stop whose resume repeats it records advice without one (#2201, #2520); only a stop
+        // that recorded none falls back to the plain resume.
         const remedies = recorded?.remedies ?? [{ action: "resume" as const, runId: link.run_id }];
         view.recovery = recoveryAdvice(
           view.blockers[0] ?? "",
@@ -5476,13 +5739,25 @@ export class InitiativeService {
           limitCommittedUsd: runIds.reduce((sum, runId) => sum + this.committedUsd(runId), 0),
         }
       : undefined;
-    return planCharge(
-      stopMode(settings.basePolicy, "initiative-plan-charge"),
-      estimate.planCalibration.ratio,
+    const mode = stopMode(settings.basePolicy, "initiative-plan-charge");
+    const ratio = estimate.planCalibration.ratio;
+    const expected = this.planChargeExpected();
+    const charge = planCharge(
+      mode,
+      ratio,
       limitCommitted,
       runs,
       dollars,
+      expected === "on" ? "expected" : "high",
     );
+    // `shadow` (#2534): the same charge at the plans' expected need, beside the one the pool holds.
+    if (!charge || expected !== "shadow") return charge;
+    const atExpected = planCharge(mode, ratio, limitCommitted, runs, dollars, "expected");
+    const differs =
+      atExpected !== null &&
+      (atExpected.planCommittedTokens !== charge.planCommittedTokens ||
+        (atExpected.usd?.planCommittedUsd ?? 0) !== (charge.usd?.planCommittedUsd ?? 0));
+    return differs ? { ...charge, expected: atExpected } : charge;
   }
 
   private limits(row: InitiativeRow): BudgetLimitsValue {
@@ -5641,6 +5916,7 @@ function featureRunSamples(
         language: string | null;
       }
     >();
+    const commands = requestCommands(row.prompt).length;
     return initiatives.links(row.id).flatMap((link) => {
       const run = runs.get(link.run_id);
       if (run?.status !== "completed") return [];
@@ -5648,7 +5924,7 @@ function featureRunSamples(
         const plan = initiatives.plan(initiatives.revision(row.id, link.plan_revision));
         plans.set(link.plan_revision, {
           plan,
-          counts: boundaryPathCounts(plan, row.prompt),
+          counts: boundaryPathCounts(plan, row.prompt, settings.basePolicy),
           language: planLanguage(plan),
         });
       }
@@ -5672,6 +5948,7 @@ function featureRunSamples(
           ...(source === "shared" ? { source } : {}),
           startedAt: link.created_at,
           ...(revision?.language ? { language: revision.language } : {}),
+          ...(commands && documentsProgram(feature) ? { documentedCommands: commands } : {}),
         },
       ];
     });
@@ -6090,6 +6367,8 @@ export function featurePrompt(
       : "The split names no paths for this feature; stay within the boundary above.",
     `Contract this feature provides to the features that depend on it: ${feature.contract}`,
     ...(feature.skeleton?.length ? skeletonLines(plan, feature) : []),
+    // The rows of each shared row file this run delivers; `suppliedRows` reads them back (#2898).
+    ...featureRowsLines(featureRowFiles(plan, row.prompt, feature)),
     ...amendmentLines(amendments),
   ];
   for (const { feature: dependency, contract } of upstream) {
@@ -6106,6 +6385,7 @@ export function featurePrompt(
       "Other features of the initiative own this work; do not implement it here:",
       ...others.map((f) => `- ${f.id}: ${f.title}`),
     );
-  lines.push("", "The original request of the initiative:", row.prompt);
+  // The person's words begin after this heading; `requestSections` splits there (#2492).
+  lines.push("", FEATURE_REQUEST_HEADING, row.prompt);
   return lines.join("\n");
 }

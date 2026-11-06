@@ -106,11 +106,9 @@ const attribute = (tag: string, name: string): string | undefined =>
 const MESSAGE_CHARS = 500;
 const TEXT_LINES = 10;
 
-const decodeXml = (text: string) =>
+/** XML's character references and named entities decoded, `&amp;` last. */
+export const decodeXmlEntities = (text: string) =>
   text
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, (_, raw: string) =>
-      raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"),
-    )
     .replace(/&(lt|gt|quot|apos|#\d+|#x[\da-f]+);/gi, (_, entity: string) => {
       const named: Record<string, string> = { lt: "<", gt: ">", quot: '"', apos: "'" };
       if (named[entity]) return named[entity];
@@ -119,6 +117,12 @@ const decodeXml = (text: string) =>
       );
     })
     .replace(/&amp;/g, "&");
+const decodeXml = (text: string) =>
+  decodeXmlEntities(
+    text.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, (_, raw: string) =>
+      raw.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"),
+    ),
+  );
 const escapeXml = (text: string, quotes: boolean) => {
   const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   return quotes ? escaped.replace(/"/g, "&quot;") : escaped;

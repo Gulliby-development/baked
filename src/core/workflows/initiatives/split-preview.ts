@@ -1,6 +1,8 @@
 // The budget of a split awaiting approval (#2502), as the terminal app and the desktop app show it.
 // Free of Node imports: the desktop renderer reads it too.
 
+import { type FewPathShareRecord, fewPathShareText } from "./few-path-record.js";
+
 /**
  * What the split awaiting approval needs from the pool, read before approval (#2502): R79, R80 and
  * R81 picked a pool before approving from a guess, and the first share gate parked the first
@@ -37,13 +39,18 @@ export interface SplitBudgetPreview {
     reason: string | null;
   } | null;
   /**
-   * The pool to extend to before approving: what the dollar cap pays for when that also starts
-   * every waiting feature at its low estimate, else the expected forecast (never the lows alone:
-   * R81 ratdec's lows were 1.8x over and 2.7x under the actual use); null when the pool covers it.
+   * The pool to extend to before approving, the split approval's one amount (`splitExtension`,
+   * #2525): the high end with margin, held to what the dollar cap pays for; null when the pool
+   * covers the high end. The approval message and its `extend` remedy name the same amount.
    */
   suggestedTokens: number | null;
   /** The forecast notice's sentence with the one-line extend command; null without a suggestion. */
   notice: string | null;
+  /**
+   * What `sizing.fewPathPrice` did to each waiting feature's estimate, by feature id (#2640):
+   * whether it applied, why, and the range before and after. Absent with the knob off.
+   */
+  fewPathShare?: Record<string, FewPathShareRecord>;
 }
 
 /** A token count as the estimates write it (`tokenText`): 840k, 2.4M. */
@@ -74,5 +81,6 @@ export function splitPreviewLine(preview: SplitBudgetPreview): string {
     preview.suggestedTokens !== null
       ? ` Extend to ${tokens(preview.suggestedTokens)} before approving.`
       : "";
-  return `Budget before approval: lows ${tokens(preview.sumLow)}, expected ${tokens(preview.sumExpected)}, high ${tokens(preview.sumHigh)}${cap}.${first}${extend}`;
+  const fewPaths = preview.fewPathShare ? fewPathShareText(preview.fewPathShare) : "";
+  return `Budget before approval: lows ${tokens(preview.sumLow)}, expected ${tokens(preview.sumExpected)}, high ${tokens(preview.sumHigh)}${cap}.${first}${extend}${fewPaths}`;
 }

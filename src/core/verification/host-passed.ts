@@ -3,7 +3,8 @@ import type { WorkflowStore } from "../workflows/store.js";
 /**
  * The failed check runs the host counts as passed, by evidence id, with why: a static check that
  * failed only on debt from before the run under `staticBaseline: "relative"` (#1222), and a test
- * check that collected no test in a run whose plan writes none (#1864). The checks stage records
+ * check that collected no test in a run whose plan writes none (#1864), and a formatter check that
+ * reported only the documents the host publishes under `specs/` (#2641). The checks stage records
  * each as a diagnostic; acceptance and every view of a run's checks read them here (#1894).
  */
 export function hostPassedChecks(
@@ -13,7 +14,8 @@ export function hostPassedChecks(
   const passed = new Map<string, string>();
   for (const artifact of store.artifacts(runId)) {
     const debt = artifact.logical_path.startsWith("checks/baseline-debt/");
-    if (!debt && !artifact.logical_path.startsWith("checks/no-tests/")) continue;
+    const documents = artifact.logical_path.startsWith("checks/host-published/");
+    if (!debt && !documents && !artifact.logical_path.startsWith("checks/no-tests/")) continue;
     try {
       const record = JSON.parse(store.readArtifact(runId, artifact.id)) as {
         evidenceId?: string;
@@ -24,7 +26,10 @@ export function hostPassedChecks(
           record.evidenceId,
           debt
             ? "it failed only on diagnostics from before the run"
-            : (record.reason ?? "it collected no test"),
+            : (record.reason ??
+                (documents
+                  ? "it failed only on documents the host publishes"
+                  : "it collected no test")),
         );
     } catch {
       // An unreadable diagnostic exempts nothing.

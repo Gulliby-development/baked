@@ -47,6 +47,14 @@ import type { Task } from "./types.js";
  * for opposite changes, and the next step is a spec conflict, not a third corrective. R72 evalpin
  * foundation: T008 removed `#[allow(unused_variables)]` for the integrity guard, T009 put it back
  * for `cargo clippy -D warnings`, and five correctives ran before the conflict opened.
+ *
+ * A rewrite of a symbol or family that an earlier rewrite already rewrote is the chain's second
+ * rewrite (#2568): its record counts the earlier ones (`rewrites`, `withRewrites`). The second runs
+ * the sibling probe whatever `chainProbe` says, seeded with the earlier rewrite's battery, and its
+ * input carries the reviewer's latest `suggestedFix` of the chain as `design` text, since the same
+ * battery and instruction let R83 md-site's T013 pass its battery and miss the class again. A
+ * finding after two rewrites is the `chain_rewrite_repeat` would-stop (shadow): the next step is
+ * the convergence ask, not a third corrective.
  */
 
 /** Findings in a `repeatOf` chain on one file and symbol at which the next corrective rewrites it. */
@@ -63,6 +71,16 @@ export const CHAIN_BATTERY_DIR = "chains/battery/";
 export const CHAIN_FAMILY_DIR = "chains/family/";
 /** A corrective that restored what the previous one removed (#2277): `chains/restores/<task>.json`. */
 export const CHAIN_RESTORES_DIR = "chains/restores/";
+/**
+ * Earlier rewrites of one chain's symbol or family after which its next finding goes to the
+ * convergence ask instead of another corrective (#2568, `chain_rewrite_repeat`, shadow).
+ */
+export const CHAIN_REWRITE_REPEAT_AT = 2;
+/** The claim a host battery case's finding starts with (`chainBattery`). */
+export const BATTERY_CASE_CLAIM = "Battery case";
+/** The id of the `index`-th (from 1) sibling-probe case the host opens around `headId` (#1969). */
+export const familyCaseId = (headId: string, index: number): string =>
+  `${headId}-family-${String(index)}`;
 
 /**
  * A leading declaration keyword a reviewer may copy with the name (`struct reader`, `impl Reader`,
@@ -142,6 +160,8 @@ export interface ChainFinding {
   requirementIds: string[];
   criterionIds: string[];
   repro?: Repro;
+  /** The reviewer's suggested fix (#2568): the `design` text of a second rewrite. */
+  suggestedFix?: string;
 }
 
 type FindingLike = {
@@ -155,6 +175,7 @@ type FindingLike = {
   requirementIds?: string[];
   criterionIds?: string[];
   repro?: unknown;
+  suggestedFix?: string;
 };
 
 /**
@@ -187,6 +208,9 @@ const chainFinding = (
     requirementIds: body.requirementIds ?? [],
     criterionIds: body.criterionIds ?? [],
     ...(repro.success ? { repro: repro.data } : {}),
+    ...(typeof body.suggestedFix === "string" && body.suggestedFix
+      ? { suggestedFix: body.suggestedFix }
+      : {}),
   };
 };
 
@@ -376,6 +400,11 @@ export interface FamilyRecord {
   symbol: string;
   /** The chain's cases the probe was shown, by finding id. */
   shown: string[];
+  /**
+   * The earlier rewrites whose batteries seeded the probe of a second rewrite (#2568), which runs
+   * whatever `chainProbe` says; absent for a probe `chainProbe: "on"` asked for alone.
+   */
+  seededBy?: string[];
   cases: ({
     status: ReproOutcome["status"];
     reason: string;
@@ -415,6 +444,20 @@ export interface ChainRecord {
    * test file sweeps the test files (`testSweepStep`) and has no battery. Absent: a rewrite.
    */
   corrective?: "test-sweep";
+  /**
+   * The earlier rewrite decisions of this chain's file and symbol or family (#2568): records of
+   * other correctives that share a finding with the chain or its file with its symbol or family.
+   * Absent in records before it.
+   */
+  rewrites?: number;
+  /** The corrective tasks of those rewrites, oldest first, when there are any. */
+  rewrittenBy?: string[];
+  /**
+   * What the rewrite count decides for a symbol rewrite (`rewriteRepeatDecision`): `probe` (the
+   * second rewrite runs the sibling probe and carries the reviewer's design) or `ask` (the
+   * `chain_rewrite_repeat` would-stop). Absent: neither.
+   */
+  repeat?: "probe" | "ask";
 }
 
 /** Whether a recorded chain decision rewrites code against a battery (not a test sweep, #2098). */
@@ -603,6 +646,140 @@ export function chainRecord(
       ? { corrective: "test-sweep" as const }
       : {}),
   };
+}
+
+/**
+ * What a symbol rewrite's count of earlier rewrites decides (#2568): the second rewrite probes the
+ * class and carries the reviewer's design, and a finding after `CHAIN_REWRITE_REPEAT_AT` rewrites
+ * goes to the convergence ask.
+ */
+export type RewriteRepeatRule = (rewrites: number) => "none" | "probe" | "ask";
+export const rewriteRepeatDecision: RewriteRepeatRule = (rewrites) =>
+  rewrites >= CHAIN_REWRITE_REPEAT_AT ? "ask" : rewrites >= 1 ? "probe" : "none";
+
+const recordFiles = (record: ChainRecord): string[] =>
+  record.files ?? (record.file ? [record.file] : []);
+
+/**
+ * Whether two chain records are of one place (#2568): they share a finding (each chain walks back
+ * through the other's links), or a file and the symbol or the family.
+ */
+const sameRewriteSpot = (a: ChainRecord, b: ChainRecord): boolean => {
+  const ids = new Set(a.chain.map((f) => f.id));
+  if (b.chain.some((f) => ids.has(f.id))) return true;
+  const files = new Set(recordFiles(a));
+  return (
+    recordFiles(b).some((file) => files.has(file)) &&
+    ((a.symbol !== "" && a.symbol === b.symbol) || (Boolean(a.family) && a.family === b.family))
+  );
+};
+
+/**
+ * The record with its count of earlier rewrites of the same place (#2568): the symbol rewrites of
+ * other correctives in `earlier` (the run's `chains/tasks/` records, oldest first) that
+ * `sameRewriteSpot` joins, and what `decide` makes of the count for a symbol rewrite.
+ */
+export function withRewrites(
+  record: ChainRecord,
+  earlier: readonly ChainRecord[],
+  decide: RewriteRepeatRule = rewriteRepeatDecision,
+): ChainRecord {
+  const by = [
+    ...new Set(
+      earlier
+        .filter(
+          (e) =>
+            e.taskId !== "" &&
+            e.taskId !== record.taskId &&
+            rewritesSymbol(e) &&
+            sameRewriteSpot(e, record),
+        )
+        .map((e) => e.taskId),
+    ),
+  ];
+  const repeat = rewritesSymbol(record) ? decide(by.length) : "none";
+  return {
+    ...record,
+    rewrites: by.length,
+    ...(by.length ? { rewrittenBy: by } : {}),
+    ...(repeat !== "none" ? { repeat } : {}),
+  };
+}
+
+/** Every chain decision a run recorded under `chains/tasks/`, oldest first. */
+export function chainTaskRecords(store: WorkflowStore, runId: string): ChainRecord[] {
+  return store.artifacts(runId).flatMap((row) => {
+    if (row.kind !== CHAIN_KIND || !row.logical_path.startsWith(CHAIN_TASKS_DIR)) return [];
+    try {
+      return [JSON.parse(store.readArtifact(runId, row.id)) as ChainRecord];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/**
+ * Records the `chain_rewrite_repeat` would-stop for each chain decision whose finding comes after
+ * `CHAIN_REWRITE_REPEAT_AT` rewrites of its place (#2568), once per corrective, with the count, the
+ * earlier rewrites and the chain: the next step is the convergence ask naming the family. Shadow:
+ * the corrective is opened as before.
+ */
+export function recordRewriteRepeats(
+  store: WorkflowStore,
+  runId: string,
+  policy: Pick<RunPolicy, "stopModes" | "costForecast">,
+  records: readonly ChainRecord[],
+): ChainRecord[] {
+  const asks = records.filter((r) => r.repeat === "ask");
+  if (!asks.length) return [];
+  const mode = stopMode(policy, "chain_rewrite_repeat");
+  if (mode === "enforce") return [];
+  for (const record of asks)
+    recordWouldStop(store, runId, {
+      reason: "chain_rewrite_repeat",
+      mode,
+      key: `task-${record.taskId}`,
+      summary: `${record.findingId} is a new case of ${record.family ?? chainSubject(record)} after ${String(record.rewrites ?? 0)} rewrites (${(record.rewrittenBy ?? []).join(", ")}): the next step is the convergence ask naming the family, not another corrective`,
+      inputs: {
+        taskId: record.taskId,
+        findingId: record.findingId,
+        file: record.file,
+        symbol: record.symbol,
+        family: record.family ?? null,
+        rewrites: record.rewrites ?? 0,
+        rewrittenBy: record.rewrittenBy ?? [],
+        chain: record.chain.map((f) => f.id),
+      },
+    });
+  return asks;
+}
+
+/** Whether a finding is a case the host opened for a chain (a battery or sibling-probe case). */
+const hostChainCase = (finding: ChainFinding): boolean =>
+  /-family-\d+$/.test(finding.id) || finding.claim.startsWith(BATTERY_CASE_CLAIM);
+
+/** What a second rewrite's worker is told under `battery.design`. */
+export const DESIGN_NOTE =
+  "An earlier rewrite of this code passed its battery, and review still found a new case of the same class. The reviewer's suggested fix here names the remedy for the class: treat it as a requirement of this rewrite's design, say in the comment above the code how the design meets it, and make every battery case pass through that design rather than through another case-specific branch.";
+
+/**
+ * The design text of a second rewrite (#2568): the latest reviewer `suggestedFix` among the
+ * chain's findings (a battery or probe case the host opened is not the reviewer's), or null for a
+ * first rewrite or a chain without one.
+ */
+export function rewriteDesign(
+  all: ReadonlyMap<string, ChainFinding>,
+  record: ChainRecord,
+): { findingId: string; suggestedFix: string; note: string } | null {
+  if (!rewritesSymbol(record) || (record.rewrites ?? 0) < 1) return null;
+  const head = all.get(record.findingId);
+  if (!head) return null;
+  const latest = chainMembers(all, findingChain(all, head))
+    .filter((f) => f.suggestedFix && !hostChainCase(f))
+    .at(-1);
+  return latest?.suggestedFix
+    ? { findingId: latest.id, suggestedFix: latest.suggestedFix, note: DESIGN_NOTE }
+    : null;
 }
 
 /** The recorded chain decision of a corrective task, or null. */

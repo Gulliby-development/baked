@@ -128,10 +128,10 @@ export const STOP_REASONS = {
   },
   repeated_failure: {
     label:
-      "A corrective's required checks fail exactly as the corrective's before it, or a task ends unfinished on the same failing checks as its previous unfinished end",
-    // Shadow only until two bench rounds show no false would-stop (#1996, #2437); its promotion is
-    // a pull request of its own that adds `enforce` and blocks the chain, or the unfinished task's
-    // resume, before the next session.
+      "A corrective's required checks fail exactly as the corrective's before it, a planned task's whole-unit check fails on another task's file as it did before a finished corrective, or a task ends unfinished on the same failing checks as its previous unfinished end",
+    // Shadow only until two bench rounds show no false would-stop (#1996, #2437, #2948); its
+    // promotion is a pull request of its own that adds `enforce` and blocks the chain, the cascade's
+    // next corrective, or the unfinished task's resume, before the next session.
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
@@ -176,6 +176,16 @@ export const STOP_REASONS = {
     label: "A finding comes back after its corrective changed no file",
     // Shadow only until two bench rounds show no false would-stop (#2137); its promotion asks for
     // an owner or scope decision instead of opening another corrective of the same finding.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  chain_rewrite_repeat: {
+    label:
+      "A finding chain's next case comes after two rewrites of its symbol or family: the convergence ask instead of a third corrective",
+    // Shadow only until two bench rounds show no false would-stop (#2568, R83 md-site's
+    // `findDelimited`: T012 and T013 rewrote it and review found the next member); its promotion
+    // asks the person to converge with `rewrites` and the family, and the convergence gate reads
+    // `rewrites`, instead of opening the corrective.
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
@@ -296,6 +306,37 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  transcript_drift: {
+    label:
+      "A document the run delivered leaves a command transcript the request says it must hold exactly",
+    // Shadow only until two bench rounds show no false would-stop (#2648, R88 pokerank's README
+    // printf line with a doubled backslash, R87 citeseek the same); its promotion makes the line a
+    // finding the host proved on the document, which the review gate repairs in any round.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  doc_finding_unrepaired: {
+    label:
+      "A reviewer's documentation finding marked noRepro stays a note because its kind is correctness, where a partial one repairs",
+    // Shadow until R92 and R93 showed 3 true would-stops and no false one (#2835, R91 stopcut's
+    // README escape reference with doubled backslashes, R90 holefit docs F1 and F3). Under
+    // `enforce`, the default since R93, the review and converge gates repair it as a `partial`
+    // finding (`docFindingRepairs`, #2866, R92 tailclose's README shipped a literal `\n` and
+    // doubled backslashes); `shadow` keeps the old note and records the would-stop.
+    modes: STOP_MODES,
+    defaultMode: "enforce",
+  },
+  doc_finding_repeat: {
+    label:
+      "A reviewer's documentation finding raised again after a correction stays a note because the round's severity floor leaves it out",
+    // Shadow only until two bench rounds show no false would-stop (#2931, R92 tailclose's second
+    // review raised F1 and F2 again; R99 cronwhen guide's README shipped two unclosed code spans
+    // after its review 2 repeated F1 and F2). Recorded in every mode of `doc_finding_unrepaired`,
+    // whose enforced first-round repair left this repeat with no record; its promotion opens one
+    // more correction for the repeat.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   row_block_drift: {
     label:
       "A test file the run delivered lacks a quoted literal of a row the request prescribes for it, or holds a row beyond them",
@@ -307,6 +348,16 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  unfinished_row_split: {
+    label:
+      "A test task ended unfinished twice with prescribed rows its file still lacks: the host would split it into slices of the missing rows instead of resuming it whole",
+    // Shadow only (#2458, R78 deltaglue cli T007: 63 prescribed rows, four unfinished ends and
+    // 6.89M tokens, each resume starting over with the whole task). It records
+    // `row-splits/tasks/<task>.json` and the would-stop; starting the slices of the missing rows is
+    // a pull request of its own after a bench round with no false decision.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   case_not_prescribed: {
     label:
       "A criterion cites a literal that no row the request prescribes holds, for a task that writes only prescribed row files",
@@ -315,6 +366,17 @@ export const STOP_REASONS = {
     // removed it, 368k), and records the criterion and literal instead; analysis lists them as a
     // note. Its promotion, after two bench rounds with no false would-stop, makes that analysis
     // finding blocking, so the spec author removes the example row from the criterion.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  slice_foreign_conflict: {
+    label:
+      "A host row slice's spec conflict asks for literals that only another slice's rows of the same file hold: the host would settle it without asking a person",
+    // Shadow only (#2476, R79 verhop T004: rows 1-7 of `tests/check.bats` reported three
+    // conflicts about AC-003 and AC-005 literals of rows 8-15, and a person answered the third
+    // with "satisfied by the union of both slices"). It records the would-stop beside the
+    // `conflicts/request/` record and the person is still asked; its promotion, after two bench
+    // rounds with no false would-stop, settles the report as slice-foreign with no clarification.
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
@@ -389,6 +451,19 @@ export const STOP_REASONS = {
     // The run still blocks; its promotion leaves it `waiting` on a request a person answers with
     // the extend remedy, and its planned-ahead dependants count it as waiting, not stalled.
     modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
+  stream_output_limit: {
+    label:
+      "A model call's streamed output passes twice the profile's maxOutputTokens on a provider that takes no output limit (Codex)",
+    // Shadow by default (#2660, a follow-up of #2547: Codex sends no `max_output_tokens`, and
+    // #1479 ran a 10-minute response to the model's own limit). The Codex app-server adapter
+    // counts each step's streamed text and reasoning (`streamOutputDecision`) and the executor
+    // records `decision.would_stop` from the step's usage record. `stopModes: {
+    // stream_output_limit: "enforce" }` interrupts the turn and ends the step `length`, so the
+    // truncation notice applies; making that the default is a pull request of its own after two
+    // bench rounds with no false would-stop.
+    modes: STOP_MODES,
     defaultMode: "shadow",
   },
   cost: {

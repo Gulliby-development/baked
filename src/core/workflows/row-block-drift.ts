@@ -1,5 +1,11 @@
-import { verbatimHeld } from "../verification/criteria-cases.js";
-import type { TaskGraph } from "./schemas.js";
+import {
+  literalSpans,
+  type RunDiff,
+  runDiffText,
+  runLengthCompare,
+} from "../verification/byte-runs.js";
+import { normalizeLiteral, verbatimHeld } from "../verification/criteria-cases.js";
+import type { Review, TaskGraph } from "./schemas.js";
 import { suppliedRows } from "./sizing.js";
 
 /**
@@ -34,6 +40,49 @@ import { suppliedRows } from "./sizing.js";
  * later prescribed row is `reordered`. A test whose rows are not one per line (a bats `@test` per
  * row, Java `@CsvSource` strings) has no head that matches, and records no file rows.
  *
+ * A long byte run of a row (a hex string, a byte list, a repeat expression) is compared by its
+ * count (#2515, `runLengthCompare` in byte-runs.ts, the one comparison the literal lookup, the
+ * case walk and `misquotation` share). Bench round 82: tinyflate deflate T007 wrote
+ * `tests/deflate_match_test.c` with 303 bytes of `0x78` for a row's 300 and 238 bytes of `0x71`
+ * for another's 259; 300 bytes read verbatim are held inside 303, so nothing was recorded, the
+ * failing check read as a source failure and every corrective rewrote a correct `src/deflate.c`.
+ * A row whose run the file counts differently drifts with the file line, the byte and both
+ * counts (`RowMeasure.runs`), and a failing check of the same checks stage says so in its
+ * corrective (`rowRunFindings`): "the test's input literal differs from the criterion row by N
+ * bytes". With the policy field `rowRunRoute: "on"` the correction goes to the test's task only;
+ * absent, the route is recorded (`row-runs/<check>.json`) and the findings keep their files.
+ *
+ * A literal held anywhere in the file is not enough for a row (#2521): bench round 82 slotprompt
+ * core delivered rows 5 and 13 of `test/text_test.dart` without the prescribed `'--var', 'a=1'`
+ * arguments, which other rows hold, and every row was recorded held; the reviewer found both and
+ * the correctives cost about 0.9M tokens. Each prescribed row is also compared with the file row
+ * that takes its place (`rowPlaces`, the placing `rowMoveDecision` does: the first file row that
+ * matches it, else the changed row that `replaces` it) as a token sequence (`rowTokens`: quoted
+ * literals, heredocs and bare values such as status codes, counts, booleans). Every token must be
+ * in the row's own lines (the file row, its continued strings and heredoc, and the lines after it
+ * up to a blank line or the next file row: a bats `@test`'s assertions), and, when the file row
+ * itself holds every token (one row per line), in the row's order, so a dropped argument, a
+ * changed status and a swapped pair drift with the first differing token (`RowMeasure.differs`).
+ * A row that no file row takes the place of keeps only the whole-file lookup, and a row with a
+ * long byte run is left to its count (#2515).
+ *
+ * In that per-row comparison a quoted literal is compared by its value with one escape layer
+ * decoded (the language's own string decoding, #2545) when the row and the file row quote it with
+ * the same character; only when the quoting differs (a JSON string inside single quotes, #1997)
+ * are both sides decoded until no escape layer is left, as `verbatimHeld` does for the whole-file
+ * lookup and the case walk. Bench round 82: slotprompt `dart-test-written` failed on a transcribed
+ * row that spelled `arguments\\n` (a backslash and `n`) where the row gives `arguments\n` (a line
+ * break); all layers decoded, the two were one literal, the row was held and the failing check read
+ * as a source failure. Such a row now drifts at that token, with both layer counts
+ * (`RowMeasure.layers`).
+ *
+ * A row the request gives more than once is held only as often as file rows match it (#2704): a
+ * dropped copy's literals are all in the copy the file keeps, so the whole-file lookup misses
+ * nothing and no file row takes its place. The k-th copy of a row's text (`RowMeasure.copy`, the
+ * counting `heldLines` in place-rows.ts does for `place_rows`) drifts when fewer than k file rows
+ * match it and at least one does (a file whose rows the reader does not place matches none). The
+ * session's edit guard (`rowEditBreaks`) does not gate on it: recorded only, like the would-stop.
+ *
  * The `row_block_drift` reason records each drifting row, and each added or duplicated row, as a
  * would-stop (shadow); a reordered row is only recorded. `row-blocks/<path>.json` records the
  * counts its decisions read (no text) for the replay.
@@ -50,6 +99,54 @@ export interface RowMeasure {
   literals: number;
   /** Which of them (from 1) the delivered file does not hold. */
   missing: number[];
+  /**
+   * Its long byte runs the file counts differently (#2515): the file line, the byte and both
+   * counts; absent when there is none (and in records before it).
+   */
+  runs?: RowRunMeasure[];
+  /**
+   * The file line of the file row that takes the row's place, compared token by token (#2521);
+   * absent when none does (and in records before it).
+   */
+  line?: number;
+  /** The row's tokens compared with that file row (quoted literals and bare values). */
+  tokens?: number;
+  /** The first of them (from 1) the file row does not hold, or holds out of order; absent if none. */
+  differs?: number;
+  /**
+   * When that token differs only by escape layers (#2545): how many the row's literal and the file
+   * row's literal decode through (`\\n` two, `\n` one); absent otherwise (and in records before it).
+   */
+  layers?: EscapeLayers;
+  /**
+   * For a row whose text the request gives more than once (#2704): which copy it is (from 1), how
+   * many copies the request gives and how many file rows match it; absent otherwise (and in
+   * records before it).
+   */
+  copy?: RowCopy;
+}
+
+/** A copy of a row the request gives more than once against the file rows that match it (#2704). */
+export interface RowCopy {
+  nth: number;
+  given: number;
+  held: number;
+}
+
+/** The k-th copy of a row's text held by fewer than k file rows, while one holds it (#2704). */
+export const copyDropped = (r: Pick<RowMeasure, "copy" | "line">) =>
+  r.copy !== undefined && r.line === undefined && r.copy.held > 0 && r.copy.nth > r.copy.held;
+
+/** The escape layers a row's literal and the file row's decode through (#2545). */
+export interface EscapeLayers {
+  row: number;
+  file: number;
+}
+
+/** A long run of a prescribed row that a file line counts differently (#2515). */
+export interface RowRunMeasure extends RunDiff {
+  /** The file line, from 1. */
+  line: number;
 }
 
 /** One row of the delivered file against the block (#2503): counts only, as the trace keeps them. */
@@ -62,6 +159,12 @@ export interface FileRowMeasure {
   matches: number[];
   /** The prescribed row nothing matches whose place it takes (a changed row), or null. */
   replaces: number | null;
+  /**
+   * True when the row matches no prescribed row and the file held it, byte for byte, before the
+   * run wrote it (#2969): a scaffold's placeholder row another feature replaces is not a row the
+   * run added. Absent otherwise, and in records before it.
+   */
+  base?: true;
 }
 
 /** File rows (their lines, from 1) beyond the block: the would-stop kinds `added`, `duplicated`. */
@@ -91,13 +194,39 @@ export interface RowBlockRecord {
   moves?: RowMoves;
 }
 
-/** The rows that drift: those with a literal the delivered file does not hold. */
+/**
+ * The rows that drift: those with a literal the delivered file does not hold, a long byte run it
+ * counts differently (#2515), a token the file row in its place lacks or holds out of order
+ * (#2521), or a copy of a row the request gives more than once that the file does not hold
+ * (#2704).
+ */
 export type RowBlockRule = (rows: readonly RowMeasure[]) => number[];
 export function rowBlockDecision(rows: readonly RowMeasure[]): number[] {
-  return rows.flatMap((r) => (r.missing.length ? [r.row] : []));
+  return rows.flatMap((r) =>
+    r.missing.length || r.runs?.length || r.differs !== undefined || copyDropped(r) ? [r.row] : [],
+  );
 }
 
-/** Places each file row: unmatched (added unless it replaces a row), repeated, or out of order. */
+/**
+ * The file line that takes each prescribed row's place (#2521), placed as `rowMoveDecision` places
+ * them: in file order, the first matched row no earlier file row holds, else the prescribed row a
+ * changed file row `replaces`. A duplicated file row places nothing.
+ */
+export function rowPlaces(fileRows: readonly FileRowMeasure[]): Map<number, number> {
+  const places = new Map<number, number>();
+  for (const fileRow of fileRows) {
+    const row = fileRow.matches.length
+      ? fileRow.matches.find((n) => !places.has(n))
+      : (fileRow.replaces ?? undefined);
+    if (row !== undefined && !places.has(row)) places.set(row, fileRow.line);
+  }
+  return places;
+}
+
+/**
+ * Places each file row: unmatched (added unless it replaces a row or the file held it before the
+ * run, #2969), repeated, or out of order.
+ */
 export type RowMoveRule = (fileRows: readonly FileRowMeasure[]) => RowMoves;
 export function rowMoveDecision(fileRows: readonly FileRowMeasure[]): RowMoves {
   const moves: RowMoves = { added: [], duplicated: [], reordered: [] };
@@ -105,7 +234,7 @@ export function rowMoveDecision(fileRows: readonly FileRowMeasure[]): RowMoves {
   let last = 0;
   for (const fileRow of fileRows) {
     if (!fileRow.matches.length) {
-      if (fileRow.replaces === null) moves.added.push(fileRow.line);
+      if (fileRow.replaces === null && !fileRow.base) moves.added.push(fileRow.line);
       continue;
     }
     const row = fileRow.matches.find((n) => !held.has(n));
@@ -128,6 +257,31 @@ export interface RowBlockDrift {
   text: string;
   /** Each literal the file lacks, from 1, as the request spells it (cut). */
   missing: { literal: number; text: string }[];
+  /** Each long byte run the file counts differently (#2515), by the bytes it is off. */
+  runs: RowRunDrift[];
+  /**
+   * The first token the file row in the row's place lacks or holds out of order (#2521): the
+   * file line, the token's place in the row (from 1) of how many, as the request spells it (cut).
+   */
+  differs: {
+    line: number;
+    token: number;
+    tokens: number;
+    text: string;
+    /** When the token differs only by escape layers (#2545). */
+    layers?: EscapeLayers;
+  } | null;
+  /** A copy of a row the request gives more than once that the file does not hold (#2704). */
+  copy?: RowCopy;
+}
+
+/** A long byte run of a row the file counts differently (#2515). */
+export interface RowRunDrift {
+  /** The file line, from 1. */
+  line: number;
+  /** How many bytes the file's literal differs from the row by. */
+  bytes: number;
+  diffs: RunDiff[];
 }
 
 /** A file row beyond the block (#2503): added, or a second copy of a prescribed row. */
@@ -174,13 +328,308 @@ function literalHeld(file: string, literal: string): boolean {
 /** A literal that says something: not empty and not only spaces once decoded. */
 const meaningful = (literal: string) => literal.replace(/\\[nrt]|\s/g, "") !== "";
 
-/** Each prescribed row of `rows` against a delivered file's text. */
-export function measureRows(rows: readonly string[], file: string): RowMeasure[] {
+/**
+ * Each prescribed row of `rows` against a delivered file's text: its literals looked up in the
+ * whole file, its long runs by their count (#2515), its tokens against the file row that takes
+ * its place (#2521; `fileRows`, read by `measureFileRows` when not given), and, for a row the
+ * request gives more than once, which copy it is against the file rows that match it (#2704).
+ */
+export function measureRows(
+  rows: readonly string[],
+  file: string,
+  fileRows: readonly FileRowMeasure[] = measureFileRows(rows, file),
+): RowMeasure[] {
+  const places = rowPlaces(fileRows);
+  const starts = fileRows.map((r) => r.line);
+  const lines = file.split(/\r?\n/);
+  // Each row's text, how often the request gives it and which copy each row is (#2704).
+  const given = new Map<string, number>();
+  const nth = rows.map((line) => {
+    const k = (given.get(line.trim()) ?? 0) + 1;
+    given.set(line.trim(), k);
+    return k;
+  });
   return rows.map((line, index) => {
     const literals = rowLiterals(line).filter(meaningful);
     const missing = literals.flatMap((literal, i) => (literalHeld(file, literal) ? [] : [i + 1]));
-    return { row: index + 1, literals: literals.length, missing };
+    const runs = rowRuns(line, file).flatMap((d) =>
+      d.diffs.map((diff) => ({ line: d.line, ...diff })),
+    );
+    const place = places.get(index + 1);
+    const compared = place === undefined ? null : rowCompare(line, lines, place, starts);
+    const copies = given.get(line.trim()) ?? 1;
+    const copy =
+      copies > 1
+        ? {
+            nth: nth[index] ?? 1,
+            given: copies,
+            held: fileRows.filter((r) => r.matches.includes(index + 1)).length,
+          }
+        : null;
+    return {
+      row: index + 1,
+      literals: literals.length,
+      missing,
+      ...(runs.length ? { runs } : {}),
+      ...(compared && place !== undefined
+        ? {
+            line: place,
+            tokens: compared.tokens,
+            ...(compared.differs !== null ? { differs: compared.differs } : {}),
+            ...(compared.layers ? { layers: compared.layers } : {}),
+          }
+        : {}),
+      ...(copy ? { copy } : {}),
+    };
   });
+}
+
+/** A token of a row (#2521): a quoted literal's body as spelled, or a bare value. */
+export interface RowToken {
+  quoted: boolean;
+  text: string;
+  /** The quote it is spelled in (`'`, `"`, `"""`, `'''`, a backtick, #2545); empty for a bare value. */
+  quote: string;
+}
+
+const TOKEN = new RegExp(
+  [
+    String.raw`"""([\s\S]*?)"""`,
+    String.raw`'''([\s\S]*?)'''`,
+    String.raw`"((?:\\.|[^"\\])*)"`,
+    String.raw`(?<![\p{L}\p{N}_])'((?:\\.|[^'\\])*)'`,
+    String.raw`\x60((?:\\.|[^\x60\\])*)\x60`,
+    String.raw`(?<![\p{L}\p{N}_.$])(-?(?:0[xX][0-9a-fA-F]+|\d+(?:\.\d+)?))(?:[uUlLfFdDmMnN]|[iu](?:8|16|32|64|128|size))*(?![\p{L}\p{N}_])`,
+    String.raw`(?<![\p{L}\p{N}_.$])(true|false|nil|null|None|True|False|NULL)(?![\p{L}\p{N}_])`,
+  ].join("|"),
+  "gu",
+);
+
+/**
+ * The tokens of a row's text, in order (#2521): heredocs (triple-quoted, their lines dedented),
+ * the quoted literals `rowLiterals` reads and backtick strings, and bare values: numbers (a type
+ * suffix such as `0L` or `0i32` dropped, hex kept) and `true`, `false`, `nil`, `null`, `None`,
+ * `NULL`. Names, keys and punctuation are not tokens, so a row may be spelled in any notation
+ * that keeps its values in order (`row(...)`, `{ args: ..., code: 0 }`, `{[]string{...}, ...}`).
+ */
+export function rowTokens(text: string): RowToken[] {
+  return [...text.matchAll(TOKEN)].map((m) => {
+    const quote = m[1] !== undefined ? '"""' : m[2] !== undefined ? "'''" : (m[0][0] ?? "");
+    const heredoc = m[1] ?? m[2];
+    if (heredoc !== undefined) return { quoted: true, text: dedented(heredoc), quote };
+    const quoted = m[3] ?? m[4] ?? m[5];
+    if (quoted !== undefined) return { quoted: true, text: quoted, quote };
+    return { quoted: false, text: m[6] ?? m[7] ?? "", quote: "" };
+  });
+}
+
+const indentOf = (line: string) => /^[ \t]*/.exec(line)?.[0].length ?? 0;
+
+/** A heredoc's text: its first line break dropped, its lines' common indentation removed. */
+function dedented(body: string): string {
+  const lines = body.replace(/^[ \t]*\r?\n/, "").split(/\r?\n/);
+  const closing = lines.length > 1 && !lines[lines.length - 1]?.trim();
+  const widths = lines.filter((l) => l.trim()).map(indentOf);
+  if (closing) widths.push(lines[lines.length - 1]?.length ?? 0);
+  const cut = widths.length ? Math.min(...widths) : 0;
+  return lines.map((l) => l.slice(Math.min(cut, indentOf(l)))).join("\n");
+}
+
+/** How many lines after a file row may still be its own (a bats `@test`'s assertions). */
+const ROW_TAIL = 8;
+/** How many adjacent strings of a file row may spell one literal of the row. */
+const JOINED = 8;
+
+const openHeredoc = (text: string) =>
+  (text.match(/"""/g)?.length ?? 0) % 2 === 1 || (text.match(/'''/g)?.length ?? 0) % 2 === 1;
+
+/** The text of the file row on `line` (from 1): its continued strings and an open heredoc. */
+function rowText(lines: readonly string[], line: number): { text: string; end: number } {
+  let text = lines[line - 1] ?? "";
+  let end = line;
+  while (end < lines.length && end - line < 200) {
+    const next = lines[end] ?? "";
+    if (!openHeredoc(text) && !CONTINUES.test(next)) break;
+    text += `\n${next}`;
+    end++;
+  }
+  return { text, end };
+}
+
+const sameValue = (a: string, b: string) =>
+  a === b || (Number(a) === Number(b) && !Number.isNaN(Number(a)));
+
+/** One escape layer of a literal, in one pass: the language's own string decoding (#2545). */
+const ESCAPE =
+  /\\(?:([0-3][0-7]{2})|u\{[\da-fA-F]{1,6}\}|u[\da-fA-F]{4}|x[\da-fA-F]{2}|[ntr"'`\\])/g;
+const decodedOnce = (text: string) =>
+  text.replace(ESCAPE, (spelling: string, octal: string | undefined) =>
+    octal !== undefined
+      ? String.fromCharCode(Number.parseInt(octal, 8))
+      : normalizeLiteral(spelling),
+  );
+
+/** How many escape layers a literal decodes through, at most four (as `verbatimHeld` decodes). */
+export function escapeLayers(literal: string): number {
+  let layers = 0;
+  let text = literal;
+  for (let next = decodedOnce(text); next !== text && layers < 4; next = decodedOnce(text)) {
+    text = next;
+    layers++;
+  }
+  return layers;
+}
+
+/**
+ * A literal decoded by one layer, the backslashes left in its value kept as text: `verbatimHeld`
+ * then decodes nothing more, and still joins and trims as it does.
+ */
+const oneLayer = (text: string) => decodedOnce(text).replace(/\\/g, "\uE000");
+
+/**
+ * A literal of the row the file spells as given: decoded alike, a `<name>` standing for any text.
+ * `layered` (the same quoting, #2545): by one escape layer, else until none is left.
+ */
+function sameRowLiteral(row: string, file: string, layered = false): boolean {
+  if (new RegExp(PLACEHOLDER.source).test(row)) return literalHeld(file, row);
+  if (row === file) return true;
+  return layered ? sameLiteral(oneLayer(row), oneLayer(file)) : sameLiteral(row, file);
+}
+
+/**
+ * Whether file tokens from `at` spell the row's `token`: the last file token it takes, or null.
+ * `layered` (#2545): a literal the file quotes as the row does is compared by one escape layer.
+ */
+function tokenAt(
+  token: RowToken,
+  tokens: readonly RowToken[],
+  at: number,
+  layered = false,
+): number | null {
+  const first = tokens[at];
+  if (!first) return null;
+  if (!token.quoted) return first.quoted ? null : sameValue(token.text, first.text) ? at : null;
+  let joined = "";
+  let sameQuote = true;
+  for (let end = at; end < tokens.length && end < at + JOINED; end++) {
+    const next = tokens[end];
+    if (!next?.quoted) break;
+    joined += next.text;
+    sameQuote &&= next.quote === token.quote;
+    if (sameRowLiteral(token.text, joined, layered && sameQuote)) return end;
+  }
+  return null;
+}
+
+/**
+ * Whether one prescribed row holds a criterion literal that restates a row by its values (#2544,
+ * shadow; the case walk's `RowHold`): the literal's tokens (`rowTokens`) in order within that row,
+ * compared as `tokenAt` compares them, so another quoting, spacing or wrapper of the same row
+ * holds it and values spread over two rows do not. After its first value the row may skip a bare
+ * value the literal leaves out, never a quoted one. R98 spendgate restated each prescribed row as
+ * a tuple, which the walk's matcher read against the rows' joined text as no row (10 false
+ * notes). Null for a literal that is not only such values (two or more, one of them quoted, on one
+ * line, with nothing but punctuation between them): a bare word or flag is no token here, and
+ * `0.(3)` or `1/3` is one number, so the walk's own matcher reads them.
+ */
+export function rowTupleHeld(literal: string, row: string): boolean | null {
+  if (/[\r\n]/.test(literal)) return null;
+  const want = rowTokens(literal);
+  const values = want.length > 1 && want.some((t) => t.quoted);
+  if (!values || /[\p{L}\p{N}_$]/u.test(literal.replace(TOKEN, " "))) return null;
+  const have = rowTokens(row);
+  let from = 0;
+  for (const [i, token] of want.entries()) {
+    let found: number | null = null;
+    for (let k = from; k < have.length && found === null; k++) {
+      found = tokenAt(token, have, k);
+      // Past the first value the row may skip a bare one (a status the literal leaves out), never
+      // a quoted one: `["check"], "b"` is not the row `["check", "--strict"], "b"`.
+      if (found === null && i > 0 && have[k]?.quoted) break;
+    }
+    if (found === null) return false;
+    from = found + 1;
+  }
+  return true;
+}
+
+/** The file tokens from `at` to `end` as one literal, as `tokenAt` joins them. */
+const joinedAt = (tokens: readonly RowToken[], at: number, end: number) =>
+  tokens
+    .slice(at, end + 1)
+    .map((t) => t.text)
+    .join("");
+
+/**
+ * A prescribed row against the file row on line `place` (#2521): its token count and the first
+ * token (from 1) the row's own lines lack (a literal by `literalHeld`, a bare value as a bare
+ * token), or else, when the file row itself holds every token (one row per line), the first that
+ * is out of the row's order. The row's own lines are the file row with its continued strings and
+ * heredoc and the lines after it up to a blank line or the next file row (at most `ROW_TAIL`).
+ * In that order a literal the file row quotes as the row does is compared by one escape layer
+ * (#2545); one that differs only by escape layers drifts with both layer counts.
+ * Null for a row with a long byte run (its count decides, #2515) or with no token.
+ */
+function rowCompare(
+  row: string,
+  lines: readonly string[],
+  place: number,
+  starts: readonly number[],
+): { tokens: number; differs: number | null; layers?: EscapeLayers } | null {
+  const want = rowTokens(row);
+  if (!want.length || literalSpans(row).length) return null;
+  const own = rowText(lines, place);
+  const next = starts.find((s) => s > place) ?? Number.POSITIVE_INFINITY;
+  let last = own.end;
+  while (last < lines.length && last - own.end < ROW_TAIL && last + 1 < next) {
+    if (!(lines[last] ?? "").trim()) break;
+    last++;
+  }
+  const span = lines.slice(place - 1, last).join("\n");
+  const bare = rowTokens(span).filter((t) => !t.quoted);
+  for (const [i, token] of want.entries()) {
+    if (token.quoted) {
+      if (meaningful(token.text) && !literalHeld(span, token.text))
+        return { tokens: want.length, differs: i + 1 };
+      continue;
+    }
+    const at = bare.findIndex((t) => sameValue(token.text, t.text));
+    if (at < 0) return { tokens: want.length, differs: i + 1 };
+    bare.splice(at, 1);
+  }
+  const have = rowTokens(own.text);
+  const anywhere = (token: RowToken) => have.some((_, k) => tokenAt(token, have, k) !== null);
+  if (!want.every(anywhere)) return { tokens: want.length, differs: null };
+  let from = 0;
+  for (const [i, token] of want.entries()) {
+    let found: number | null = null;
+    for (let k = from; k < have.length && found === null; k++)
+      found = tokenAt(token, have, k, true);
+    if (found === null) {
+      // The same literal with all layers decoded: it differs by escape layers only (#2545).
+      for (let k = from; k < have.length; k++) {
+        const end = tokenAt(token, have, k);
+        if (end === null) continue;
+        const layers = {
+          row: escapeLayers(token.text),
+          file: escapeLayers(joinedAt(have, k, end)),
+        };
+        return { tokens: want.length, differs: i + 1, layers };
+      }
+      return { tokens: want.length, differs: i + 1 };
+    }
+    from = found + 1;
+  }
+  return { tokens: want.length, differs: null };
+}
+
+/** The long byte runs of a prescribed row the file counts differently (#2515). */
+function rowRuns(line: string, file: string): RowRunDrift[] {
+  return (runLengthCompare(file, line)?.drifts ?? []).map((d) => ({
+    line: d.line,
+    bytes: d.bytes,
+    diffs: d.diffs,
+  }));
 }
 
 /** A row of the delivered file: its first line, its head and its text with continued strings. */
@@ -194,12 +643,43 @@ interface FileRow {
  * A line's head: its first token up to and including its first bracket (`row(`, `assert_row(`,
  * `{`, `(`), or its first word (`run`); empty for a line that starts with a quote.
  */
-function rowHead(line: string): string {
+export function rowHead(line: string): string {
   return /^\s*([^\s"'`([{]*[([{]?)/.exec(line)?.[1] ?? "";
 }
 
+/**
+ * Whether a prescribed row is in the request's own notation rather than a language's code (#2583):
+ * a bare word, then a space (`run "cols" "3" stdin="…" => 0 "…" ""`), with a `=>` outside quotes
+ * and brackets that a value follows, not a bracket (PHP's `yield 'x' => [...]` stays code). A test
+ * framework cannot parse such a line: R84 wrapsmith's `place_rows` wrote these rows into a Pester
+ * file (ParseException), and the edit guard then refused the session's `Row` calls. Code rows
+ * (`{"a", 0}`, `Arguments.of(…)`, `row(…)`, `["a", ["a"]]`) start with a bracket or a call.
+ */
+export function rowNotation(row: string): boolean {
+  const text = row.trim();
+  const head = rowHead(text);
+  if (!/^[A-Za-z_][\w.-]*$/.test(head) || !/\s/.test(text[head.length] ?? "")) return false;
+  let depth = 0;
+  for (let i = head.length; i < text.length; i++) {
+    const ch = text[i] ?? "";
+    const quote =
+      ch === '"' || ch === "`" || (ch === "'" && !/[\p{L}\p{N}_]/u.test(text[i - 1] ?? ""));
+    if (quote) {
+      let j = i + 1;
+      while (j < text.length && text[j] !== ch) j += text[j] === "\\" ? 2 : 1;
+      i = j;
+      continue;
+    }
+    if ("([{".includes(ch)) depth++;
+    else if (")]}".includes(ch)) depth--;
+    else if (depth === 0 && ch === "=" && text[i + 1] === ">" && /\s/.test(text[i - 1] ?? ""))
+      return /^\s+[^\s([{]/.test(text.slice(i + 2));
+  }
+  return false;
+}
+
 /** A line that continues the previous line's strings: a quote or a concatenation operator first. */
-const CONTINUES = /^\s*(?:["']|\+|<>|\.\.)/;
+export const CONTINUES = /^\s*(?:["']|\+|<>|\.\.)/;
 
 /** The delivered file as rows: each line with a head, with the lines that continue its strings. */
 function fileRowsOf(file: string): FileRow[] {
@@ -247,7 +727,11 @@ function rowMatch(
  * prescribed rows it matches (exact matches first, else loose ones). A file row that matches none
  * takes the place of a prescribed row nothing holds when it shares the most literals with it.
  */
-export function measureFileRows(rows: readonly string[], file: string): FileRowMeasure[] {
+export function measureFileRows(
+  rows: readonly string[],
+  file: string,
+  base: string | null = null,
+): FileRowMeasure[] {
   const all = fileRowsOf(file).map((fileRow) => {
     const literals = meaningfulLiterals(fileRow.text);
     const exact: number[] = [];
@@ -263,12 +747,25 @@ export function measureFileRows(rows: readonly string[], file: string): FileRowM
     all.filter((r) => r.matches.length && r.literals.length >= 2).map((r) => r.fileRow.head),
   );
   const kept = all.filter((r) => heads.has(r.fileRow.head) && r.literals.length);
-  const measures: FileRowMeasure[] = kept.map((r) => ({
-    line: r.fileRow.line,
-    literals: r.literals.length,
-    matches: r.matches,
-    replaces: null,
-  }));
+  // The rows the file held before the run, by text, each held as often as the base holds it.
+  // A row is keyed without its list separator: a placeholder that becomes the last row of a list
+  // whose last row takes none (Ruby, Elixir, Scala, R, Java, Kotlin, C++) loses its comma (#2974).
+  const unseparated = (text: string) => text.trim().replace(/\s*[,;]$/, "");
+  const before = new Map<string, number>();
+  for (const row of base === null ? [] : fileRowsOf(base))
+    before.set(unseparated(row.text), (before.get(unseparated(row.text)) ?? 0) + 1);
+  const measures: FileRowMeasure[] = kept.map((r) => {
+    const text = unseparated(r.fileRow.text);
+    const held = !r.matches.length && (before.get(text) ?? 0) > 0;
+    if (held) before.set(text, (before.get(text) ?? 0) - 1);
+    return {
+      line: r.fileRow.line,
+      literals: r.literals.length,
+      matches: r.matches,
+      replaces: null,
+      ...(held ? { base: true as const } : {}),
+    };
+  });
   // The prescribed rows no file row holds, each paired with the unmatched file row that shares the
   // most of its literals (a row changed in place, which `missing` names).
   const held = new Set<number>();
@@ -282,7 +779,8 @@ export function measureFileRows(rows: readonly string[], file: string): FileRowM
     let best: { at: number; shared: number } | null = null;
     for (const [at, r] of kept.entries()) {
       const measure = measures[at];
-      if (!measure || measure.matches.length || measure.replaces !== null) continue;
+      // A row the file held before the run is no row the run changed in place (#2969).
+      if (!measure || measure.matches.length || measure.replaces !== null || measure.base) continue;
       const shared = r.literals.filter((l) => own.some((o) => sameLiteral(l, o))).length;
       if (shared && (!best || shared > best.shared)) best = { at, shared };
     }
@@ -296,7 +794,9 @@ const plainPath = (path: string) => path.trim().replace(/^(?:\.\/)+/, "");
 
 /**
  * For each test file the graph writes and the request prescribes rows for, its record and the
- * drifting rows, the file read through `read` (null: not there, which records no rows).
+ * drifting rows, the file read through `read` (null: not there, which records no rows). `base`
+ * reads the file as it was before the run wrote it (null: the run created it, or unknown), so a
+ * row the run left as it found it is never `added` (#2969).
  */
 export function rowBlockDrifts(
   request: string,
@@ -305,6 +805,7 @@ export function rowBlockDrifts(
   mode: RowBlockRecord["mode"] = "shadow",
   decide: RowBlockRule = rowBlockDecision,
   move: RowMoveRule = rowMoveDecision,
+  base: (path: string) => string | null = () => null,
 ): { record: RowBlockRecord; drifts: RowBlockDrift[]; extras: RowBlockExtra[] }[] {
   const writers = new Map<string, string[]>();
   for (const task of graph.tasks)
@@ -319,9 +820,9 @@ export function rowBlockDrifts(
   for (const [path, block] of suppliedRows(request, [...writers.keys()])) {
     const tasks = writers.get(path) ?? [];
     const file = read(path);
-    const rows = file === null ? [] : measureRows(block.lines, file);
+    const fileRows = file === null ? [] : measureFileRows(block.lines, file, base(path));
+    const rows = file === null ? [] : measureRows(block.lines, file, fileRows);
     const drifting = decide(rows);
-    const fileRows = file === null ? [] : measureFileRows(block.lines, file);
     const moves = move(fileRows);
     const record: RowBlockRecord = {
       schemaVersion: 1,
@@ -346,6 +847,18 @@ export function rowBlockDrifts(
           row: n,
           text: cut(line),
           missing: measure.missing.map((i) => ({ literal: i, text: cut(literals[i - 1] ?? "") })),
+          runs: file === null ? [] : rowRuns(line, file),
+          differs:
+            measure.differs !== undefined && measure.line !== undefined
+              ? {
+                  line: measure.line,
+                  token: measure.differs,
+                  tokens: measure.tokens ?? 0,
+                  text: cut(rowTokens(line)[measure.differs - 1]?.text ?? ""),
+                  ...(measure.layers ? { layers: measure.layers } : {}),
+                }
+              : null,
+          ...(measure.copy && copyDropped(measure) ? { copy: measure.copy } : {}),
         },
       ];
     });
@@ -369,11 +882,126 @@ export function rowBlockDrifts(
   return out;
 }
 
-/** A drifting row in the words a stop would use. */
-export function rowBlockDriftSummary(drift: RowBlockDrift): string {
+/**
+ * A drifting row in the words a stop would use. `restore` is the verdict of the host's restore
+ * the run recorded for the row (`row-restores/<path>.json`, #2522, #2529): the host, not a repair
+ * task, would restore it, or put its restore back, or could not restore it in place.
+ */
+export function rowBlockDriftSummary(
+  drift: RowBlockDrift,
+  restore?: "would_restore" | "put_back" | "declined",
+): string {
   const lacks = drift.missing.map((m) => `"${m.text}"`).join(", ");
   const by = drift.tasks.length ? `${drift.tasks.join(", ")} delivered ` : "";
-  return `${by}${drift.path} without row ${drift.row} of the request's row block as given: the file lacks ${lacks} (row: ${drift.text}). A repair task would restore the row from the request's text; the prescribed row wins over a test this run wrote.`;
+  const what = lacks ? `the file lacks ${lacks}` : "";
+  const runs = rowRunText(drift);
+  // A missing literal names a changed row already; the token names a row the file held (#2521).
+  const token =
+    drift.differs && !lacks
+      ? `line ${drift.differs.line}, the row's place, does not hold "${drift.differs.text}" (value ${drift.differs.token} of ${drift.differs.tokens}) where the row gives it`
+      : "";
+  const times = (n: number) => `${n} time${n === 1 ? "" : "s"}`;
+  const copy = drift.copy
+    ? `the request gives the row ${times(drift.copy.given)} and the file holds it ${times(drift.copy.held)}`
+    : "";
+  const why = [what, runs, token, copy].filter(Boolean).join("; ");
+  const who =
+    restore === "would_restore"
+      ? "The host would restore the row from the request's text (rowRestore shadow)"
+      : restore === "put_back"
+        ? "The host restored the row from the request's text and put it back when a required check failed on the edit; a repair task would restore it"
+        : restore === "declined"
+          ? "The host cannot restore the row in place; a repair task would restore it from the request's text"
+          : "A repair task would restore the row from the request's text";
+  return `${by}${drift.path} without row ${drift.row} of the request's row block as given: ${why} (row: ${drift.text}). ${who}; the prescribed row wins over a test this run wrote.`;
+}
+
+/**
+ * A row's long runs the file counts differently, plainly (#2515): `the test's input literal
+ * differs from the criterion row by 3 bytes (tests/deflate_match_test.c line 11: 303 bytes of
+ * 0x78 where row 1 of the request's row block gives 300)`. Empty when there is none.
+ */
+export function rowRunText(drift: Pick<RowBlockDrift, "path" | "row" | "runs">): string {
+  return drift.runs
+    .map(
+      (r) =>
+        `the test's input literal differs from the criterion row by ${r.bytes} byte${r.bytes === 1 ? "" : "s"} (${drift.path} line ${r.line}: ${r.diffs.map((d) => runDiffText(d, `row ${drift.row} of the request's row block`)).join(", ")})`,
+    )
+    .join("; ");
+}
+
+export const ROW_RUN_KIND = "row-run-route";
+export const ROW_RUN_DIR = "row-runs/";
+
+/** What `row-runs/<check>.json` records: a failing check's route with run drifts (#2515), no text. */
+export interface RowRunRouteRecord {
+  schemaVersion: 1;
+  checkId: string;
+  /** `shadow`: recorded, the findings keep their files; `on`: the test's task corrects. */
+  mode: "shadow" | "on";
+  /** The test files with a run drift, and the tasks that write them. */
+  tests: string[];
+  tasks: string[];
+  /** Each drift's bytes off, in order. */
+  bytes: number[];
+  /** The files of the check's findings as built, and those the route gives them (or would). */
+  before: (string | null)[];
+  after: (string | null)[];
+}
+
+/**
+ * A failing check's findings when the same checks stage found a long run of a prescribed row
+ * counted differently in a test file (#2515). Every finding's corrective says so first, in plain
+ * words with the line and the byte (it only adds what the host knows). With `route` (the policy
+ * field `rowRunRoute: "on"`), the findings go to the drifting test files only, each from the task
+ * that writes it, and the source findings are dropped; without it the route is only recorded.
+ * Null record when no drift has a run.
+ */
+export function rowRunFindings(
+  checkId: string,
+  findings: Review["findings"],
+  drifts: readonly RowBlockDrift[],
+  tasks: readonly Pick<
+    TaskGraph["tasks"][number],
+    "id" | "writes" | "requirementIds" | "criterionIds"
+  >[],
+  route: boolean,
+  newId: () => string,
+): { findings: Review["findings"]; record: RowRunRouteRecord | null } {
+  const runs = drifts.filter((d) => d.runs.length);
+  const [template] = findings;
+  if (!runs.length || !template) return { findings, record: null };
+  const said = runs.map(rowRunText).join("; ");
+  const note = `${said.charAt(0).toUpperCase()}${said.slice(1)}. Correct the test's literal to the row as the request gives it; the source is not what differs.`;
+  const tests = [...new Set(runs.map((d) => d.path))];
+  const routed: Review["findings"] = route
+    ? tests.map((path) => {
+        const own = findings.find((f) => f.file === path);
+        const owner = tasks.find((t) => t.writes.some((w) => plainPath(w.path) === path));
+        return {
+          ...(own ?? template),
+          id: own?.id ?? newId(),
+          file: path,
+          ...(owner
+            ? { requirementIds: owner.requirementIds, criterionIds: owner.criterionIds }
+            : {}),
+          suggestedFix: `${note} Edit ${path} only; the other rows and the source stay as written.`,
+        };
+      })
+    : findings.map((f) => ({ ...f, suggestedFix: `${note} ${f.suggestedFix}` }));
+  return {
+    findings: routed,
+    record: {
+      schemaVersion: 1,
+      checkId,
+      mode: route ? "on" : "shadow",
+      tests,
+      tasks: [...new Set(runs.flatMap((d) => d.tasks))],
+      bytes: runs.flatMap((d) => d.runs.map((r) => r.bytes)),
+      before: findings.map((f) => f.file),
+      after: tests,
+    },
+  };
 }
 
 /** A file row beyond the block in the words a stop would use (#2503). */

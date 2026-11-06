@@ -9,6 +9,8 @@
     "test/Gen.t.sol": "bytes memory a = abi.encodePacked(x, x, x);\nstring memory lit = \"\\\\\\\\\\\\\";\n// bytes memory d = abi.encodePacked(x, x, x);\n"
   },
   "expected": {
+    "rowIndent": ["\"    row(1),\""],
+    "languagePitfalls": null,
     "generatedValues": ["test/Gen.t.sol:1 format"],
     "exampleBuild": null,
     "runtimePaths": null,
@@ -61,7 +63,37 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/Calc.sol: DeclarationError: Undeclared identifier."],
     "testClasses": null,
-    "testDeclarations": ["test/Sum.t.sol: 2 tests, per class 2"]
+    "testDeclarations": ["test/Sum.t.sol: 2 tests, per class 2"],
+    "rowFileShapes": [
+      "test/CountRows.t.sol",
+      "// SPDX-License-Identifier: MIT",
+      "pragma solidity ^0.8.20;",
+      "",
+      "import {Test} from \"forge-std/Test.sol\";",
+      "import {Words} from \"../src/Words.sol\";",
+      "",
+      "contract CountRowsTest is Test {",
+      "    struct Row {",
+      "        string text;",
+      "        uint256 count;",
+      "    }",
+      "",
+      "    Row[] internal rows;",
+      "",
+      "    function setUp() public {",
+      "        rows.push(Row(\"a\\tb\\nc\", 3));",
+      "        rows.push(Row(\"  lead \\\"q\\\"\", 2));",
+      "    }",
+      "",
+      "    function test_rows() public view {",
+      "        for (uint256 i = 0; i < rows.length; i++) {",
+      "            assertEq(Words.count(rows[i].text), rows[i].count);",
+      "        }",
+      "    }",
+      "}",
+      ""
+    ]
   }
 }

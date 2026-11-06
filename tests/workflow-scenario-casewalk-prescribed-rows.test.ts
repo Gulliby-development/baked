@@ -6,12 +6,14 @@ import {
   type CaseWalk,
   type CaseWalkRecord,
   caseCheck,
+  casePrescribed,
   caseWalkDecision,
+  criterionCases,
 } from "../src/core/verification/criteria-cases.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import type { Spec, TaskGraph } from "../src/core/workflows/schemas.js";
 import { newId } from "../src/core/workflows/store.js";
-import { notPrescribedFindings, prescribedRowFiles } from "../src/core/workflows/supplied-content.js";
+import { notPrescribedFindings, perRowNotPrescribed, prescribedRowFiles } from "../src/core/workflows/supplied-content.js";
 import type { ExecutionRequest, Task } from "../src/core/workflows/types.js";
 import { fixtureSpec, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -215,6 +217,8 @@ describe("the case walk reads the request's prescribed rows (#2501)", () => {
         { criterionId: "AC-001", held: false, row: false, sibling: false, prescribed: "own" },
         { criterionId: "AC-001", held: false, row: false, sibling: false, prescribed: "sibling" },
         { criterionId: "AC-001", held: false, row: false, sibling: false, prescribed: "none" },
+        // A literal that describes rows (#2524) is no more demanded than `none`.
+        { criterionId: "AC-001", held: false, row: false, sibling: false, prescribed: "cited" },
       ],
     };
     expect(caseWalkDecision(record)).toEqual([0, 2]);
@@ -287,7 +291,213 @@ test("scenario: the scheduler hands the walk the request's rows and records case
   expect(wouldStops.map((w) => w.key).sort()).toEqual(
     ["analysis-AC-001", ...NOT_PRESCRIBED.map((l) => `task-T001-AC-001-${l}`)].sort(),
   );
-  expect(wouldStops.find((w) => w.key === "task-T001-AC-001-2 1/3")?.inputs).toEqual({ taskId: "T001", criterionId: "AC-001", literal: "2 1/3" });
+  // `kind` says which reader answered (#2532): `literal` for the walk's own `none`; `perRow`, the
+  // per-row reader's answer beside it (#2544): no row holds these either.
+  expect(wouldStops.find((w) => w.key === "task-T001-AC-001-2 1/3")?.inputs).toEqual({ taskId: "T001", criterionId: "AC-001", literal: "2 1/3", kind: "literal", perRow: "none" });
+  expect(wouldStops.find((w) => w.key === "analysis-AC-001")?.inputs).toEqual({ criterionId: "AC-001", finding: "NOT-PRESCRIBED-AC-001", kind: "literal", perRow: "none" });
   // Shadow: nothing stops on it.
+  expect((await service.get(run.runId)).status).toBe("completed");
+});
+
+// #2544: `casePrescribed` read a file's prescribed rows as one joined text, so a case whose values
+// two rows spread between them (the arguments of one row, the output of another) was held, though
+// no row tests it, and analysis did not note it (the sibling of #2521 on the request side). The
+// per-row reader holds such a multi-value case only when one row holds it; it runs in shadow: the
+// walk records its answer beside the joined one (`prescribedPerRow`) and `case_not_prescribed`
+// records it with `kind: "per-row"`, while the decision and the notes still read the joined text.
+describe("a multi-value case spread over two prescribed rows (#2544, shadow)", () => {
+  const SPREAD: Criterion = { ...CRITERION, when: "the user runs eval on the rows", then: 'it prints the row `["eval","a=1"], "42"`' };
+  const spreadSpec: Spec = { ...fixtureSpec, criteria: [SPREAD] };
+  const LITERAL = '["eval","a=1"], "42"';
+  for (const n of NOTATIONS) {
+    const ownRow = n.row("1/3", "0.(3)");
+    // Row 2 holds the arguments, row 3 the output; no row holds both.
+    const spread = [n.row("a=1", "7"), n.row("b=2", "42")];
+    const header = (path: string, count: number) => n.header(path).replace("(1 row)", `(${String(count)} rows)`);
+    const request = `Build ratdec.\n\n\`\`\`${n.fence}\n${n.header(n.own)}\n${ownRow}\n\`\`\`\n\n\`\`\`${n.fence}\n${header(n.sibling, 2)}\n${spread.join("\n")}\n\`\`\`\n`;
+    const T006 = task("T006", "Write the literal rows.", [n.sibling]);
+    const T007 = task("T007", "Write the arith rows.", [n.own]);
+    const tasks = [T006, T007];
+    const rows = prescribedRowFiles(request, { tasks: tasks as Task[] });
+
+    test(`${n.name}: one case, held by the joined rows (own today), by no single row`, () => {
+      expect(rows.get(n.sibling)).toEqual(spread);
+      // T006 alone, so it owns the case (with T007 the last carrier owns it, #1597).
+      const cases = criterionCases(spreadSpec, T006, { checks: [], tasks: [T006], prescribedRows: rows });
+      expect(cases.map((c) => c.literal)).toEqual([LITERAL]);
+      const [c] = cases;
+      if (!c) throw new Error("no case");
+      expect(casePrescribed(c, [n.sibling], rows)).toBe("own");
+      expect(casePrescribed(c, [n.sibling], rows, true)).toBe("none");
+      // A single value is read on the joined text as before.
+      expect(casePrescribed({ criterionId: "AC-001", literal: "42" }, [n.sibling], rows, true)).toBe("own");
+    });
+
+    test(`${n.name}: the walk records the per-row answer beside the joined one and decides as before`, async () => {
+      const walks: (CaseWalk & { refused: number[] })[] = [];
+      const check = caseCheck(spreadSpec, T007, { checks: [], tasks, prescribedRows: rows, record: (w) => walks.push(w) });
+      if (!check) throw new Error("no case check");
+      expect(await check(workspace({ [n.own]: n.file([ownRow]) }))).toEqual([]);
+      const [record] = walks;
+      expect(record?.cases).toEqual([{ criterionId: "AC-001", row: false, held: false, sibling: false, prescribed: "sibling", prescribedPerRow: "none" }]);
+      if (record) expect(caseWalkDecision(record)).toEqual([]);
+    });
+
+    test(`${n.name}: analysis notes nothing yet and lists the case for the shadow record`, () => {
+      expect(notPrescribedFindings(spreadSpec, { tasks: tasks as Task[] }, request, { checks: [] })).toEqual([]);
+      expect(perRowNotPrescribed(spreadSpec, { tasks: tasks as Task[] }, request, { checks: [] })).toEqual([
+        { taskId: "T007", criterionId: "AC-001", literal: LITERAL },
+      ]);
+    });
+  }
+
+  // Through the scheduler: T001 writes its own row file before T002 writes the file whose two
+  // rows spread the case. Both readers' answers reach `case_not_prescribed` as `kind: "per-row"`
+  // (#2532), at analysis and at T001's walk, and nothing stops on them.
+  test("scenario: the scheduler records the per-row answer under case_not_prescribed in shadow", async () => {
+    const [elixir] = NOTATIONS;
+    if (!elixir) throw new Error("no notation");
+    const ownRow = elixir.row("1/3", "0.(3)");
+    const spread = [elixir.row("a=1", "7"), elixir.row("b=2", "42")];
+    const request = `Create ready value.\n\n\`\`\`elixir\n${elixir.header(elixir.own)}\n${ownRow}\n\`\`\`\n\n\`\`\`elixir\n${elixir.header(elixir.sibling).replace("(1 row)", "(2 rows)")}\n${spread.join("\n")}\n\`\`\`\n`;
+    const plain: Criterion = { ...CRITERION, id: "AC-002", given: "a workspace", when: "the task completes", then: "value is ready" };
+    const twoCriteria: Spec = { ...fixtureSpec, criteria: [SPREAD, plain] };
+    const fixture = workflowFixture();
+    disposals.push(fixture.dispose);
+    const { executor, root, service } = fixture;
+    const original = executor.execute.bind(executor);
+    const walked: string[][] = [];
+    executor.execute = async (req: ExecutionRequest) => {
+      if (req.profile.output === "spec") return { output: twoCriteria, inputTokens: 25, outputTokens: 25 };
+      const out = await original(req);
+      if (req.profile.output === "plan") {
+        const plan = out.output as { markdown: string; taskGraph: TaskGraph };
+        plan.taskGraph.specHash = hashJson(twoCriteria);
+        plan.taskGraph.planHash = hashBytes(plan.markdown);
+        const [first] = plan.taskGraph.tasks;
+        if (!first) throw new Error("no planned task");
+        plan.taskGraph.tasks = [
+          { ...first, id: "T001", criterionIds: ["AC-001"], writes: [{ path: "value.txt", action: "create" }, { path: elixir.own, action: "create" }] },
+          { ...first, id: "T002", title: "Literal rows", criterionIds: ["AC-002"], dependsOn: ["T001"], writes: [{ path: elixir.sibling, action: "create" }] },
+        ];
+      }
+      if (req.profile.output === "implementation") {
+        const write = (path: string, text: string) => {
+          mkdirSync(dirname(join(root, path)), { recursive: true });
+          writeFileSync(join(root, path), text);
+        };
+        if (req.task?.id === "T001") {
+          write(elixir.own, elixir.file([ownRow]));
+          walked.push((await req.caseCheck?.(root)) ?? ["no case check"]);
+        } else write(elixir.sibling, elixir.file(spread));
+      }
+      if (req.profile.output === "review" || req.profile.output === "convergence") {
+        const review = out.output as { coverage: { criterionId: string }[] };
+        const [covered] = review.coverage;
+        if (covered) review.coverage.push({ ...covered, criterionId: "AC-002" });
+      }
+      return out;
+    };
+    const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: request, ownerLabel: "test", policy: fixture.policy });
+    let current = await service.drive(run.runId, new AbortController().signal);
+    for (let i = 0; i < 5 && current.status === "waiting"; i++) {
+      if (service.store.requests(run.runId).find((r) => r.status === "pending")?.kind !== "approval") break;
+      await fixture.approve(run.runId);
+      current = await service.drive(run.runId, new AbortController().signal);
+    }
+    expect(walked[0]).toEqual([]);
+    const wouldStops = service.store
+      .eventsOfType(run.runId, "decision.would_stop")
+      .map((e) => e.payload as { reason: string; mode: string; key: string; inputs: Record<string, unknown> })
+      .filter((p) => p.reason === "case_not_prescribed");
+    expect(wouldStops.map((w) => [w.key, w.mode, w.inputs.kind])).toEqual([
+      [`analysis-per-row-AC-001-T001-${LITERAL}`, "shadow", "per-row"],
+      [`task-T001-per-row-AC-001-${LITERAL}`, "shadow", "per-row"],
+    ]);
+    expect(wouldStops[1]?.inputs).toEqual({ taskId: "T001", criterionId: "AC-001", literal: LITERAL, kind: "per-row", prescribed: "sibling" });
+    expect((await service.get(run.runId)).status).toBe("completed");
+  });
+});
+
+// #2544, R98 spendgate (Python): the criteria restated each prescribed row as a tuple in the
+// spec's own notation, `('--limit', '100', 'spend.csv') -> (0, "ok ...")` for the row
+// `(["--limit", "100", "spend.csv"], 0, "ok ..."),`. The walk's matcher read the joined rows as
+// holding none of them, so analysis noted the criterion and the walk recorded each literal
+// `case_not_prescribed` (10 notes in R98, none true). The per-row reader in shadow (`rowTupleHeld`:
+// the literal's values in order within one row) holds them, and each `kind: "literal"` record
+// carries its answer as `perRow`, so a bench round counts both readers; the decision is unchanged.
+// A row the request truly lacks stays `none` under both readers.
+test("scenario: a row restated as a tuple is held by one row read per row, recorded beside the joined answer (#2544, shadow)", async () => {
+  const path = "tests/test_cli.py";
+  const pyRow = (args: string[], code: number, out: string) => `    (${JSON.stringify(args).replaceAll(",", ", ")}, ${String(code)}, ${q(out)}),`;
+  const tuple = (args: string[], code: number, out: string) => `(${args.map((a) => `'${a}'`).join(", ")}) -> (${String(code)}, ${q(out)})`;
+  const ROWS: [string[], number, string][] = [
+    [["--limit", "100", "spend.csv"], 0, "ok 42.00 of 100.00\n"],
+    [["--limit", "10", "spend.csv"], 1, "over 42.00 of 10.00\n"],
+  ];
+  const MISSING: [string[], number, string] = [["--limit", "5", "spend.csv"], 1, "over 42.00 of 5.00\n"];
+  const RESTATED = ROWS.map((r) => tuple(...r));
+  const ABSENT = tuple(...MISSING);
+  const request = `Build spendgate.\n\n\`\`\`python\n# Rows in ${path} (2 rows)\n${ROWS.map((r) => pyRow(...r)).join("\n")}\n\`\`\`\n`;
+  const criteria: Spec = {
+    ...fixtureSpec,
+    criteria: [
+      { ...CRITERION, given: "a spend file", when: "the user runs the gate", then: `it answers as the rows \`${RESTATED[0]}\` and \`${RESTATED[1]}\`` },
+      { ...CRITERION, id: "AC-002", given: "a spend file", when: "the user runs the gate", then: `it answers \`${ABSENT}\`` },
+      { ...CRITERION, id: "AC-003", given: "a workspace", when: "the task completes", then: "value is ready" },
+    ],
+  };
+  const fixture = workflowFixture();
+  disposals.push(fixture.dispose);
+  const { executor, root, service } = fixture;
+  const original = executor.execute.bind(executor);
+  const walked: string[][] = [];
+  executor.execute = async (req: ExecutionRequest) => {
+    if (req.profile.output === "spec") return { output: criteria, inputTokens: 25, outputTokens: 25 };
+    const out = await original(req);
+    if (req.profile.output === "plan") {
+      const plan = out.output as { markdown: string; taskGraph: TaskGraph };
+      plan.taskGraph.specHash = hashJson(criteria);
+      plan.taskGraph.planHash = hashBytes(plan.markdown);
+      const [first] = plan.taskGraph.tasks;
+      if (!first) throw new Error("no planned task");
+      plan.taskGraph.tasks = [
+        { ...first, id: "T001", criterionIds: ["AC-001", "AC-002", "AC-003"], writes: [{ path: "value.txt", action: "create" }, { path, action: "create" }] },
+      ];
+    }
+    if (req.profile.output === "implementation" && req.task?.id === "T001") {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), `import pytest\n\nROWS = [\n${ROWS.map((r) => pyRow(...r)).join("\n")}\n]\n\n@pytest.mark.parametrize("args,code,out", ROWS)\ndef test_row(args, code, out):\n    assert run(args) == (code, out)\n`);
+      walked.push((await req.caseCheck?.(root)) ?? ["no case check"]);
+    }
+    if (req.profile.output === "review" || req.profile.output === "convergence") {
+      const review = out.output as { coverage: { criterionId: string }[] };
+      const [covered] = review.coverage;
+      if (covered) for (const id of ["AC-002", "AC-003"]) review.coverage.push({ ...covered, criterionId: id });
+    }
+    return out;
+  };
+  const run = await service.start({ commandId: newId(), featureId: "fixture", workflowId: "sdd", prompt: request, ownerLabel: "test", policy: fixture.policy });
+  let current = await service.drive(run.runId, new AbortController().signal);
+  for (let i = 0; i < 5 && current.status === "waiting"; i++) {
+    if (service.store.requests(run.runId).find((r) => r.status === "pending")?.kind !== "approval") break;
+    await fixture.approve(run.runId);
+    current = await service.drive(run.runId, new AbortController().signal);
+  }
+  // The decision is the joined reader's, as before: T001 writes only the prescribed row file, so
+  // the walk demands none of the three.
+  expect(walked[0]).toEqual([]);
+  const inputs = (key: string) =>
+    service.store
+      .eventsOfType(run.runId, "decision.would_stop")
+      .map((e) => e.payload as { reason: string; mode: string; key: string; inputs: Record<string, unknown> })
+      .find((p) => p.reason === "case_not_prescribed" && p.key === key && p.mode === "shadow")?.inputs;
+  // The restated rows: noted by the joined reader, held by one row each read per row.
+  expect(inputs("analysis-AC-001")).toEqual({ criterionId: "AC-001", finding: "NOT-PRESCRIBED-AC-001", kind: "literal", perRow: "held" });
+  for (const literal of RESTATED)
+    expect(inputs(`task-T001-AC-001-${literal}`)).toEqual({ taskId: "T001", criterionId: "AC-001", literal, kind: "literal", perRow: "own" });
+  // The row the request lacks: no row holds it under either reader.
+  expect(inputs("analysis-AC-002")).toEqual({ criterionId: "AC-002", finding: "NOT-PRESCRIBED-AC-002", kind: "literal", perRow: "none" });
+  expect(inputs(`task-T001-AC-002-${ABSENT}`)).toEqual({ taskId: "T001", criterionId: "AC-002", literal: ABSENT, kind: "literal", perRow: "none" });
   expect((await service.get(run.runId)).status).toBe("completed");
 });

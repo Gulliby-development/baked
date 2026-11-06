@@ -195,6 +195,24 @@ export function quoteInRequest(quote: string, request: string): boolean {
  * passed `GET // n -> RS005 at 1:6` by citing an example the brief never gave, and the wrong
  * column shipped (49 of 22,611 differential invocations).
  */
+const UNQUOTED = ", so the row does not rest on the request: ";
+
+/**
+ * Whether a derivation is a mismatch only because `checkedDerivations` found no quote of the
+ * request it rests on (#2561): it recomputed the row from a restatement, so it decides nothing
+ * about what the request gives. R82 tinyflate T009's re-audit, "The cited request text ... is not
+ * in the request, so the row does not rest on the request: The settled clarification specifies
+ * 306 repeated x bytes", settled the conflict for the requirements.
+ */
+export function unquotedDerivation(d: { matches: boolean; derivation: string }): boolean {
+  return (
+    !d.matches &&
+    d.derivation.includes(UNQUOTED) &&
+    (d.derivation.startsWith("The derivation or its requirement cites the request without") ||
+      d.derivation.startsWith("The cited request text "))
+  );
+}
+
 export function checkedDerivations(
   derivations: Analysis["derivations"],
   request: string,
@@ -210,10 +228,7 @@ export function checkedDerivations(
     return {
       ...d,
       matches: false,
-      derivation: `${why}, so the row does not rest on the request: ${d.derivation}`.slice(
-        0,
-        16000,
-      ),
+      derivation: `${why}${UNQUOTED}${d.derivation}`.slice(0, 16000),
     };
   });
 }

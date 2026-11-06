@@ -17,8 +17,10 @@ import {
 import { canHold, deliverableKind, normalizePath } from "../../verification/deliverable-paths.js";
 import { isCodePath } from "../check-policy.js";
 import { WorkflowFault } from "../errors.js";
-import { HOST_CONTENT_MAX_CHARS, SafeId } from "../schemas.js";
-import { suppliedRows } from "../sizing.js";
+import { type FeatureRowFile, formatRowList, scopeRowRanges } from "../feature-rows.js";
+import { hostRowFiles } from "../host-apply.js";
+import { HOST_CONTENT_MAX_CHARS, type RunPolicy, SafeId } from "../schemas.js";
+import { rowBlockFiles, suppliedRows } from "../sizing.js";
 import type { StopMode } from "../stop-reasons.js";
 import { conditionalContractProblems } from "./upstream-symbols.js";
 
@@ -75,6 +77,20 @@ export const InitiativeFeatureSchema = z
      */
     testCases: z.number().int().min(1).max(10_000).optional(),
     /**
+     * The rows of a prescribed row file this feature delivers when several features share the
+     * file (#2898): row numbers from 1, in the request block's order. The host writes only these
+     * rows (and those of its upstream sharers) in the feature's run. Omitted, the scope's words
+     * ("CliRows rows 1-10") decide, and with neither the feature takes the rows no sharer names.
+     */
+    rows: z
+      .array(
+        z
+          .object({ path: PathPattern, rows: z.array(z.number().int().min(1)).min(1).max(10_000) })
+          .strict(),
+      )
+      .max(50)
+      .optional(),
+    /**
      * Files of the boundary whose whole content the request fixes (module stubs that hold only a
      * comment, a registration file of `pub mod` lines, an empty `__init__.py`). The feature's
      * run writes them in the host with no agent; later features replace the stubs through their
@@ -120,6 +136,7 @@ export const InitiativePlanSchema = z
 export type InitiativePlan = z.infer<typeof InitiativePlanSchema>;
 
 export type FeatureSize = NonNullable<InitiativeFeature["size"]>;
+export type RowEntry = NonNullable<InitiativeFeature["rows"]>[number];
 export const FEATURE_SIZES: readonly FeatureSize[] = ["small", "medium", "large"];
 /** Budget weight of a feature size: a medium feature takes the policy's per-run limits. */
 const SIZE_WEIGHTS: Record<FeatureSize, number> = { small: 1, medium: 2, large: 4 };
@@ -205,7 +222,7 @@ export function testOwnershipProblems(plan: InitiativePlan, rows?: RowOwnerInput
 
 /** Whether feature `id` is `target` or depends on it, directly or through other features. */
 function reachesFeature(
-  plan: InitiativePlan,
+  plan: Pick<InitiativePlan, "features">,
   id: string,
   target: string,
   seen = new Set<string>(),
@@ -245,6 +262,11 @@ export interface RowOwnerProblem {
   rows: number;
   /** The sentence the decomposer (enforced) or the would-stop record (shadow) carries. */
   problem: string;
+  /**
+   * `later-row`: a row of the owner's needs a later feature (#2487). `row-split`: the sharers'
+   * row ranges give a row to two features or to none (#2898); `needs` is then the other sharer.
+   */
+  shape?: "later-row" | "row-split";
 }
 
 /**
@@ -267,6 +289,7 @@ export function rowOwnerProblems(plan: InitiativePlan, request: string): RowOwne
   ];
   const prescribed = suppliedRows(request, paths);
   if (!prescribed.size) return [];
+  const split = featureRowSplit(plan, request);
   const cited = new Map(
     plan.features.map((feature) => [
       feature.id,
@@ -276,9 +299,14 @@ export function rowOwnerProblems(plan: InitiativePlan, request: string): RowOwne
     ]),
   );
   const found: RowOwnerProblem[] = [];
-  for (const [path, block] of prescribed)
+  for (const [path, block] of prescribed) {
+    const ranges = split.get(path);
+    if (ranges) found.push(...ranges.problems);
     for (const owner of plan.features) {
       if (!owner.boundary.paths.some((pattern) => patternsMeet(path, pattern))) continue;
+      // With row ranges the owner holds only its own rows; a later sharer's rows are its own.
+      const mine = ranges?.own.get(owner.id);
+      const rows = mine ? block.lines.filter((_, i) => mine.includes(i + 1)) : block.lines;
       const later = plan.features.filter(
         (f) => f.id !== owner.id && reachesFeature(plan, f.id, owner.id),
       );
@@ -289,7 +317,7 @@ export function rowOwnerProblems(plan: InitiativePlan, request: string): RowOwne
       );
       for (const needs of later) {
         const own = (cited.get(needs.id) ?? []).filter((l) => !shared.has(normalizeLiteral(l)));
-        const held = block.lines.flatMap((row) => {
+        const held = rows.flatMap((row) => {
           const literal = own.find((l) => testsHold(row, l));
           return literal === undefined ? [] : [{ row, literal }];
         });
@@ -304,11 +332,152 @@ export function rowOwnerProblems(plan: InitiativePlan, request: string): RowOwne
           literal: first.literal,
           rows: held.length,
           problem: `${path} holds ${held.length === 1 ? "a row" : `${held.length} rows`} that only ${needs.id} can pass (\`${row}\` holds \`${first.literal}\`, which the contract or scope of ${needs.id} cites): give the file to ${needs.id} (it depends on ${owner.id}), or ask for the row in the brief to be split into a file of ${needs.id}.`,
+          shape: "later-row",
         });
         break;
       }
     }
+  }
   return found;
+}
+
+/** How the features that share a prescribed row file split its rows (`featureRowSplit`). */
+export interface RowFileSplit {
+  /** The rows of the file's block. */
+  total: number;
+  /** Each sharer's own rows, from 1, in block order. */
+  own: Map<string, number[]>;
+  /** Rows that two sharers claim or that no sharer claims, as `rowOwnerProblems` entries. */
+  problems: RowOwnerProblem[];
+  /** The sharers that state no rows of the file, typed or in words: they take `free`'s rows. */
+  silent: string[];
+}
+
+/**
+ * The one answer to which prescribed rows of a shared row file each feature owns (#2898). For every
+ * row file the request prescribes (`rowBlockFiles`, `suppliedRows`) that the boundaries of features
+ * meet, a feature's rows are its typed `rows` for the path, else what its scope says in words
+ * (`scopeRowRanges`: the block's name or the file's stem, then `rows 1-10` or `all 28 rows`). A
+ * sharer that states none takes the rows no other sharer states. A file no sharer states rows for
+ * is absent: each feature that writes it takes the whole block, as before.
+ */
+export function featureRowSplit(
+  plan: Pick<InitiativePlan, "features">,
+  request: string,
+): Map<string, RowFileSplit> {
+  const out = new Map<string, RowFileSplit>();
+  for (const [path, block] of suppliedRows(request, rowBlockFiles(request))) {
+    const sharers = plan.features.filter((f) =>
+      f.boundary.paths.some((pattern) => patternsMeet(path, pattern)),
+    );
+    const total = block.lines.length;
+    const names = [
+      /([A-Za-z_][\w.]*)\s+in\s+/.exec(block.header)?.[1] ?? "",
+      (path.split("/").at(-1) ?? path).replace(/\.[^.]*$/, ""),
+    ];
+    const stated = new Map(
+      sharers.flatMap((f): [string, number[]][] => {
+        const typed = joinedRows(f.rows ?? []).find(
+          (r) => normalizePath(r.path) === normalizePath(path),
+        );
+        const rows = typed
+          ? typed.rows.filter((n) => n <= total)
+          : scopeRowRanges(f.boundary.scope, names, total);
+        return rows ? [[f.id, rows]] : [];
+      }),
+    );
+    if (!stated.size) continue;
+    const claimed = new Map<number, string[]>();
+    for (const [id, rows] of stated)
+      for (const row of rows) claimed.set(row, [...(claimed.get(row) ?? []), id]);
+    const free = Array.from({ length: total }, (_, i) => i + 1).filter((n) => !claimed.has(n));
+    const silent = sharers.filter((f) => !stated.has(f.id));
+    const own = new Map(sharers.map((f) => [f.id, stated.get(f.id) ?? free]));
+    const problems: RowOwnerProblem[] = [];
+    const twice = [...claimed].filter(([, ids]) => ids.length > 1);
+    const [first] = twice;
+    if (first) {
+      const [a = "", b = ""] = first[1];
+      problems.push({
+        path,
+        owner: a,
+        needs: b,
+        row: block.lines[first[0] - 1] ?? "",
+        literal: "",
+        rows: twice.length,
+        shape: "row-split",
+        problem: `${path}: ${a} and ${b} both claim row${twice.length === 1 ? "" : "s"} ${formatRowList(twice.map(([n]) => n))}: give each row of the file to one feature in its rows.`,
+      });
+    }
+    if (free.length && !silent.length) {
+      const [a = ""] = stated.keys();
+      problems.push({
+        path,
+        owner: a,
+        needs: a,
+        row: block.lines[(free[0] ?? 1) - 1] ?? "",
+        literal: "",
+        rows: free.length,
+        shape: "row-split",
+        problem: `${path}: no feature claims row${free.length === 1 ? "" : "s"} ${formatRowList(free)} of ${total}: give each row of the file to the feature whose code makes it pass, in its rows.`,
+      });
+    }
+    out.set(path, { total, own, problems, silent: silent.map((f) => f.id) });
+  }
+  return out;
+}
+
+/**
+ * A feature's typed `rows` with one entry per path: the union of every entry the path has, in row
+ * order (#2939). The decomposer writes one entry per run of rows, so a feature whose rows another
+ * sharer's rows interrupt lists the path more than once. Bench round 100 retrylane: tally held
+ * `edges_test.go` rows `[5]` and `[8]` (breaker owned 6-7); the split read only `[5]`, the run's
+ * block stopped at row 7, and `place_rows` refused row 8 until a spec conflict (1.54M tokens).
+ */
+export function joinedRows(entries: readonly RowEntry[]): RowEntry[] {
+  const byPath = new Map<string, RowEntry>();
+  for (const entry of entries) {
+    const key = normalizePath(entry.path);
+    const seen = byPath.get(key);
+    byPath.set(key, {
+      path: seen?.path ?? entry.path,
+      rows: [...(seen?.rows ?? []), ...entry.rows],
+    });
+  }
+  return [...byPath.values()].map((entry) => ({
+    path: entry.path,
+    rows: [...new Set(entry.rows)].sort((a, b) => a - b),
+  }));
+}
+
+/**
+ * The shared row files of `feature` and the rows its run holds of each (#2898): its own rows
+ * (`featureRowSplit`) and those of the sharers it depends on, directly or through others, which
+ * an earlier run delivered and the host keeps. What `featurePrompt` states under
+ * `FEATURE_ROWS_HEADING` and `suppliedRows` reads back in the feature's run.
+ */
+export function featureRowFiles(
+  plan: Pick<InitiativePlan, "features">,
+  request: string,
+  feature: Pick<InitiativeFeature, "id">,
+): FeatureRowFile[] {
+  const files: FeatureRowFile[] = [];
+  for (const [path, split] of featureRowSplit(plan, request)) {
+    const own = split.own.get(feature.id);
+    if (!own) continue;
+    const upstream = [...split.own]
+      .filter(([id]) => id !== feature.id && reachesFeature(plan, feature.id, id))
+      .flatMap(([, rows]) => rows)
+      .filter((row) => !own.includes(row));
+    const rows = [...new Set([...own, ...upstream])].sort((a, b) => a - b);
+    files.push({
+      path,
+      total: split.total,
+      rows,
+      upstream: [...new Set(upstream)].sort((a, b) => a - b),
+    });
+  }
+  return files;
 }
 
 /**
@@ -469,6 +638,28 @@ export function boundaryFiles(
 }
 
 /**
+ * Each feature's boundary files (`boundaryFiles`), the feature that writes each in full (the last
+ * in plan order that lists it), and the prescribed row files among them the host writes with no
+ * session (`hostRowFiles`), with their rows: what `boundaryPathCounts` and `hostRowCases` count.
+ */
+function boundaryOwners(
+  plan: Pick<InitiativePlan, "features">,
+  request: string,
+  policy: Pick<RunPolicy, "rowFileWrite">,
+): {
+  files: Map<string, string[] | null>;
+  owner: Map<string, string>;
+  host: Map<string, number>;
+} {
+  const named = namedFiles(request);
+  const files = new Map(plan.features.map((f) => [f.id, boundaryFiles(f, named)]));
+  const owner = new Map<string, string>();
+  for (const f of plan.features) for (const path of files.get(f.id) ?? []) owner.set(path, f.id);
+  const host = hostRowFiles(request, [...owner.keys()], policy);
+  return { files, owner, host };
+}
+
+/**
  * Every feature's literal boundary paths, each counted in full only in the last feature in plan
  * order that lists it and as a placeholder in the earlier ones. A skeleton-first split lists its
  * module stubs in the first feature and again in the features that fill them: bench round 40
@@ -476,19 +667,19 @@ export function boundaryFiles(
  * what it used (#1464). A file of the feature's own skeleton counts apart, at no cost: the host
  * writes it with no agent (#1461), and bench round 45 (grundykit) priced 22 such stubs at a third
  * of a path each, 2.1M to 3.1M tokens the feature never used (#1550). A glob boundary counts the files of the request it
- * matches (`boundaryFiles`); one that matches none counts no paths and claims none.
+ * matches (`boundaryFiles`); one that matches none counts no paths and claims none. A prescribed
+ * row file the host writes with no session (`hostRowFiles`, under the policy's `rowFileWrite:
+ * "on"`) counts nowhere either (#2640): R87 citeseek's six row test files were priced as paths.
  */
 export function boundaryPathCounts(
   plan: Pick<InitiativePlan, "features">,
   request = "",
+  policy: Pick<RunPolicy, "rowFileWrite"> = {},
 ): Map<string, BoundaryPathCount> {
-  const named = namedFiles(request);
-  const files = new Map(plan.features.map((f) => [f.id, boundaryFiles(f, named)]));
-  const owner = new Map<string, string>();
-  for (const f of plan.features) for (const path of files.get(f.id) ?? []) owner.set(path, f.id);
+  const { files, owner, host } = boundaryOwners(plan, request, policy);
   return new Map(
     plan.features.map((f): [string, BoundaryPathCount] => {
-      const paths = files.get(f.id);
+      const paths = files.get(f.id)?.filter((path) => !host.has(path));
       if (!paths?.length) return [f.id, { paths: 0, placeholders: 0, skeleton: 0 }];
       const own = new Set((f.skeleton ?? []).map((file) => file.path));
       const skeleton = paths.filter((path) => own.has(path)).length;
@@ -498,6 +689,28 @@ export function boundaryPathCounts(
       return [f.id, { paths: paths.length - placeholders - skeleton, placeholders, skeleton }];
     }),
   );
+}
+
+/**
+ * The prescribed rows the host writes with no session under `rowFileWrite: "on"`, by feature id
+ * (#2640): the row files of the feature's boundary (`boundaryFiles`) that `hostRowFiles` takes,
+ * each counted only in the last feature in plan order that lists it, as `boundaryPathCounts`
+ * counts paths. The estimate takes them off the feature's `testCases`, as task-plan sizing prices
+ * the tasks that write them at nothing (`hostRowFileTasks`, #2633): R87 citeseek's preview priced
+ * its 101 host-written rows at the session rate, 6.17M expected against 2.16M used.
+ */
+export function hostRowCases(
+  plan: Pick<InitiativePlan, "features">,
+  request: string,
+  policy: Pick<RunPolicy, "rowFileWrite">,
+): Map<string, number> {
+  const { owner, host } = boundaryOwners(plan, request, policy);
+  const out = new Map<string, number>();
+  for (const [path, rows] of host) {
+    const id = owner.get(path);
+    if (id) out.set(id, (out.get(id) ?? 0) + rows);
+  }
+  return out;
 }
 
 /**
@@ -687,6 +900,25 @@ function partSkeleton(
     : {};
 }
 
+/**
+ * The typed rows of a split feature that part `index` keeps (#2939 follow-up): each path's rows
+ * (`joinedRows`) go to the first part whose paths name the path, as its skeleton files do, so each
+ * row keeps one owner. A part that got none would state no rows, and a sharer that states none
+ * takes the rows no other sharer states: the split feature's rows went to a silent sibling.
+ */
+function partRows(
+  original: InitiativeFeature,
+  parts: readonly { paths?: string[] | undefined }[],
+  index: number,
+): Pick<InitiativeFeature, "rows"> {
+  const names = (i: number, path: string) =>
+    (parts[i]?.paths ?? original.boundary.paths).some((p) => patternsMeet(path, p));
+  const kept = joinedRows(original.rows ?? []).filter(
+    ({ path }) => parts.findIndex((_, i) => names(i, path)) === index,
+  );
+  return kept.length ? { rows: kept } : {};
+}
+
 /** Edits a person may apply to a proposed split. Each one produces a new plan revision. */
 export const SplitEditSchema = z.discriminatedUnion("op", [
   z
@@ -793,15 +1025,45 @@ export function stubFates(
 }
 
 /**
+ * The rows of each shared row file the parts of a merge own (`featureRowSplit` of the plan before
+ * the merge), as typed entries, for every file one part states rows of, typed or in words. The
+ * merged feature has one `rows` entry per path, and a typed entry hides its scope's words, so a
+ * part whose rows were only words, or the rows no sharer states, would lose them to a typed part:
+ * no feature owned them (#2939 follow-up). A silent part's rows stay untyped while a sharer
+ * outside the merge is silent too, since that sharer takes them.
+ */
+function mergedPartRows(
+  plan: InitiativePlan,
+  parts: readonly InitiativeFeature[],
+  request: string,
+): RowEntry[] {
+  const ids = new Set(parts.map((f) => f.id));
+  const entries: RowEntry[] = [];
+  for (const [path, split] of featureRowSplit(plan, request)) {
+    const mine = parts.filter((f) => split.own.has(f.id));
+    if (!mine.some((f) => !split.silent.includes(f.id))) continue;
+    const silentOutside = split.silent.some((id) => !ids.has(id));
+    for (const part of mine) {
+      if (split.silent.includes(part.id) && silentOutside) continue;
+      const rows = split.own.get(part.id) ?? [];
+      if (rows.length) entries.push({ path, rows });
+    }
+  }
+  return entries;
+}
+
+/**
  * The features of `plan` with `featureIds` combined into one, placed where the first of them was:
  * its boundary, contract and dependencies are the parts' together, and dependents of a part
- * depend on it. The result is not validated.
+ * depend on it. With the request, the merged feature's typed `rows` are every row its parts owned
+ * of each shared row file (`mergedPartRows`). The result is not validated.
  */
 function mergeFeatures(
   plan: InitiativePlan,
   featureIds: string[],
   mergedId?: string,
   title?: string,
+  request?: string,
 ): InitiativeFeature[] {
   const merged = unique(featureIds).map((featureId) => {
     const feature = plan.features.find((f) => f.id === featureId);
@@ -843,6 +1105,11 @@ function mergeFeatures(
       ? skeletonTexts(f)
       : { scope: f.boundary.scope, contract: f.contract },
   );
+  // Typed rows of every part, one entry per path (#2939), and the rows parts owned in words.
+  const typedRows = joinedRows([
+    ...merged.flatMap((f) => f.rows ?? []),
+    ...(request === undefined ? [] : mergedPartRows(plan, merged, request)),
+  ]);
   const combined: InitiativeFeature = {
     id,
     title: title ?? merged.map((f) => f.title).join(" + "),
@@ -859,6 +1126,7 @@ function mergeFeatures(
       ? { skeleton: merged.flatMap((f) => f.skeleton ?? []) }
       : {}),
     ...(implemented.length ? { implements: implemented } : {}),
+    ...(typedRows.length ? { rows: typedRows } : {}),
   };
   const position = plan.features.findIndex((f) => ids.has(f.id));
   const features: InitiativeFeature[] = [];
@@ -883,7 +1151,10 @@ function mergeFeatures(
  * other dependents then depend on that feature. A skeleton feature without such a dependent, or one
  * a fold would take below `MIN_FEATURES`, stays as it is.
  */
-export function foldSkeletonFeatures(plan: InitiativePlan): {
+export function foldSkeletonFeatures(
+  plan: InitiativePlan,
+  request?: string,
+): {
   plan: InitiativePlan;
   merged: { featureId: string; from: string[] }[];
 } {
@@ -906,7 +1177,7 @@ export function foldSkeletonFeatures(plan: InitiativePlan): {
     if (!host) continue;
     current = {
       ...current,
-      features: mergeFeatures(current, [skeleton.id, host.id], host.id, host.title),
+      features: mergeFeatures(current, [skeleton.id, host.id], host.id, host.title, request),
     };
     merged.push({ featureId: host.id, from: [skeleton.id, host.id] });
   }
@@ -929,7 +1200,7 @@ export const MAX_MERGED_PATHS = 8;
  */
 export function mergeSmallSiblings(
   plan: InitiativePlan,
-  options: { byDependents?: boolean } = {},
+  options: { byDependents?: boolean; request?: string } = {},
 ): {
   plan: InitiativePlan;
   merged: { featureId: string; from: string[] }[];
@@ -981,7 +1252,7 @@ export function mergeSmallSiblings(
         joined.length <= 200 ? joined : `${parts[0]?.title} and ${parts.length - 1} more`;
       current = {
         ...current,
-        features: mergeFeatures(current, ids, undefined, title.slice(0, 200)),
+        features: mergeFeatures(current, ids, undefined, title.slice(0, 200), options.request),
       };
       merged.push({ featureId: ids[0] ?? "", from: ids });
     }
@@ -991,9 +1262,14 @@ export function mergeSmallSiblings(
 
 /**
  * Applies one edit and returns the new plan. The result is validated as a whole: an edit that
- * leaves fewer than three features, an unknown ID or a cycle is refused.
+ * leaves fewer than three features, an unknown ID or a cycle is refused. `request` is the
+ * initiative's, which says the rows a merge's parts own in words (`mergedPartRows`).
  */
-export function applySplitEdit(plan: InitiativePlan, edit: SplitEdit): InitiativePlan {
+export function applySplitEdit(
+  plan: InitiativePlan,
+  edit: SplitEdit,
+  request?: string,
+): InitiativePlan {
   const find = (id: string): InitiativeFeature => {
     const feature = plan.features.find((f) => f.id === id);
     if (!feature) throw new WorkflowFault("NOT_FOUND", `Unknown feature ${id}`);
@@ -1024,7 +1300,7 @@ export function applySplitEdit(plan: InitiativePlan, edit: SplitEdit): Initiativ
       break;
     }
     case "merge": {
-      features = mergeFeatures(plan, edit.featureIds, edit.id, edit.title);
+      features = mergeFeatures(plan, edit.featureIds, edit.id, edit.title, request);
       break;
     }
     case "split": {
@@ -1048,6 +1324,7 @@ export function applySplitEdit(plan: InitiativePlan, edit: SplitEdit): Initiativ
         mandatory: original.mandatory,
         ...(original.workflow ? { workflow: original.workflow } : {}),
         ...partSkeleton(original, edit.into, index),
+        ...partRows(original, edit.into, index),
       }));
       features = plan.features.flatMap((f) =>
         f.id === original.id

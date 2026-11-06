@@ -1,0 +1,1 @@
+An auto-sized desktop field sizes itself with `autoSizeTextarea` from `apps/desktop/src/renderer/lib/autosize.ts`, which measures the placeholder while the field is empty, so a long hint that wraps is never cut mid-line (#2680).

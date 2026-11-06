@@ -14,6 +14,8 @@
     "src/test/kotlin/RuntimeTest.kt": "val dir = createTempDirectory(\"rt\")\nval want = \"bad: $dir\"\n"
   },
   "expected": {
+    "rowIndent": ["\"    row(1),\""],
+    "languagePitfalls": ["Kotlin"],
     "generatedValues": ["src/test/kotlin/GenTest.kt:1 repeat","src/test/kotlin/GenTest.kt:2 interpolate"],
     "exampleBuild": null,
     "runtimePaths": ["src/test/kotlin/RuntimeTest.kt: dir"],
@@ -86,11 +88,45 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": [
+      "/p/src/main/kotlin/Calc.kt: Unresolved reference 'sub'.",
+      "/p/src/main/kotlin/Old.kt: Type mismatch: inferred type is String but Int was expected"
+    ],
     "testClasses": [
       "src/test/kotlin/com/example/UnitTest1.kt: com.example.FailureExceptionTest, com.example.UnitTest1Kt",
       "src/main/kotlin/SumSpec.kt: by its name",
       "src/test/kotlin/SumPropTest.kt: by its name"
     ],
-    "testDeclarations": ["src/test/kotlin/SumTest.kt: 2 tests, per class 2"]
+    "testDeclarations": ["src/test/kotlin/SumTest.kt: 2 tests, per class 2"],
+    "rowFileShapes": [
+      "src/test/kotlin/wordcount/CountRowsTest.kt",
+      "package wordcount",
+      "",
+      "import org.junit.jupiter.api.Assertions.assertEquals",
+      "import org.junit.jupiter.params.ParameterizedTest",
+      "import org.junit.jupiter.params.provider.Arguments",
+      "import org.junit.jupiter.params.provider.MethodSource",
+      "",
+      "class CountRowsTest {",
+      "    @ParameterizedTest",
+      "    @MethodSource(\"rows\")",
+      "    fun countsWords(",
+      "        text: String,",
+      "        count: Int,",
+      "    ) {",
+      "        assertEquals(count, countWords(text))",
+      "    }",
+      "",
+      "    companion object {",
+      "        @JvmStatic",
+      "        fun rows() =",
+      "            listOf(",
+      "                Arguments.of(\"a\\tb\\nc\", 3),",
+      "                Arguments.of(\"\\$x \\\"q\\\"\", 2),",
+      "            )",
+      "    }",
+      "}",
+      ""
+    ]
   }
 }

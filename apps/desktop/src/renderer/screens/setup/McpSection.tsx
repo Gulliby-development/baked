@@ -46,6 +46,7 @@ import {
   NOTE,
   PAIR,
   ROW,
+  ROW_TEXT,
   SETUP,
   STACK,
   Tag,
@@ -252,7 +253,7 @@ function ServerForm({
   );
 }
 
-function ServerRow({
+export function ServerRow({
   server,
   busy,
   onToggle,
@@ -276,7 +277,7 @@ function ServerRow({
           disabled={busy}
           onCheckedChange={(checked) => onToggle(checked)}
         />
-        <span className={cn(GROW, "flex flex-col gap-0.5")}>
+        <span className={cn(ROW_TEXT, "flex flex-col gap-0.5")}>
           <span className="flex flex-wrap items-center gap-2">
             <span className="font-mono font-semibold text-foreground">{server.name}</span>
             <Tag>{server.transport}</Tag>

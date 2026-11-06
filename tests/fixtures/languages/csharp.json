@@ -15,6 +15,8 @@
     "tests/App.Tests/RuntimeTests.cs": "var dir = Path.GetTempPath();\nvar want = $\"bad: {dir}\";\n"
   },
   "expected": {
+    "rowIndent": ["\"    row(1),\""],
+    "languagePitfalls": ["C# and .NET"],
     "generatedValues": ["tests/App.Tests/GenTests.cs:1 repeat","tests/App.Tests/GenTests.cs:2 interpolate"],
     "exampleBuild": ["dotnet run --no-build; link bin, obj"],
     "runtimePaths": ["tests/App.Tests/RuntimeTests.cs: dir"],
@@ -88,11 +90,30 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/Calc.cs: error CS0029: Cannot implicitly convert type 'string' to 'int' [/p/Calc.csproj]"],
     "testClasses": [
       "Maskback.Tests/UnitTest1.cs: Maskback.Tests.FailureExceptionTests",
       "src/App.Tests/Checks.cs: by its name",
       "tests/App.Tests/Props.cs: by its name"
     ],
-    "testDeclarations": ["Calc.Tests/SumTests.cs: 3 tests, per class 2, 1"]
+    "testDeclarations": ["Calc.Tests/SumTests.cs: 3 tests, per class 2, 1"],
+    "rowFileShapes": [
+      "tests/Wordcount.Tests/CountRowsTests.cs",
+      "using Xunit;",
+      "",
+      "namespace Wordcount.Tests;",
+      "",
+      "public class CountRowsTests",
+      "{",
+      "    [Theory]",
+      "    [InlineData(\"a\\tb\\nc\", 3)]",
+      "    [InlineData(\"  lead \\\"q\\\"\", 2)]",
+      "    public void CountsWords(string text, int count)",
+      "    {",
+      "        Assert.Equal(count, Words.Count(text));",
+      "    }",
+      "}",
+      ""
+    ]
   }
 }

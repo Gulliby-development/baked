@@ -14,6 +14,8 @@
     "tests/testthat/test-runtime.R": "dir <- tempdir()\nwant <- sprintf(\"bad: %s\", dir)\n"
   },
   "expected": {
+    "rowIndent": ["\"  row(1),\""],
+    "languagePitfalls": ["R"],
     "generatedValues": ["tests/testthat/test-gen.R:1 repeat","tests/testthat/test-gen.R:2 format"],
     "exampleBuild": null,
     "runtimePaths": ["tests/testthat/test-runtime.R: dir"],
@@ -79,7 +81,21 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": null,
     "testClasses": null,
-    "testDeclarations": ["tests/testthat/test-sum.R: 2 tests"]
+    "testDeclarations": ["tests/testthat/test-sum.R: 2 tests"],
+    "rowFileShapes": [
+      "tests/testthat/test-count-rows.R",
+      "test_that(\"words are counted\", {",
+      "  rows <- list(",
+      "    list(\"a\\tb\\nc\", 3),",
+      "    list(\"  lead \\\"q\\\"\", 2)",
+      "  )",
+      "  for (row in rows) {",
+      "    expect_equal(count_words(row[[1]]), row[[2]])",
+      "  }",
+      "})",
+      ""
+    ]
   }
 }

@@ -3,7 +3,8 @@
     "src/Sum.php": "<?php\nfunction sum($a, $b) {\n  throw new \\RuntimeException(\"not implemented\");\n}\n",
     "src/SumTest.php": "<?php\nsum(1, 2);\n// AC-001 example: (1, 2, 3)\n",
     "composer.json": "{\n  \"require\": {\n    \"php\": \">=8.2\",\n    \"monolog/monolog\": \"^3\"\n  },\n  \"require-dev\": {\n    \"phpunit/phpunit\": \"^11\",\n    \"laravel/pint\": \"^1\"\n  },\n  \"autoload\": {\n    \"psr-4\": {\n      \"App\\\\\": \"src/\"\n    }\n  }\n}\n",
-    "phpstan.neon": "parameters:\n  level: 6\n  paths:\n    - src\n"
+    "phpstan.neon": "parameters:\n  level: 6\n  paths:\n    - src\n",
+    "vendor/bin/pint": "#!/usr/bin/env php\n<?php\n"
   },
   "outputs": {
     "tests": "PHPUnit 11.5.0 by Sebastian Bergmann and contributors.\n\nRuntime:       PHP 8.3.6\n\n.F                                                                  2 / 2 (100%)\n\nTime: 00:00.012, Memory: 8.00 MB\n\nThere was 1 failure:\n\n1) App\\Tests\\SumTest::testCommutes\nFailed asserting that 4 is identical to 3.\n\n/repo/tests/SumTest.php:14\n\nFAILURES!\nTests: 2, Assertions: 2, Failures: 1.\n",
@@ -14,6 +15,8 @@
     "tests/RuntimeTest.php": "<?php\n$dir = sys_get_temp_dir();\n$want = \"bad: $dir\";\n"
   },
   "expected": {
+    "rowIndent": ["\"    row(1),\""],
+    "languagePitfalls": ["PHP"],
     "generatedValues": ["tests/GenTest.php:2 repeat","tests/GenTest.php:3 interpolate"],
     "exampleBuild": null,
     "runtimePaths": ["tests/RuntimeTest.php: dir"],
@@ -86,7 +89,38 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": null,
     "testClasses": null,
-    "testDeclarations": ["tests/SumTest.php: 2 tests, per class 2"]
+    "testDeclarations": ["tests/SumTest.php: 2 tests, per class 2"],
+    "rowFileShapes": [
+      "tests/CountRowsTest.php",
+      "<?php",
+      "",
+      "declare(strict_types=1);",
+      "",
+      "namespace Tests;",
+      "",
+      "use PHPUnit\\Framework\\Attributes\\DataProvider;",
+      "use PHPUnit\\Framework\\TestCase;",
+      "use Wordcount\\Words;",
+      "",
+      "final class CountRowsTest extends TestCase",
+      "{",
+      "    public static function rows(): array",
+      "    {",
+      "        return [",
+      "            [\"a\\tb\\nc\", 3],",
+      "            ['  lead', 1],",
+      "        ];",
+      "    }",
+      "",
+      "    #[DataProvider('rows')]",
+      "    public function testCountsWords(string $text, int $count): void",
+      "    {",
+      "        self::assertSame($count, Words::count($text));",
+      "    }",
+      "}",
+      ""
+    ]
   }
 }

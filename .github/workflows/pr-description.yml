@@ -7,6 +7,12 @@ on:
     types: [opened, edited, synchronize, reopened]
   merge_group:
 
+# A newer push to the same pull request cancels this run, so superseded runs free their runners:
+# the account runs a limited number of jobs at once, and on 2026-11-04 Linux jobs waited for one (#2915).
+concurrency:
+  group: pr-description-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # A pull request that closes a Bug issue reports its sibling sweep (.agents/skills/file-issue).
   # In the merge queue it reports "skipped", which counts as passed.

@@ -1,3 +1,4 @@
+import { respelled, runsHeld } from "../verification/byte-runs.js";
 import { misquotation } from "./conflict-rows.js";
 
 /**
@@ -131,14 +132,17 @@ export function misquoteFixPlan(
     const found = [...after].map(([path, text]) => ({ path, count: occurrences(text, m.quoted) }));
     const total = found.reduce((sum, f) => sum + f.count, 0);
     const own = new Set(m.quoted);
-    const plain = [...m.literal].every((ch) => (own.has(ch) && ch !== "\\") || PLAIN.test(ch));
+    // A long byte run the test counts differently is rewritten in the test's own notation (#2515):
+    // a repeat's count, a hex string or a byte list written out with the criterion's count.
+    const replacement = respelled(m.quoted, m.literal) ?? m.literal;
+    const plain = [...replacement].every((ch) => (own.has(ch) && ch !== "\\") || PLAIN.test(ch));
     const unescaped = !m.quoted.includes("\\");
     const site = found.find((f) => f.count === 1);
     if (total === 1 && unescaped && plain && site) {
       const text = after.get(site.path) ?? "";
       after.set(
         site.path,
-        text.replace(m.quoted, () => m.literal),
+        text.replace(m.quoted, () => replacement),
       );
     }
     return { criterionId: m.id, occurrences: total, unescaped, plain, held: false };
@@ -148,7 +152,8 @@ export function misquoteFixPlan(
     const site = sites[i];
     if (site)
       site.held =
-        texts.some((text) => text.includes(m.literal)) && misquotation(m.literal, texts) === null;
+        texts.some((text) => text.includes(m.literal) || runsHeld(text, m.literal) === true) &&
+        misquotation(m.literal, texts) === null;
   }
   return {
     sites,

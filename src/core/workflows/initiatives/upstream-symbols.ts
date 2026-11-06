@@ -6,6 +6,7 @@ import {
   rowOf,
   type SupportedLanguage,
 } from "../../intelligence/language-records.js";
+import { isTestFile } from "../../intelligence/language-traits.js";
 import { detectLanguageFromPath } from "../../intelligence/types.js";
 import type { Spec } from "../schemas.js";
 import type { InitiativePlan } from "./plan.js";
@@ -239,6 +240,28 @@ const languagesOf = (paths: readonly string[]): SupportedLanguage[] =>
   paths.map((path) => detectLanguageFromPath(path)).filter(isSupportedLanguage);
 /** "a public Reader helper", "Reader's public helper": a helper of a type, with no member named. */
 const HELPER = /\b(?:public\s+)?([A-Z][A-Za-z0-9_]*)(?:'s)?\s+(?:public\s+)?helper\b/g;
+/**
+ * "the given Rows helper", "the supplied Rows helper": the phrase names a helper file the request
+ * hands over, not a member missing from it (#2566). R83 bytemerge: the spec's "the given Rows
+ * helper" was `Rows.java`, a verbatim block of the request that the upstream feature installed,
+ * and was recorded as a gap of that file.
+ */
+const GIVEN = /\b(?:given|supplied|provided|verbatim)\s+(?:public\s+)?$/i;
+/**
+ * "the unchanged Rows helper", "the existing Rows helper": a definite helper with no `public`, whose
+ * upstream file defines the type, names that file (#2837). R91 dagwalk: "Use the unchanged Rows
+ * helper through Cli.Run" named `tests/Dagwalk.Tests/Rows.cs`, which holds `class Rows`, and was
+ * recorded as a gap. "a public Rows helper" and "Reader's public helper" still ask for a member.
+ */
+const DEFINITE = /\bthe\s+(?:[a-z][a-z-]*\s+)?$/;
+/**
+ * Whether `text` defines `type`: a declaration keyword of any language before it. A file named for
+ * the type (`rows.py`) is that helper whatever it declares.
+ */
+const definesType = (text: string, type: string) =>
+  new RegExp(
+    `\\b(?:class|struct|record|interface|enum|module|object|trait|protocol|type|defmodule|namespace)\\s+${type}\\b`,
+  ).test(text);
 
 /** A name compared in any letter case, without `_` and `-`. */
 const keyOf = (name: string) => name.replace(/[_-]/g, "").toLowerCase();
@@ -259,13 +282,15 @@ const isTypeFile = (path: string, type: string) => {
  * Whether `Type.Member` is a namespace rather than a member of an upstream type (#2365): a path of
  * the released feature's own boundary has `Type/Member` as a folder and a folder or file below it
  * (`Maskback.Core` for `src/Maskback/Core/Scanner.cs`: the feature writes it), or `Type` is the
- * stem of a project file (`Maskback.csproj`, the root namespace) and no other file's stem.
+ * stem of a project file (`Maskback.csproj`, the root namespace) and no other file's stem, or
+ * `Type.Member` is a dotted folder or project stem of any upstream, own or planned path (#2837).
  */
 function isNamespace(
   type: string,
   member: string,
   upstream: readonly { path: string }[],
   own: readonly string[],
+  planned: readonly string[] = [],
 ): boolean {
   const pair = `${keyOf(type)}/${keyOf(member)}`;
   const ownPair = own.some((path) => {
@@ -275,10 +300,62 @@ function isNamespace(
     return keys.some((key, i) => i < last && `${key}/${keys[i + 1]}` === pair);
   });
   if (ownPair) return true;
+  // A dotted folder or project stem is the namespace whole: `tests/Dagwalk.Tests/` and
+  // `Dagwalk.Tests.csproj` for `Dagwalk.Tests` (R91 dagwalk, #2837).
+  const dotted = keyOf(`${type}.${member}`);
+  const paths = [...upstream.map((file) => file.path), ...own, ...planned];
+  if (
+    paths.some((path) => {
+      const segments = path.split("/");
+      const file = segments.pop() ?? "";
+      return (
+        segments.some((segment) => keyOf(segment) === dotted) ||
+        (isProjectFile(file) && nameOf(file) === dotted)
+      );
+    })
+  )
+    return true;
   const stems = (paths: readonly string[]) =>
     paths.filter((path) => nameOf(basename(path)) === nameOf(type));
   const named = stems([...upstream.map((file) => file.path), ...own]);
   return named.some(isProjectFile) && named.every(isProjectFile);
+}
+
+/**
+ * The files the plan and the released run know, sorted: every feature's boundary paths, skeleton
+ * files and implemented stubs, and `known`, the run's own (its host-written files, its tasks'
+ * writes, the files at the release base that a boundary covers). A spec's `Type.Member` whose
+ * member is one of these files' modules names that file, not a member of the type's file (#2619).
+ */
+export function plannedFiles(plan: InitiativePlan, known: readonly string[] = []): string[] {
+  const paths = plan.features.flatMap((feature) => [
+    ...feature.boundary.paths,
+    ...(feature.skeleton ?? []).map((file) => file.path),
+    ...(feature.implements ?? []),
+  ]);
+  return [...new Set([...paths, ...known])].sort();
+}
+
+/**
+ * A test module's name in every language's convention: `GroupsTest`, `FooTests`, `ReaderSpec`,
+ * `foo_test`, `reader_spec`. `NAMETest`, a request's placeholder for a family of test files, is one.
+ */
+const TEST_MODULE = /(?:[A-Za-z0-9]Tests?|[A-Za-z0-9]Specs?|_tests?|_spec)$/;
+
+/**
+ * Whether `Type.Member` names another file's module rather than a member of the type's file
+ * (#2619): the member is the stem of a file the plan knows, compared as `keyOf`
+ * (`Tokbill.GroupsTest` for `test/groups_test.exs`, `Tokbill.RowCase` for
+ * `test/support/row_case.ex`, `App.FooTests` for `FooTests.cs`, `app::foo_test` for
+ * `foo_test.rs`), or a test module's name while the plan has a test path. R85 tbl: all three
+ * `upstream_symbol` would-stops were test modules and the host-written test support module, read
+ * as missing members of the root module `lib/tokbill.ex`. The file list is the plan's, so it holds
+ * in every language.
+ */
+function isPlannedModule(member: string, planned: readonly string[]): boolean {
+  const key = keyOf(member);
+  if (planned.some((path) => !isGlob(path) && nameOf(basename(path)) === key)) return true;
+  return TEST_MODULE.test(member) && planned.some(isTestFile);
 }
 
 /**
@@ -287,14 +364,17 @@ function isNamespace(
  * languages (`MEMBER_SYNTAX`: `Reader::new`, `Reader#read`, `lines.Line`, #2199). A type is matched
  * to a file by its stem or its folder in any letter case (`Reader` to `Reader.cs`, `reader.go`,
  * `reader/mod.rs`), so it works in every language; a member is looked up as a word in that file. A helper the spec names by its type alone is a gap
- * too: nothing upstream decided it exists. `upstream` holds each upstream boundary file and its
+ * too: nothing upstream decided it exists, unless the spec calls it given and its file is upstream
+ * (#2566). `upstream` holds each upstream boundary file and its
  * text at the release base, null when absent; `own` is the released feature's boundary, whose
- * folders name namespaces it writes itself, not upstream members (#2365).
+ * folders name namespaces it writes itself, not upstream members (#2365). `planned` is every file
+ * the plan knows (`plannedFiles`): a member that is one of their modules is not a gap (#2619).
  */
 export function upstreamSymbolGaps(
   spec: Pick<Spec, "requirements" | "criteria">,
   upstream: readonly { featureId: string; path: string; text: string | null }[],
   own: readonly string[] = [],
+  planned: readonly string[] = [],
 ): UpstreamSymbolGap[] {
   const gaps: UpstreamSymbolGap[] = [];
   const seen = new Set<string>();
@@ -312,7 +392,8 @@ export function upstreamSymbolGaps(
       // `Reader.cs` and `config.yaml` are file names, not members.
       if (sep === "." && FILE_EXTENSION.test(member)) continue;
       if (!files.length || files.some((file) => file.path.endsWith(`.${member}`))) continue;
-      if (sep === "." && isNamespace(type, member, upstream, own)) continue;
+      if (sep === "." && isNamespace(type, member, upstream, own, planned)) continue;
+      if (isPlannedModule(member, planned)) continue;
       named.add(nameOf(type));
       if (files.some((file) => file.text !== null && wordIn(file.text, member))) continue;
       const symbol = sep.endsWith("[") ? `${sep}${type} ${member}]` : `${type}${sep}${member}`;
@@ -325,6 +406,15 @@ export function upstreamSymbolGaps(
       const type = match[1] ?? "";
       const file = upstream.find((f) => isTypeFile(f.path, type));
       if (!file || named.has(nameOf(type)) || seen.has(match[0])) continue;
+      const before = text.slice(Math.max(0, match.index - 40), match.index);
+      if (file.text !== null && GIVEN.test(before)) continue;
+      if (
+        file.text !== null &&
+        !/^public\s/.test(match[0]) &&
+        DEFINITE.test(before) &&
+        (definesType(file.text, type) || nameOf(basename(file.path)) === nameOf(type))
+      )
+        continue;
       seen.add(match[0]);
       gaps.push({ ref, symbol: match[0], featureId: file.featureId, path: file.path });
     }

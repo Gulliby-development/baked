@@ -33,6 +33,7 @@ export const EDIT_TOOLS = new Set([
   "write_test",
   "apply_fix",
   "restore_file",
+  "place_rows",
 ]);
 /**
  * The tools whose result is a check result the watcher compares (`checkResultKey`); `apply_fix`
@@ -72,6 +73,27 @@ const field = (value: unknown, key: string): unknown =>
   value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)[key]
     : undefined;
+
+/**
+ * Whether the step made an edit (#2981): an edit tool call (`isEdit`) whose result is no failure.
+ * A failed edit changes nothing, so it neither clears the repeated-call and no-edit rules nor
+ * counts as progress after the steering: R106 tokenpare filters T005 ran one `edit_file` that
+ * could not match 17 times, then 10 more in its restart, and the watcher never steered. A call
+ * whose result the step does not hold counts as an edit.
+ */
+function editedIn(
+  step: WatchStep,
+  isEdit: (name: string) => boolean = (name) => EDIT_TOOLS.has(name),
+): boolean {
+  const calls = (step.toolCalls ?? []).filter((call) => isEdit(call.toolName));
+  if (!calls.length) return false;
+  const results = (step.toolResults ?? []).filter((result) => isEdit(result.toolName));
+  if (results.length < calls.length) return true;
+  return results.some((result) => field(result.output, "success") !== false);
+}
+
+/** A tool whose repeated call with the same input since the last edit is a stuck loop. */
+const repeatable = (name: string) => READ_TOOLS.has(name) || EDIT_TOOLS.has(name);
 
 /**
  * What two results of one check have in common when they fail the same way: the tool, the check
@@ -131,20 +153,23 @@ export function watchSteps(
 ): WatchFinding | null {
   let lastEdit = -1;
   steps.forEach((step, index) => {
-    if (step.toolCalls?.some((call) => EDIT_TOOLS.has(call.toolName))) lastEdit = index;
+    if (editedIn(step)) lastEdit = index;
   });
   const since = steps.slice(lastEdit + 1);
   const reads = new Map<string, number>();
   for (const step of since)
     for (const call of step.toolCalls ?? []) {
-      if (!READ_TOOLS.has(call.toolName)) continue;
+      // An edit call here changed nothing (#2981): repeating it is the same loop as a reread.
+      if (!repeatable(call.toolName)) continue;
       const key = `${call.toolName} ${canonical(call.input ?? null)}`;
       const count = (reads.get(key) ?? 0) + 1;
       reads.set(key, count);
       if (count >= REPEATED_READS)
         return {
           signal: "repeated-reads",
-          detail: `${call.toolName} ${short(call.input)} was called ${count} times with the same input since the last edit`,
+          detail: EDIT_TOOLS.has(call.toolName)
+            ? `${call.toolName} ${short(call.input)} failed ${count} times with the same input since the last edit and changed nothing; the same call fails again, so give oldString as the file now reads at those lines`
+            : `${call.toolName} ${short(call.input)} was called ${count} times with the same input since the last edit`,
         };
     }
   const tail = checkResults(steps).slice(-SAME_FAILURES);
@@ -254,7 +279,7 @@ export function stillStuck(
     finding.signal === "same-failure"
       ? (name: string) => EDIT_TOOLS.has(name) && name !== FIX_TOOL
       : (name: string) => EDIT_TOOLS.has(name);
-  if (after.some((step) => step.toolCalls?.some((call) => edits(call.toolName)))) return "progress";
+  if (after.some((step) => editedIn(step, edits))) return "progress";
   if (later.length < 1) return "waiting";
   if (finding.signal === "no-edits")
     return after.filter((step) => (step.toolCalls ?? []).length > 0).length >= minimum
@@ -266,11 +291,11 @@ export function stillStuck(
     // A read in the grace step is remembered, so reading it once more after the grace is a stop.
     const seen = new Set(
       [...before, ...after.slice(0, STEER_GRACE_STEPS)].flatMap((step) =>
-        (step.toolCalls ?? []).filter((c) => READ_TOOLS.has(c.toolName)).map(key),
+        (step.toolCalls ?? []).filter((c) => repeatable(c.toolName)).map(key),
       ),
     );
     return later.some((step) =>
-      (step.toolCalls ?? []).some((call) => READ_TOOLS.has(call.toolName) && seen.has(key(call))),
+      (step.toolCalls ?? []).some((call) => repeatable(call.toolName) && seen.has(key(call))),
     )
       ? "stuck"
       : after.length >= stopAfter

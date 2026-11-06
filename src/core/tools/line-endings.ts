@@ -43,6 +43,29 @@ export function toLf(text: string): string {
   return text.includes("\r\n") ? text.replace(/\r\n/g, "\n") : text;
 }
 
+const BOM_CHAR = "﻿";
+
+/**
+ * Text without a leading UTF-8 byte-order mark, and whether it had one. The edit tools match
+ * model text on the text without the mark, which `read` shows invisibly on line 1 (#2789).
+ */
+export function splitBom(text: string): { bom: boolean; text: string } {
+  return text.startsWith(BOM_CHAR) ? { bom: true, text: text.slice(1) } : { bom: false, text };
+}
+
+/**
+ * Model text without a byte-order mark it copied from line 1 of `read` output. A string that is
+ * only the mark stays as it is, so it never turns into the empty `oldString` that creates a file.
+ */
+export function withoutCopiedBom(text: string): string {
+  return splitBom(text).text || text;
+}
+
+/** Puts the byte-order mark back in front of `text` when the file had one. */
+export function withBom(text: string, bom: boolean): string {
+  return bom ? BOM_CHAR + text : text;
+}
+
 /** Re-encode text with the given ending, whatever endings it had before. */
 export function withLineEnding(text: string, eol: LineEnding): string {
   const lf = toLf(text);
@@ -162,18 +185,29 @@ export function detectNewFileLineEnding(dir: string, name?: string): LineEnding 
   return crlfFiles > lfFiles ? "crlf" : "lf";
 }
 
-/** Each file's ending before a fixer runs: the ending of a file whose lines all end alike. */
-export type Endings = Map<string, LineEnding>;
+/**
+ * Each file's shape before a fixer runs: its ending when all its lines end alike (null when mixed
+ * or without a line break), and whether it starts with a UTF-8 byte-order mark (#2592).
+ */
+export interface FileShape {
+  eol: LineEnding | null;
+  bom: boolean;
+}
+export type Endings = Map<string, FileShape>;
 
-/** The uniform ending of each existing text file in `paths`; mixed, empty and binary files are left out. */
+const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
+const hasBom = (bytes: Buffer) => bytes.length >= 3 && bytes.subarray(0, 3).equals(BOM);
+
+/** The shape of each existing text file in `paths`; binary files and missing ones are left out. */
 export function captureEndings(paths: readonly string[]): Endings {
   const endings: Endings = new Map();
   for (const path of paths) {
     try {
-      const text = readFileSync(path, "utf-8");
-      if (text.includes("\0")) continue;
-      const { crlf, lf } = countLineEndings(text);
-      if (crlf + lf > 0 && (crlf === 0 || lf === 0)) endings.set(path, crlf ? "crlf" : "lf");
+      const bytes = readFileSync(path);
+      if (bytes.includes(0)) continue;
+      const { crlf, lf } = countLineEndings(bytes.toString("utf-8"));
+      const eol = crlf + lf > 0 && (crlf === 0 || lf === 0) ? (crlf ? "crlf" : "lf") : null;
+      endings.set(path, { eol, bom: hasBom(bytes) });
     } catch {
       // not there yet
     }
@@ -186,16 +220,21 @@ export function captureEndings(paths: readonly string[]): Endings {
  * writes text mode, so `rubocop -a` turns a LF file it corrects into CRLF, and cops that match a
  * line's end are blind on the CRLF tree the checks see while the committed LF tree fails
  * (namesound R70, #2214). Only that direction: a fixer that writes LF (`gofmt -w`) moves a file
- * toward what git commits, and its check flags CRLF itself. Returns the paths it rewrote.
+ * toward what git commits, and its check flags CRLF itself. It also strips a UTF-8 byte-order
+ * mark the file did not have: `Invoke-ScriptAnalyzer -Fix` saves every file it changes with one
+ * (R84 wrapsmith, #2592); a file that had a mark keeps it. Returns the paths it rewrote.
  */
 export function restoreEndings(before: Endings): string[] {
   const restored: string[] = [];
-  for (const [path, eol] of before) {
-    if (eol !== "lf") continue;
+  for (const [path, shape] of before) {
     try {
-      const text = readFileSync(path, "utf-8");
-      if (!text.includes("\r\n")) continue;
-      writeFileSync(path, toLf(text));
+      const bytes = readFileSync(path);
+      const addedBom = !shape.bom && hasBom(bytes);
+      const body = addedBom ? bytes.subarray(3) : bytes;
+      const text = body.toString("utf-8");
+      const crlf = shape.eol === "lf" && text.includes("\r\n");
+      if (!addedBom && !crlf) continue;
+      writeFileSync(path, crlf ? toLf(text) : body);
       restored.push(path);
     } catch {
       // removed by the fixer

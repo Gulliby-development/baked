@@ -1,5 +1,15 @@
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DEFAULT_CONFIG } from "../../config/index.js";
@@ -18,6 +28,8 @@ import {
   firstByteDeadline,
   providerFirstByteMs,
 } from "../llm/provider-health.js";
+import { streamOutputDecision } from "../llm/providers/output-limit.js";
+import { processTempDir } from "../platform/process-temp.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { workspacePath } from "../specs/validate.js";
 import { replayUnselectedTests } from "../verification/check-runner.js";
@@ -132,12 +144,20 @@ import {
   familyDecision,
   familyKey,
   findingChain,
+  type RewriteRepeatRule,
+  rewriteRepeatDecision,
+  rewritesSymbol,
+  withRewrites,
 } from "./finding-chain.js";
+import { withHistorySnapshot } from "./history-snapshot.js";
 import {
   HOST_APPLY_KIND,
+  type HostApplyPartial,
   type HostApplyRule,
   hostApplyDecision,
+  hostApplyPartialSplit,
   hostApplyRecords,
+  hostApplyVerdict,
 } from "./host-apply.js";
 import type { initiativePriceSamples } from "./initiatives/forecast.js";
 import {
@@ -163,6 +183,7 @@ import {
   timeShortfall,
 } from "./initiatives/service.js";
 import {
+  type PlanChargeExpected,
   type PlanShareDecision,
   type PlanShareInputs,
   planShareDecision,
@@ -172,6 +193,11 @@ import {
   timePoolExtensionDecision,
 } from "./initiatives/token-pool.js";
 import {
+  INVALID_OUTPUT_REPEATS_DIR,
+  type InvalidOutputRecord,
+  invalidOutputDecision,
+} from "./invalid-output-repeat.js";
+import {
   MISQUOTE_FIX_DIR,
   MISQUOTE_FIX_KIND,
   type MisquoteFixRecord,
@@ -179,6 +205,7 @@ import {
   misquoteFixDecision,
 } from "./misquote-fix.js";
 import { recordingOf } from "./model-recording.js";
+import { PITFALLS_KIND } from "./pitfall-notes.js";
 import { type PlanCostRate, planCostOf, plannedRunTokens } from "./plan-cost.js";
 import {
   REPEAT_KIND,
@@ -188,6 +215,7 @@ import {
   type RepeatRecord,
   type RepeatRule,
   repeatedFailureDecision,
+  unfinishedRepeatRemedies,
 } from "./repeated-failure.js";
 import {
   REQUEST_CONFLICT_KIND,
@@ -196,6 +224,7 @@ import {
   type RequestConflictRecord,
   type RequestConflictRule,
   requestConflictDecision,
+  sliceForeignDecision,
 } from "./request-conflict.js";
 import {
   CONVERGENCE_GATE_DIR,
@@ -213,6 +242,7 @@ import {
 import {
   ROW_BLOCK_DIR,
   ROW_BLOCK_KIND,
+  ROW_RUN_KIND,
   type RowBlockRecord,
   type RowBlockRule,
   type RowMoveRule,
@@ -220,6 +250,21 @@ import {
   rowBlockDecision,
   rowMoveDecision,
 } from "./row-block-drift.js";
+import {
+  ROW_RESTORE_DIR,
+  ROW_RESTORE_KIND,
+  type RowRestoreRecord,
+  type RowRestoreRule,
+  rowRestoreDecision,
+} from "./row-restore.js";
+import {
+  MIN_UNFINISHED_ENDS,
+  ROW_SPLIT_KIND,
+  type RowSplitRule,
+  type RowSplitVerdict,
+  rowSplitDecision,
+  rowSplitRecords,
+} from "./row-split.js";
 import { PolicySchema, type RunPolicy } from "./schemas.js";
 import { NativeWorkflowService } from "./service.js";
 import {
@@ -230,6 +275,8 @@ import {
   rowVolumePrice,
   runPace,
   type SizingReport,
+  SUPPLIED_PER_LINE,
+  suppliedRows,
 } from "./sizing.js";
 import {
   SOURCE_DEFECT_DIR,
@@ -289,6 +336,8 @@ const KEPT_ARTIFACTS = new Set([
   CHAIN_KIND,
   // Each failing corrective's required checks, normalized output stood in (#1996).
   REPEAT_KIND,
+  // Each implementer step's pitfalls notes and run traps, text stood in (#2598).
+  PITFALLS_KIND,
   // Each spec conflict's request decision: checked sides and re-audit verdicts, no quotes (#2016).
   REQUEST_CONFLICT_KIND,
   // Each planned task's host apply decision: its writes' supplied blocks and apply checks (#2023).
@@ -297,6 +346,8 @@ const KEPT_ARTIFACTS = new Set([
   SUPPLIED_CHECK_KIND,
   // Each misquote settle's host-fix decision: occurrence counts and spelling flags, no text (#2047).
   MISQUOTE_FIX_KIND,
+  // Each checks-stage restore decision of a prescribed row file: per row its flags, no text (#2522).
+  ROW_RESTORE_KIND,
   // Each planned source task's edge-input probe: its cases' criteria and outcomes (#1808).
   EDGE_KIND,
   // Each test-integrity scan: per-file counts and flags, no code (#1715).
@@ -307,6 +358,10 @@ const KEPT_ARTIFACTS = new Set([
   TEST_CAP_KIND,
   // Each checks-stage row block comparison: per prescribed row its literal counts, no text (#2486).
   ROW_BLOCK_KIND,
+  // Each unfinished end's split decision of a rows test task: row numbers and counts, no text (#2458).
+  ROW_SPLIT_KIND,
+  // Each failing check's route with a miscounted byte run: files, bytes off, no text (#2515).
+  ROW_RUN_KIND,
   // Each review's gate: the findings' labels and repro outcomes, no claims (#1715).
   REVIEW_GATE_KIND,
   // Each task-level corrective's write-scope precondition: diagnosed paths and writes (#2094).
@@ -899,6 +954,10 @@ export interface RunReplay {
   firstByte: FirstByteBoundary[];
   /** Calls the current deadline would end as an outage that got their answer in the recording. */
   newFirstByteStops: number;
+  /** Each step a stream guard watched against the current rule (`stream_output_limit`, #2660). */
+  streamOutputs: StreamOutputBoundary[];
+  /** Steps the current rule stops (or records a would-stop for) that the recording passed. */
+  newStreamOutputStops: number;
   /** Each planned test task of the run's sizing reports against the current split rule (#1789). */
   testSplits: TestSplitBoundary[];
   /** Test tasks the current rule splits that the recorded sizing kept whole. */
@@ -931,6 +990,10 @@ export interface RunReplay {
   misquoteFixes: MisquoteFixBoundary[];
   /** Misquote settles whose host-fix decision (apply or open a session) the current rule changes. */
   newMisquoteFixes: number;
+  /** Each checks-stage restore decision of a prescribed row file against the current rule (#2522). */
+  rowRestores: RowRestoreBoundary[];
+  /** Rows the current rule restores that the recorded decision did not (#2522). */
+  newRowRestores: number;
   /** Each case of a source task's edge-input probe against the current rule (#1808). */
   edgeProbes: EdgeProbeBoundary[];
   /**
@@ -1011,6 +1074,66 @@ export interface RunReplay {
   newRowBlockDrifts: number;
   /** File rows the current move rule says are added or duplicated that the recording did not (#2503). */
   newRowBlockMoves: number;
+  /** Each rows test task that ended unfinished, with its split decision (#2458). */
+  rowSplits: RowSplitBoundary[];
+  /** Recorded split decisions the current rule turns from resume into split (#2458). */
+  newRowSplits: number;
+}
+
+export interface RowSplitBoundary {
+  taskId: string;
+  /** The task's unfinished ends in `repeats/tasks/<task>.json` (#2437). */
+  ends: number;
+  /** The recorded decision; null for a task with no record (a trace before #2458). */
+  recorded: RowSplitVerdict["decision"] | null;
+  /** The current rule's decision on the recorded inputs; null without a record. */
+  replayed: RowSplitVerdict["decision"] | null;
+  /** Slices recorded and replayed; null without a record. */
+  slices: { recorded: number; replayed: number } | null;
+}
+
+/**
+ * Every split decision a run recorded at a task's unfinished end (`row-splits/tasks/<task>.json`,
+ * #2458), decided again from its inputs (ends, owned and missing rows, their characters, the
+ * cap), and every task with `MIN_UNFINISHED_ENDS` unfinished ends and no record (a trace before
+ * it, or a task without prescribed rows) as a boundary without a decision. Which rows a file holds
+ * reads text a trace does not keep, so a change to that is covered by
+ * `tests/workflow-scenario-unfinished-row-split.test.ts`, not replayed.
+ */
+export function replayRowSplits(
+  store: WorkflowStore,
+  runId: string,
+  decide: RowSplitRule = rowSplitDecision,
+): RowSplitBoundary[] {
+  const ends = new Map<string, number>();
+  for (const artifact of store.artifacts(runId)) {
+    if (artifact.kind !== REPEAT_KIND || !artifact.logical_path.startsWith(REPEAT_TASKS_DIR))
+      continue;
+    try {
+      const record = JSON.parse(store.readArtifact(runId, artifact.id)) as RepeatRecord;
+      if (record.end === "unfinished") ends.set(record.taskId, (ends.get(record.taskId) ?? 0) + 1);
+    } catch {}
+  }
+  const records = new Map(rowSplitRecords(store, runId).map((r) => [r.taskId, r]));
+  const tasks = [...new Set([...records.keys(), ...ends.keys()])].sort();
+  return tasks.flatMap((taskId): RowSplitBoundary[] => {
+    const record = records.get(taskId);
+    const count = record?.ends ?? ends.get(taskId) ?? 0;
+    if (!record)
+      return count >= MIN_UNFINISHED_ENDS
+        ? [{ taskId, ends: count, recorded: null, replayed: null, slices: null }]
+        : [];
+    const verdict = decide(record);
+    return [
+      {
+        taskId,
+        ends: count,
+        recorded: record.decision,
+        replayed: verdict.decision,
+        slices: { recorded: record.slices.length, replayed: verdict.slices.length },
+      },
+    ];
+  });
 }
 
 export interface RowBlockBoundary {
@@ -1160,7 +1283,8 @@ export interface ActiveTimeBoundary {
   replayed: { tokensPerMinute: number; basis: PaceBasis; after: number };
   /**
    * In shadow (#2414): the cap at the clean pace, from the rates the report recorded beside its
-   * pace (`cleanPace`), else from the trace's runs that completed before it (`cleanRates`).
+   * pace (`cleanPace`) with their `stallMs`, else (none recorded, or recorded before #2424 with the
+   * whole wait left out) from the trace's runs that completed before it (`cleanRates`).
    */
   clean: CleanSizingShadow | null;
 }
@@ -1252,10 +1376,16 @@ export function replayActiveTimes(
     if (!history) return [];
     const chosen = pace(history, time.ownRates ?? initiativeRatesAt(store, runId, at));
     const recordedClean = (report as { cleanPace?: CleanSizingShadow }).cleanPace;
+    // A report before #2424 recorded rates without the whole wait (no `stallMs`): its clean pace is
+    // taken again from the trace's runs, so the replay shows the rule as it is now.
     const clean = cleanSizingShadow(
       report,
-      recordedClean
-        ? { rates: recordedClean.rates, silentMs: recordedClean.silentMs }
+      recordedClean?.stallMs !== undefined
+        ? {
+            rates: recordedClean.rates,
+            silentMs: recordedClean.silentMs,
+            stallMs: recordedClean.stallMs,
+          }
         : cleanRates(store, initiativeRunsAt(store, runId, at)),
     );
     const after = activeTimeLimit({
@@ -1893,6 +2023,63 @@ export function replayMisquoteFixes(
     });
 }
 
+export interface RowRestoreBoundary {
+  path: string;
+  /**
+   * Where the restore was decided: `checks`, the checks stage (records without `at`); `task-end`,
+   * a row-file task's end (#2529, with `task` and any best-of-N `candidate`); `resume`, `drive`
+   * and `task` as #2543 records them.
+   */
+  at: NonNullable<RowRestoreRecord["at"]> | "checks";
+  /** The task whose end or session start recorded it; null at the checks stage and on resume. */
+  task: string | null;
+  candidate: number | null;
+  mode: RowRestoreRecord["mode"];
+  /** The rows the run restored (or would have, in shadow), and those the current rule restores. */
+  recorded: number[];
+  replayed: number[];
+  verdict: RowRestoreRecord["verdict"];
+}
+
+/**
+ * Every row restore decision a run recorded (`row-restores/<path>.json`, #2522), decided again
+ * from its sites' flags, keyed by where it was decided (`at`: the checks stage, a task's end,
+ * #2529, or the sites of #2543). Whether a restored file holds the row reads text a trace
+ * does not keep, so a change to that is covered by `tests/workflow-scenario-row-restore.test.ts`.
+ * Traces before #2522 record none.
+ */
+export function replayRowRestores(
+  store: WorkflowStore,
+  runId: string,
+  decide: RowRestoreRule = rowRestoreDecision,
+): RowRestoreBoundary[] {
+  return store
+    .artifacts(runId)
+    .filter((a) => a.kind === ROW_RESTORE_KIND && a.logical_path.startsWith(ROW_RESTORE_DIR))
+    .flatMap((artifact) => {
+      let record: RowRestoreRecord;
+      try {
+        record = JSON.parse(store.readArtifact(runId, artifact.id));
+      } catch {
+        return [];
+      }
+      if (record.schemaVersion !== 1) return [];
+      return [
+        {
+          path: record.path,
+          at: record.at ?? "checks",
+          task:
+            record.at === "task" || record.at === "task-end" ? (record.blocked?.[0] ?? null) : null,
+          candidate: record.candidate ?? null,
+          mode: record.mode,
+          recorded: record.restore,
+          replayed: decide(record.sites),
+          verdict: record.verdict,
+        },
+      ];
+    });
+}
+
 export interface EdgeProbeBoundary {
   /** The probe record's path and the case's number. */
   key: string;
@@ -1958,6 +2145,12 @@ export interface HostApplyBoundary {
   replayed: boolean;
   /** Why the current rule would start an implementer; null when it would apply. */
   reason: string | null;
+  /**
+   * For a record with a partial split (#2937): the recorded split and the current rule's, from
+   * the same writes (`hostApplyPartialSplit`, null when it splits nothing). Absent for a record
+   * without one.
+   */
+  partial?: { recorded: HostApplyPartial; replayed: HostApplyPartial | null };
 }
 
 /**
@@ -1971,12 +2164,23 @@ export function replayHostApply(
   decide: HostApplyRule = hostApplyDecision,
 ): HostApplyBoundary[] {
   return hostApplyRecords(store, runId).map((record) => {
-    const verdict = decide(record.writes ?? []);
+    const verdict = hostApplyVerdict(record.writes ?? [], record.suppliedConflict, decide);
+    const { written, session } = record.partial ?? { written: [], session: [] };
     return {
       taskId: record.taskId,
       recorded: record.wouldApply,
       replayed: verdict.wouldApply,
       reason: verdict.reason,
+      ...(record.partial
+        ? {
+            partial: {
+              recorded: { written, session },
+              replayed: verdict.wouldApply
+                ? null
+                : hostApplyPartialSplit(record.writes ?? [], record.suppliedConflict),
+            },
+          }
+        : {}),
     };
   });
 }
@@ -1987,6 +2191,11 @@ export interface RequestConflictBoundary {
   report: number;
   recorded: RequestConflictDecision;
   replayed: RequestConflictDecision;
+  /**
+   * Whether the slice-foreign rule settles the report (#2476), recorded and replayed; false for a
+   * record from before #2476, which holds no slice inputs.
+   */
+  sliceForeign: { recorded: boolean; replayed: boolean };
 }
 
 /**
@@ -2019,12 +2228,22 @@ export function replayRequestConflicts(
         criterionIds: record.criterionIds ?? [],
         reaudit: record.reaudit ?? null,
         reauditedBefore: record.reauditedBefore ?? false,
+        ...(record.slice ? { slice: record.slice } : {}),
       };
       // The re-audit is a step of the decision: with its verdicts recorded, ask the rule with them.
       const first = decide({ ...input, reaudit: null });
       const replayed = first === "reaudit" && input.reaudit !== null ? decide(input) : first;
       return [
-        { taskId: record.taskId, report: record.report, recorded: record.decision, replayed },
+        {
+          taskId: record.taskId,
+          report: record.report,
+          recorded: record.decision,
+          replayed,
+          sliceForeign: {
+            recorded: record.sliceForeign === true,
+            replayed: sliceForeignDecision(input, replayed),
+          },
+        },
       ];
     });
 }
@@ -2043,6 +2262,14 @@ export interface RepeatedFailureBoundary {
   replayed: RepeatDecision;
   /** `record`: the `repeats/tasks/` records; `findings`: the stood-in check findings. */
   source: "record" | "findings";
+  /**
+   * `invalid-output`: an `invalid_output` stop's repeat decision (`repeats/invalid-output/`,
+   * #2520), keyed by its diagnostic in `taskId`, with the key it was compared with in `previous`;
+   * absent for a task's record.
+   */
+  kind?: "invalid-output";
+  /** A repeated unfinished end's remedies: those its block offered, and those replayed (#2520). */
+  remedies?: { recorded: string[]; replayed: string[] };
 }
 
 /**
@@ -2132,11 +2359,20 @@ export function replayRepeatedFailures(
       recorded: record.decision,
       replayed: decide(previous ?? null, record.checks),
       source: "record" as const,
+      ...(end && record.remedies
+        ? {
+            remedies: {
+              recorded: record.remedies,
+              replayed: unfinishedRepeatRemedies(record.ends ?? 2),
+            },
+          }
+        : {}),
     });
   }
-  if (boundaries.size) return [...boundaries.values()];
+  const stops = replayInvalidOutputRepeats(store, runId);
+  if (boundaries.size) return [...boundaries.values(), ...stops];
   const rounds = new Map<string, { checks: RepeatCheck[]; root: string }>();
-  return findingRounds(store, runId).map((round) => {
+  const found = findingRounds(store, runId).map((round): RepeatedFailureBoundary => {
     const previous = round.corrected ? rounds.get(round.corrected) : undefined;
     const root = previous?.root ?? round.corrected ?? round.taskId;
     rounds.set(round.taskId, { checks: round.checks, root });
@@ -2149,23 +2385,64 @@ export function replayRepeatedFailures(
       source: "findings" as const,
     };
   });
+  return [...found, ...stops];
 }
 
-/** Chains where the replay records a would-stop the run did not: one per chain, as the run does. */
+/**
+ * Each `invalid_output` stop's repeat decision (`repeats/invalid-output/`, #2520), decided again
+ * from its recorded inputs: the refused writes, the diagnostic's hash, the run inputs, whether the
+ * prompt held the note and the key the last resume recorded. Traces from before #2520 have none.
+ */
+function replayInvalidOutputRepeats(
+  store: WorkflowStore,
+  runId: string,
+): RepeatedFailureBoundary[] {
+  return store.artifacts(runId).flatMap((artifact): RepeatedFailureBoundary[] => {
+    if (
+      artifact.kind !== REPEAT_KIND ||
+      !artifact.logical_path.startsWith(INVALID_OUTPUT_REPEATS_DIR)
+    )
+      return [];
+    try {
+      const record = JSON.parse(store.readArtifact(runId, artifact.id)) as InvalidOutputRecord;
+      return [
+        {
+          taskId: record.diagnosticId,
+          previous: record.previous,
+          root: "invalid-output",
+          recorded: record.decision,
+          replayed: invalidOutputDecision(record),
+          source: "record",
+          kind: "invalid-output",
+        },
+      ];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/**
+ * Chains where the replay records a would-stop the run did not: one per chain, as the run does.
+ * An `invalid_output` stop's repeat decision is no would-stop and is left out.
+ */
 export function newRepeatStops(boundaries: readonly RepeatedFailureBoundary[]): number {
-  const recorded = new Set(boundaries.filter((b) => b.recorded === "repeat").map((b) => b.root));
+  const chains = boundaries.filter((b) => b.kind === undefined);
+  const recorded = new Set(chains.filter((b) => b.recorded === "repeat").map((b) => b.root));
   return new Set(
-    boundaries.filter((b) => b.replayed === "repeat" && !recorded.has(b.root)).map((b) => b.root),
+    chains.filter((b) => b.replayed === "repeat" && !recorded.has(b.root)).map((b) => b.root),
   ).size;
 }
 
 export interface FindingChainBoundary {
   /**
    * The corrective task of a rewrite decision, the battery record's path, or a probed case's.
-   * `crash` is a battery or sibling-probe case's shadow crash decision (#2136).
+   * `crash` is a battery or sibling-probe case's shadow crash decision (#2136). `rewrite_repeat`
+   * is a symbol rewrite's count of earlier rewrites (#2568): `none`, `probe` or `ask`, keyed
+   * `<task>#rewrites`.
    */
   key: string;
-  kind: "rewrite" | "battery" | "family" | "crash" | "site";
+  kind: "rewrite" | "rewrite_repeat" | "battery" | "family" | "crash" | "site";
   recorded: string;
   replayed: string;
 }
@@ -2180,9 +2457,15 @@ export interface FindingChainBoundary {
 export function replayFindingChains(
   store: WorkflowStore,
   runId: string,
-  rules: { chain?: ChainRule; battery?: BatteryRule; family?: FamilyRule } = {},
+  rules: {
+    chain?: ChainRule;
+    battery?: BatteryRule;
+    family?: FamilyRule;
+    rewriteRepeat?: RewriteRepeatRule;
+  } = {},
 ): FindingChainBoundary[] {
   const decideChain = rules.chain ?? chainRewriteDecision;
+  const decideRepeat = rules.rewriteRepeat ?? rewriteRepeatDecision;
   const decideBattery = rules.battery ?? batteryDecision;
   const decideFamily = rules.family ?? familyDecision;
   return store.artifacts(runId).flatMap((artifact): FindingChainBoundary[] => {
@@ -2197,6 +2480,17 @@ export function replayFindingChains(
             recorded: record.decision,
             replayed: decideChain(record.length, record.policy),
           },
+          // A symbol rewrite's count of earlier rewrites (#2568); records before it have none.
+          ...(rewritesSymbol(record) && record.rewrites !== undefined
+            ? [
+                {
+                  key: `${record.taskId}#rewrites`,
+                  kind: "rewrite_repeat" as const,
+                  recorded: record.repeat ?? "none",
+                  replayed: decideRepeat(record.rewrites),
+                },
+              ]
+            : []),
         ];
       }
       // A case's shadow crash decision (#2136), on its recorded output's tail and the chain's file.
@@ -2280,6 +2574,13 @@ export interface ChainEscalation {
   decision: "rewrite" | "patch";
   /** The findings whose repros a rewrite's battery holds, oldest first; empty for a patch. */
   battery: string[];
+  /**
+   * The earlier rewrites of the step's symbol or family (#2568): steps before it whose finding
+   * the run gave a corrective and which the policy rewrote.
+   */
+  rewrites: number;
+  /** What the count decides for a rewrite: `probe` at the second, `ask` after two; else `none`. */
+  repeat: "none" | "probe" | "ask";
 }
 
 export interface ChainEscalationReplay {
@@ -2338,6 +2639,8 @@ export function replayChainEscalation(
      * that declares families would have said on a run recorded before the field existed.
      */
     families?: Readonly<Record<string, string | null>>;
+    /** Decides each step's count of earlier rewrites (#2568); the current rule by default. */
+    rewriteRepeat?: RewriteRepeatRule;
   } = {},
 ): ChainEscalationReplay {
   const policy = options.policy ?? "on";
@@ -2360,19 +2663,26 @@ export function replayChainEscalation(
   }
   const steps: ChainEscalation[] = [];
   const known = new Map<string, ChainFinding>();
+  // The rewrites decided so far, for each step's count of earlier rewrites (#2568).
+  const rewrites: ChainRecord[] = [];
   for (const row of rows) {
     const finding = all.get(row.id);
     if (!finding || missing.has(row.id)) continue;
     known.set(row.id, finding);
     const chain = findingChain(known, finding);
     const decision = decide(chain.length, policy);
-    const battery =
-      decision === "rewrite" && chain.length >= CHAIN_REWRITE_AT
-        ? batteryOf(
-            known,
+    const record =
+      chain.length >= CHAIN_REWRITE_AT
+        ? withRewrites(
             chainRecord(row.repair_task_id ?? "", finding, chain, policy, decide),
-          ).map((f) => f.id)
-        : [];
+            rewrites,
+            options.rewriteRepeat,
+          )
+        : null;
+    const battery =
+      decision === "rewrite" && record ? batteryOf(known, record).map((f) => f.id) : [];
+    // Only a finding the run gave a corrective counts as a rewrite for the later ones.
+    if (record && rewritesSymbol(record) && row.repair_task_id) rewrites.push(record);
     steps.push({
       findingId: row.id,
       taskId: row.repair_task_id,
@@ -2380,6 +2690,8 @@ export function replayChainEscalation(
       family: finding.family,
       decision,
       battery,
+      rewrites: record?.rewrites ?? 0,
+      repeat: record?.repeat ?? "none",
     });
   }
   return { runId, steps, missingBodies: [...missing] };
@@ -2674,7 +2986,8 @@ export function replayFirstBytes(
   const boundaries = new Map<string, FirstByteBoundary[]>(runIds.map((runId) => [runId, []]));
   for (const { runId, attemptId, model, call, index, estimated } of calls) {
     // A refused call (a 429, say) answered before any deadline; it is the retry ladder's, not this.
-    if (call.status !== undefined) continue;
+    // So is one that ended in a provider error, such as a model at capacity (#2820).
+    if (call.status !== undefined || call.failure === "error") continue;
     const limitMs =
       adaptive && call.limitMs !== undefined
         ? adaptive(history, providerFirstByteMs(call.provider, call), model, call)
@@ -2695,6 +3008,67 @@ export function replayFirstBytes(
       recorded: call.firstByteMs === null ? "stop" : "pass",
       replayed: replayed ? "stop" : "pass",
     });
+  }
+  return boundaries;
+}
+
+/** The stream guard's rule (#2660); `streamOutputDecision` unless a test passes another. */
+export type StreamOutputRule = typeof streamOutputDecision;
+
+/** A step a stream guard watched (`outputGuard` in its usage record), against the current rule. */
+export interface StreamOutputBoundary {
+  attemptId: string;
+  /** The step's index in its attempt. */
+  step: number;
+  mode: string;
+  maxOutputTokens: number;
+  streamedChars: number;
+  /** `stop` for a recorded `would_stop` or `stopped`. */
+  recorded: "pass" | "stop";
+  replayed: "pass" | "stop";
+}
+
+/**
+ * Every step of a run whose provider guarded its stream (`steps[].outputGuard` in
+ * `attempts/*\/usage.json`, Codex app-server, #2660), decided again from its limit and streamed
+ * characters. The current factor is the rule's, not the recorded one, so a change of the factor
+ * shows here. Traces before #2660 record none.
+ */
+export function replayStreamOutputs(
+  store: WorkflowStore,
+  runId: string,
+  rule: StreamOutputRule = streamOutputDecision,
+): StreamOutputBoundary[] {
+  const attempts = store.connection
+    .query("SELECT id FROM attempts WHERE run_id=? ORDER BY started_at, rowid")
+    .all(runId) as { id: string }[];
+  const boundaries: StreamOutputBoundary[] = [];
+  for (const attempt of attempts) {
+    const artifact = store.latestArtifact(runId, `attempts/${attempt.id}/usage.json`);
+    if (!artifact) continue;
+    let usage: Pick<AttemptUsageRecord, "steps">;
+    try {
+      usage = JSON.parse(store.readArtifact(runId, artifact.id)) as typeof usage;
+    } catch {
+      continue;
+    }
+    for (const [step, entry] of (usage.steps ?? []).entries()) {
+      const guard = entry.outputGuard;
+      if (!guard || typeof guard.maxOutputTokens !== "number") continue;
+      const { over } = rule({
+        maxOutputTokens: guard.maxOutputTokens,
+        streamedChars: guard.streamedChars,
+      });
+      boundaries.push({
+        attemptId: attempt.id,
+        step,
+        mode: guard.mode,
+        maxOutputTokens: guard.maxOutputTokens,
+        streamedChars: guard.streamedChars,
+        recorded: guard.decision === "pass" ? "pass" : "stop",
+        replayed: over ? "stop" : "pass",
+      });
+    }
   }
   return boundaries;
 }
@@ -2779,7 +3153,10 @@ export function replayStallLadder(
     }
     const last = usage.calls?.at(-1);
     // A stall, or a turn that finished with no usable answer (#1957), which climbs the same way.
-    const stalled = !!last && last.firstByteMs === null && last.status === undefined;
+    // A call that ended in a provider error (the model at capacity) is the retry's, not a stall
+    // (#2820); a call recorded before its failure kind was is read by its timing alone.
+    const stalled =
+      !!last && last.firstByteMs === null && last.status === undefined && last.failure !== "error";
     if (attempt.status !== "failed" || (!stalled && usage.lostAnswer === undefined)) continue;
     const entry =
       (stage ? routing.stages?.[stage] : undefined) ??
@@ -3642,15 +4019,85 @@ export type HistoryTrace = (store: string) => string | null;
 
 /**
  * A bench app the runner kept at `.../RNN/app` is `RNN/app.sqlite.gz` in the corpus at `root`.
- * Apps from before the corpus (R44 and older) have no trace.
+ * From round 81 the bench keeps a new app under a short folder (`R85/csp` for cellspan, #2894)
+ * while the corpus names its trace after the app, so a store no file name matches resolves through
+ * `roundTrace`. Apps from before the corpus (R44 and older) have no trace.
  */
 export function corpusHistoryTrace(root: string): HistoryTrace {
   return (store) => {
     const dir = store.replace(/[\\/]+$/, "").replace(/[\\/]\.baked[\\/]workflows\.sqlite$/, "");
     const match = /(?:^|[\\/])(R\d+)[\\/]([^\\/]+)$/.exec(dir);
-    const trace = match ? join(root, match[1] ?? "", `${match[2]}.sqlite.gz`) : null;
-    return trace && existsSync(trace) ? trace : null;
+    if (!match) return null;
+    const [, round = "", folder = ""] = match;
+    const trace = join(root, round, `${folder}.sqlite.gz`);
+    if (existsSync(trace)) return trace;
+    return roundTrace(join(root, round), round, folder);
   };
+}
+
+/** The traces of a corpus round by the project folder they recorded, and those that recorded none. */
+type RoundFolders = { recorded: Map<string, string>; unrecorded: string[] };
+
+const ROUND_FOLDERS = new Map<string, { key: string; folders: RoundFolders }>();
+
+/**
+ * The trace of a corpus round whose app the runner kept under `folder` (#2894). A trace names its
+ * folder where it recorded an absolute path: an instruction file of a run's input manifest
+ * (`R85\csp\package.json`, cellspan) or a check's executable in a run's policy
+ * (`R86/bnl/.venv/...`, binlayer). A trace that recorded none (R83 bytemerge kept `bym`) is found by
+ * its app name: a folder of no hyphen that starts with the app's first letter, keeps its other
+ * letters in the app's order and is no word of the app name itself (`R89/namesound` is not
+ * `namesound-update`) names the one such app of the round it fits. A folder that fits several apps
+ * names none.
+ */
+function roundTrace(dir: string, round: string, folder: string): string | null {
+  const { recorded, unrecorded } = roundFolders(dir, round);
+  const named = folder.toLowerCase();
+  const own = recorded.get(named);
+  if (own) return own;
+  const fits = unrecorded.filter((file) => {
+    const app = basename(file)
+      .replace(/\.sqlite\.gz$/, "")
+      .toLowerCase();
+    if (named.includes("-") || named[0] !== app[0] || app.split("-").includes(named)) return false;
+    let at = 0;
+    for (const letter of app) if (letter === named[at]) at++;
+    return at === named.length;
+  });
+  return fits.length === 1 ? (fits[0] ?? null) : null;
+}
+
+/** The project folder each trace of a corpus round recorded (lower case), read once per round. */
+function roundFolders(dir: string, round: string): RoundFolders {
+  if (!existsSync(dir)) return { recorded: new Map(), unrecorded: [] };
+  const files = readdirSync(dir)
+    .filter((f) => f.endsWith(".sqlite.gz"))
+    .sort();
+  const key = files.map((f) => `${f}:${statSync(join(dir, f)).mtimeMs}`).join("|");
+  const known = ROUND_FOLDERS.get(dir);
+  if (known?.key === key) return known.folders;
+  const folders: RoundFolders = { recorded: new Map(), unrecorded: [] };
+  const path = new RegExp(`(?:^|[\\\\/"])${round}[\\\\/]+([^\\\\/"]+)[\\\\/]`, "g");
+  for (const file of files) {
+    const db = Database.deserialize(Bun.gunzipSync(readFileSync(join(dir, file))));
+    const named = new Set<string>();
+    try {
+      const runs = db.query("SELECT input_manifest_json, policy_json FROM runs").all() as {
+        input_manifest_json: string | null;
+        policy_json: string | null;
+      }[];
+      for (const run of runs)
+        for (const text of [run.input_manifest_json, run.policy_json])
+          for (const m of (text ?? "").matchAll(path)) named.add((m[1] ?? "").toLowerCase());
+    } finally {
+      db.close();
+    }
+    // A trace that names two folders of its round is no evidence for either.
+    if (named.size === 1) folders.recorded.set([...named][0] ?? "", join(dir, file));
+    else if (named.size === 0) folders.unrecorded.push(join(dir, file));
+  }
+  ROUND_FOLDERS.set(dir, { key, folders });
+  return folders;
 }
 
 const NO_AGENTS = {
@@ -3687,11 +4134,27 @@ export function replayInitiativeStarts(
     /** Sets the initiative's `sizing.recencyHalfLife`, to backtest the weighting (#2150). */
     recencyHalfLife?: number;
     /**
+     * Sets the initiative's `sizing.fewPathPrice` (#2640): `false` replays the size pools without
+     * the few-path share, which is on by default (#2893), to backtest it.
+     */
+    fewPathPrice?: boolean;
+    /**
      * Sets entries of the initiative's base policy `stopModes`, to replay a round at the mode it
      * ran in: a round before #2245 held open runs at their limits (`initiative-plan-charge` in
      * shadow), and a replay without this entry takes the current default.
      */
     stopModes?: RunPolicy["stopModes"];
+    /**
+     * Sets `workflows.planChargeExpected` for the replay (#2534): `on` holds the open runs'
+     * unmeasured plans at their expected need, to backtest it against the default high end.
+     */
+    planChargeExpected?: PlanChargeExpected;
+    /**
+     * Computes the view and estimate only at each initiative's first replayed start, for a backtest
+     * that reads `starts[0]` alone (#2753). Every later start is still rewound through, so the
+     * first one reads the state a full replay gives it; the rest of `starts` is left out.
+     */
+    firstStartOnly?: boolean;
   } = {},
 ): Omit<
   InitiativeReplay,
@@ -3723,7 +4186,10 @@ export function replayInitiativeStarts(
       budgetAtStart: options.budgetAtStart !== false,
       moments: options.moments ?? [],
       ...(options.recencyHalfLife ? { recencyHalfLife: options.recencyHalfLife } : {}),
+      ...(options.fewPathPrice !== undefined ? { fewPathPrice: options.fewPathPrice } : {}),
       ...(options.stopModes ? { stopModes: options.stopModes } : {}),
+      ...(options.planChargeExpected ? { planChargeExpected: options.planChargeExpected } : {}),
+      firstStartOnly: options.firstStartOnly === true,
     }),
   );
 }
@@ -3781,6 +4247,49 @@ function removeRuns(db: Database, tables: string[], runIds: Iterable<string>): v
   }
 }
 
+/**
+ * Restores the row blocks of an initiative's request in a trace (#2640): a trace keeps a stand-in
+ * for the request text, so `hostRowCases` would read no rows there. Each prescribed row file the
+ * trace's runs recorded at their checks (`row-blocks/<file>.json`, the rows `suppliedRows` read
+ * from the request) gets a block of that many placeholder rows, headed as a request heads one,
+ * unless the stand-in already gives the file rows. A file no run reached checks with has no
+ * record and stays unpriced as rows, so a replay never discounts more than the run had.
+ */
+export function restoreRowBlocks(db: Database, initiativeId: string): void {
+  const row = db.query("SELECT prompt FROM initiatives WHERE id=?").get(initiativeId) as {
+    prompt: string;
+  } | null;
+  if (!row) return;
+  const counts = new Map<string, number>();
+  for (const artifact of db
+    .query(
+      "SELECT a.inline_content AS content FROM artifacts a JOIN initiative_runs l ON l.run_id=a.run_id WHERE l.initiative_id=? AND a.logical_path LIKE 'row-blocks/%' ORDER BY a.created_at",
+    )
+    .all(initiativeId) as { content: string | null }[]) {
+    try {
+      const record = JSON.parse(artifact.content ?? "") as { path?: unknown; rows?: unknown };
+      if (typeof record.path === "string" && Array.isArray(record.rows))
+        counts.set(record.path, record.rows.length);
+    } catch {}
+  }
+  const given = suppliedRows(row.prompt, [...counts.keys()]);
+  const blocks = [...counts]
+    .filter(([path, rows]) => rows > 0 && !given.has(path))
+    .map(([path, rows]) =>
+      [
+        "```",
+        `Rows in ${path} (${rows} rows)`,
+        ...Array.from({ length: rows }, (_, i) => `row-${i + 1}`),
+        "```",
+      ].join("\n"),
+    );
+  if (!blocks.length) return;
+  db.run("UPDATE initiatives SET prompt=? WHERE id=?", [
+    [row.prompt, "Row blocks restored from the trace's records.", ...blocks].join("\n\n"),
+    initiativeId,
+  ]);
+}
+
 function replayStarts(
   path: string,
   initiativeId: string,
@@ -3791,12 +4300,18 @@ function replayStarts(
     budgetAtStart,
     moments,
     recencyHalfLife,
+    fewPathPrice,
     stopModes,
+    planChargeExpected,
+    firstStartOnly,
   }: {
     budgetAtStart: boolean;
     moments: number[];
     recencyHalfLife?: number;
+    fewPathPrice?: boolean;
     stopModes?: RunPolicy["stopModes"];
+    planChargeExpected?: PlanChargeExpected;
+    firstStartOnly: boolean;
   },
 ): Omit<
   InitiativeReplay,
@@ -3818,15 +4333,27 @@ function replayStarts(
       .get(initiativeId) as { settings_json: string; decompose_run_id: string | null };
     const settings = JSON.parse(row.settings_json) as {
       basePolicy?: {
-        sizing?: { historyStores?: string[]; recencyHalfLife?: number };
+        sizing?: { historyStores?: string[]; recencyHalfLife?: number; fewPathPrice?: boolean };
         stopModes?: RunPolicy["stopModes"];
+        rowFileWrite?: RunPolicy["rowFileWrite"];
       };
     };
+    // The estimate prices the rows the host writes from the request's row blocks (#2640), and a
+    // trace keeps no request text: the blocks are restored from the trace's own records first.
+    if (settings.basePolicy?.rowFileWrite === "on") restoreRowBlocks(db, initiativeId);
     const missingHistory: string[] = [];
-    if (recencyHalfLife || stopModes) {
+    if (recencyHalfLife || fewPathPrice !== undefined || stopModes) {
       settings.basePolicy = {
         ...settings.basePolicy,
-        ...(recencyHalfLife ? { sizing: { ...settings.basePolicy?.sizing, recencyHalfLife } } : {}),
+        ...(recencyHalfLife || fewPathPrice !== undefined
+          ? {
+              sizing: {
+                ...settings.basePolicy?.sizing,
+                ...(recencyHalfLife ? { recencyHalfLife } : {}),
+                ...(fewPathPrice !== undefined ? { fewPathPrice } : {}),
+              },
+            }
+          : {}),
         ...(stopModes ? { stopModes: { ...settings.basePolicy?.stopModes, ...stopModes } } : {}),
       };
       db.run("UPDATE initiatives SET settings_json=? WHERE id=?", [
@@ -3892,7 +4419,10 @@ function replayStarts(
       ...links,
       ...moments.map((at) => ({ feature_id: "", run_id: "", created_at: at })),
     ].sort((a, b) => a.created_at - b.created_at);
-    for (const link of points.reverse()) {
+    points.reverse();
+    // The last boundary the loop reaches: the earliest one after the latest split revision.
+    const first = points.findLast((p) => revisedAt === null || revisedAt < p.created_at);
+    for (const link of points) {
       const t = link.created_at;
       if (revisedAt !== null && revisedAt >= t) break;
       db.transaction(() => {
@@ -3976,77 +4506,94 @@ function replayStarts(
         ).map((r) => r.id);
         if (later.length) hdb.transaction(() => removeRuns(hdb, runTables(hdb), later))();
       }
+      if (firstStartOnly && link !== first) continue;
       const service = new NativeWorkflowService(
         workspace,
-        { ...DEFAULT_CONFIG, ...routingAt(db, t) },
+        {
+          ...DEFAULT_CONFIG,
+          ...routingAt(db, t),
+          // The replay reads only this setting of `workflows`; the rest stays unset, as before.
+          ...(planChargeExpected
+            ? {
+                workflows: {
+                  ...DEFAULT_CONFIG.workflows,
+                  planChargeExpected,
+                } as AppConfig["workflows"],
+              }
+            : {}),
+        },
         NO_AGENTS,
         true,
       );
       try {
-        const initiatives = new InitiativeService(service);
-        if (priceSamples) initiatives.priceSamples = priceSamples;
-        const view = initiatives.view(initiativeId);
-        const feature = view.features.find((f) => f.id === link.feature_id);
-        const cost = view.budget.cost;
-        const whole = initiatives.estimate(initiativeId);
-        const short = feature ? dollarShortfall(view, feature) : null;
-        const park = feature ? dollarCapPark(view, feature) : null;
-        const timeShort = feature ? timeShortfall(view, feature) : null;
-        const estimate = (whole?.features ?? []).map((f) => ({
-          featureId: f.featureId,
-          low: f.tokens.low,
-          high: f.tokens.high,
-        }));
-        starts.unshift({
-          featureId: link.feature_id,
-          at: t,
-          accepted: view.features.filter((f) => f.state === "accepted").length,
-          features: view.features.length,
-          spentUsd: cost.spentUsd,
-          forecastUsd: cost.forecastUsd,
-          ceilingUsd: cost.ceilingUsd,
-          advice: cost.advice ?? null,
-          forecastNotice: cost.forecastNotice,
-          replayed: feature && gate(view, feature) ? "park" : "pass",
-          estimate,
-          tokens: whole ? { ...whole.tokens, expected: whole.expectedTokens } : null,
-          pool: view.budget.pool && {
-            limitTokens: view.budget.pool.limitTokens,
-            usedTokens: view.budget.pool.usedTokens,
-            forecastTokens: view.budget.pool.forecastTokens,
-            advice: view.budget.pool.advice,
-            suggestedTokens: view.budget.pool.suggestedTokens,
-            notice: view.budget.pool.notice,
-          },
-          planCharge: replayPlanCharge(view, feature, gate),
-          shareWouldStop: short
-            ? {
-                summary: short,
-                spareUsd: shareSpareUsd(view, link.feature_id),
-                lowUsd: feature?.needUsd?.low ?? null,
-                measuredFeatures: cost.measuredFeatures,
-                finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
-              }
-            : null,
-          capWouldStop: park
-            ? {
-                summary: park.summary,
-                leftUsd: park.leftUsd,
-                lowUsd: park.lowUsd,
-                openNeedUsd: park.openNeedUsd,
-                suggestedUsd: park.suggestedUsd,
-                finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
-              }
-            : null,
-          timeWouldStop: timeShort
-            ? {
-                summary: timeShort.summary,
-                availableMs: timeShort.availableMs,
-                lowMs: timeShort.needMs.low,
-                tokensPerMinute: timeShort.tokensPerMinute,
-                suggestedTimeMs: timeShort.suggestedTimeMs,
-              }
-            : null,
+        // The history stores do not change until the next rewind: each is read once for the
+        // view, the estimate and the gates of this start.
+        withHistorySnapshot(() => {
+          const initiatives = new InitiativeService(service);
+          if (priceSamples) initiatives.priceSamples = priceSamples;
+          const view = initiatives.view(initiativeId);
+          const feature = view.features.find((f) => f.id === link.feature_id);
+          const cost = view.budget.cost;
+          const whole = initiatives.estimate(initiativeId, view);
+          const short = feature ? dollarShortfall(view, feature) : null;
+          const park = feature ? dollarCapPark(view, feature) : null;
+          const timeShort = feature ? timeShortfall(view, feature) : null;
+          const estimate = (whole?.features ?? []).map((f) => ({
+            featureId: f.featureId,
+            low: f.tokens.low,
+            high: f.tokens.high,
+          }));
+          starts.unshift({
+            featureId: link.feature_id,
+            at: t,
+            accepted: view.features.filter((f) => f.state === "accepted").length,
+            features: view.features.length,
+            spentUsd: cost.spentUsd,
+            forecastUsd: cost.forecastUsd,
+            ceilingUsd: cost.ceilingUsd,
+            advice: cost.advice ?? null,
+            forecastNotice: cost.forecastNotice,
+            replayed: feature && gate(view, feature) ? "park" : "pass",
+            estimate,
+            tokens: whole ? { ...whole.tokens, expected: whole.expectedTokens } : null,
+            pool: view.budget.pool && {
+              limitTokens: view.budget.pool.limitTokens,
+              usedTokens: view.budget.pool.usedTokens,
+              forecastTokens: view.budget.pool.forecastTokens,
+              advice: view.budget.pool.advice,
+              suggestedTokens: view.budget.pool.suggestedTokens,
+              notice: view.budget.pool.notice,
+            },
+            planCharge: replayPlanCharge(view, feature, gate),
+            shareWouldStop: short
+              ? {
+                  summary: short,
+                  spareUsd: shareSpareUsd(view, link.feature_id),
+                  lowUsd: feature?.needUsd?.low ?? null,
+                  measuredFeatures: cost.measuredFeatures,
+                  finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
+                }
+              : null,
+            capWouldStop: park
+              ? {
+                  summary: park.summary,
+                  leftUsd: park.leftUsd,
+                  lowUsd: park.lowUsd,
+                  openNeedUsd: park.openNeedUsd,
+                  suggestedUsd: park.suggestedUsd,
+                  finalUsd: finalUsd > 0 ? Math.round(finalUsd * 100) / 100 : null,
+                }
+              : null,
+            timeWouldStop: timeShort
+              ? {
+                  summary: timeShort.summary,
+                  availableMs: timeShort.availableMs,
+                  lowMs: timeShort.needMs.low,
+                  tokensPerMinute: timeShort.tokensPerMinute,
+                  suggestedTimeMs: timeShort.suggestedTimeMs,
+                }
+              : null,
+          });
         });
       } finally {
         service.close();
@@ -4123,6 +4670,22 @@ export interface TestSplitBoundary {
 }
 
 /**
+ * A `supplied` task's split on its recorded files and supplied lines, as `suppliedTaskPrice`
+ * decides it: several files whose lines need more than one attempt. A report without the lines
+ * keeps its recorded decision.
+ */
+function suppliedSplit(
+  task: SizingReport["tasks"][number],
+  cap: number,
+): TestSplitBoundary["replayed"] {
+  const split =
+    task.suppliedLines === undefined
+      ? task.oversized
+      : task.files > 1 && task.suppliedLines * SUPPLIED_PER_LINE.high > cap;
+  return split ? "split" : "whole";
+}
+
+/**
  * Every planned test task of the run's sizing reports, split or kept whole again by `decide` on
  * the inputs the report recorded: its literal cases, its price, the observed case capacity and one
  * attempt's cap. Slices of a split file are not split again, so they are left out, as are tasks of
@@ -4154,21 +4717,25 @@ export function replayTestSplits(
           taskId: task.taskId,
           cases: task.cases ?? 0,
           recorded: task.oversized ? ("split" as const) : ("whole" as const),
+          // A task priced from the lines the request supplies is decided by `suppliedTaskPrice`
+          // alone, on its recorded files and lines: never by the case capacity or its rows (#2932).
           // A rows task is decided as one from #1930 on; older reports did not mark it.
           // A task split into row slices (#2455) is decided on its rows, as it was recorded.
           replayed:
-            decide(
-              task.cases ?? 0,
-              report.testTaskLimit ?? null,
-              task.estimate,
-              cap,
-              true,
-              task.rowsTask ?? null,
-            ) ||
-            (task.rowVolume?.mode === "on" &&
-              rowVolumePrice(task.rowVolume.chars, task.rowVolume.rows, cap).slices > 1)
-              ? ("split" as const)
-              : ("whole" as const),
+            task.basis === "supplied"
+              ? suppliedSplit(task, cap)
+              : decide(
+                    task.cases ?? 0,
+                    report.testTaskLimit ?? null,
+                    task.estimate,
+                    cap,
+                    true,
+                    task.rowsTask ?? null,
+                  ) ||
+                  (task.rowVolume?.mode === "on" &&
+                    rowVolumePrice(task.rowVolume.chars, task.rowVolume.rows, cap).slices > 1)
+                ? ("split" as const)
+                : ("whole" as const),
         }))
     );
   });
@@ -4363,17 +4930,55 @@ interface RevisionRecord {
   next: Record<string, unknown>;
 }
 
+/**
+ * Each trace decompressed and migrated once per process, keyed by its path, size and time (#2766).
+ * A replay opens a trace many times (each initiative's rewound starts, the run replay, the plan
+ * approvals, and every history store of its round for each of them), and gunzipping a large trace
+ * and migrating it again on each open was most of a corpus test's time: R71 xmlvet took 33.5 s of
+ * its 30 s limit on a macOS runner. `openTrace` copies the prepared file, so every caller still
+ * gets its own database to rewind.
+ */
+const PREPARED = new Map<string, { key: string; file: string }>();
+let preparedDir: string | null = null;
+let preparedCount = 0;
+
+function preparedTrace(path: string): string {
+  const stat = statSync(path);
+  const key = `${stat.size}:${stat.mtimeMs}`;
+  const known = PREPARED.get(path);
+  if (known?.key === key && existsSync(known.file)) return known.file;
+  if (!preparedDir || !existsSync(preparedDir)) {
+    // The exit hook frees it when a process exits normally; `bun test` and a killed process never run it,
+    // and the next process's sweep frees it then (#2967).
+    const dir = processTempDir("baked-trace-cache-");
+    preparedDir = dir;
+    process.once("exit", () => rmSync(dir, { recursive: true, force: true }));
+  }
+  const workspace = join(preparedDir, String(preparedCount++));
+  mkdirSync(join(workspace, ".baked"), { recursive: true });
+  const bytes = readFileSync(path);
+  const file = join(workspace, ".baked", "workflows.sqlite");
+  writeFileSync(file, path.endsWith(".gz") ? Bun.gunzipSync(bytes) : bytes);
+  // Opening it once applies the migrations; the checkpoint folds the WAL back into the file.
+  const store = new WorkflowStore(workspace);
+  try {
+    store.connection.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  } finally {
+    store.close();
+  }
+  PREPARED.set(path, { key, file });
+  return file;
+}
+
 /** Opens a trace in a scratch workspace; `dispose` removes it. */
 export function openTrace(path: string): {
   store: WorkflowStore;
   workspace: string;
   dispose: () => void;
 } {
-  const workspace = mkdtempSync(join(tmpdir(), "baked-replay-"));
+  const workspace = processTempDir("baked-replay-");
   mkdirSync(join(workspace, ".baked"), { recursive: true });
-  const bytes = readFileSync(path);
-  const raw = path.endsWith(".gz") ? Bun.gunzipSync(bytes) : bytes;
-  writeFileSync(join(workspace, ".baked", "workflows.sqlite"), raw);
+  copyFileSync(preparedTrace(path), join(workspace, ".baked", "workflows.sqlite"));
   const store = new WorkflowStore(workspace);
   return {
     store,
@@ -4609,6 +5214,8 @@ function replayRun(
   RunReplay,
   | "firstByte"
   | "newFirstByteStops"
+  | "streamOutputs"
+  | "newStreamOutputStops"
   | "testSplits"
   | "newTestSplits"
   | "stallLadder"
@@ -4625,6 +5232,8 @@ function replayRun(
   | "newApplyDecisions"
   | "misquoteFixes"
   | "newMisquoteFixes"
+  | "rowRestores"
+  | "newRowRestores"
   | "edgeProbes"
   | "newEdgeDecisions"
   | "integrity"
@@ -4662,6 +5271,8 @@ function replayRun(
   | "rowBlocks"
   | "newRowBlockDrifts"
   | "newRowBlockMoves"
+  | "rowSplits"
+  | "newRowSplits"
 > | null {
   const db = store.connection;
   const run = store.run(runId);
@@ -4868,6 +5479,8 @@ export function replayTrace(
   path: string,
   options: {
     firstByteLimit?: FirstByteLimit;
+    /** Decides each guarded step's streamed output again (#2660); the current rule by default. */
+    streamOutputRule?: StreamOutputRule;
     /** The adaptive deadline's rule (#2041); null replays every call on `firstByteLimit`. */
     adaptiveFirstByte?: AdaptiveFirstByteRule | null;
     shareGate?: ShareGate;
@@ -4880,11 +5493,15 @@ export function replayTrace(
     chainRule?: ChainRule;
     batteryRule?: BatteryRule;
     familyRule?: FamilyRule;
+    /** Decides each chain record's count of earlier rewrites again (#2568). */
+    rewriteRepeatRule?: RewriteRepeatRule;
     repeatRule?: RepeatRule;
     requestConflictRule?: RequestConflictRule;
     hostApplyRule?: HostApplyRule;
     poolGrowthRule?: PoolGrowthRule;
     misquoteFixRule?: MisquoteFixRule;
+    /** Decides each recorded row restore again (#2522); the current rule by default. */
+    rowRestoreRule?: RowRestoreRule;
     edgeRule?: EdgeRule;
     edgeCrashRule?: EdgeCrashRule;
     integrityRule?: IntegrityRule;
@@ -4910,6 +5527,8 @@ export function replayTrace(
     rowBlockRule?: RowBlockRule;
     /** Places each recorded file row against its block again (#2503); the current rule by default. */
     rowMoveRule?: RowMoveRule;
+    /** Decides each recorded unfinished-end split again (#2458); the current rule by default. */
+    rowSplitRule?: RowSplitRule;
   } = {},
 ): TraceReplay {
   // Initiative starts rewind their own copies of the trace, before the run replay rewinds this one.
@@ -4934,6 +5553,10 @@ export function replayTrace(
       options.firstByteLimit,
       options.adaptiveFirstByte === undefined ? adaptiveDeadline : options.adaptiveFirstByte,
     );
+    // Usage records too: the forecast replay removes later attempts' artifacts.
+    const guarded = new Map(
+      runIds.map((runId) => [runId, replayStreamOutputs(store, runId, options.streamOutputRule)]),
+    );
     const splits = new Map(
       runIds.map((runId) => [runId, replayTestSplits(store, runId, options.testSplit)]),
     );
@@ -4950,6 +5573,7 @@ export function replayTrace(
           ...(options.chainRule ? { chain: options.chainRule } : {}),
           ...(options.batteryRule ? { battery: options.batteryRule } : {}),
           ...(options.familyRule ? { family: options.familyRule } : {}),
+          ...(options.rewriteRepeatRule ? { rewriteRepeat: options.rewriteRepeatRule } : {}),
         }),
       ]),
     );
@@ -4967,6 +5591,9 @@ export function replayTrace(
     );
     const misquotes = new Map(
       runIds.map((runId) => [runId, replayMisquoteFixes(store, runId, options.misquoteFixRule)]),
+    );
+    const restores = new Map(
+      runIds.map((runId) => [runId, replayRowRestores(store, runId, options.rowRestoreRule)]),
     );
     const edges = new Map(
       runIds.map((runId) => [
@@ -5046,9 +5673,13 @@ export function replayTrace(
         replayRowBlocks(store, runId, options.rowBlockRule, options.rowMoveRule),
       ]),
     );
+    const rowSplitReplays = new Map(
+      runIds.map((runId) => [runId, replayRowSplits(store, runId, options.rowSplitRule)]),
+    );
     const runs: RunReplay[] = [];
     for (const runId of runIds) {
       const firstByte = timings.get(runId) ?? [];
+      const streamOutputs = guarded.get(runId) ?? [];
       const replay = replayRun(store, runId, options.callRate) ?? {
         runId,
         featureId: store.run(runId).feature_id,
@@ -5069,6 +5700,7 @@ export function replayTrace(
       const requestConflicts = requests.get(runId) ?? [];
       const hostApply = applies.get(runId) ?? [];
       const misquoteFixes = misquotes.get(runId) ?? [];
+      const rowRestores = restores.get(runId) ?? [];
       const edgeProbes = edges.get(runId) ?? [];
       const integrity = scans.get(runId) ?? [];
       const caseWalks = walks.get(runId) ?? [];
@@ -5086,9 +5718,11 @@ export function replayTrace(
       const unselectedTests = unselected.get(runId) ?? [];
       const attemptCheckpoints = checkpoints.get(runId) ?? [];
       const rowBlocks = rowBlockReplays.get(runId) ?? [];
+      const rowSplits = rowSplitReplays.get(runId) ?? [];
       if (
         !replay.boundaries.length &&
         !firstByte.length &&
+        !streamOutputs.length &&
         !testSplits.length &&
         !stallLadder.length &&
         !policyRefusals.length &&
@@ -5097,6 +5731,7 @@ export function replayTrace(
         !requestConflicts.length &&
         !hostApply.length &&
         !misquoteFixes.length &&
+        !rowRestores.length &&
         !edgeProbes.length &&
         !integrity.length &&
         !caseWalks.length &&
@@ -5113,7 +5748,8 @@ export function replayTrace(
         !activeTimes.length &&
         !unselectedTests.length &&
         !attemptCheckpoints.length &&
-        !rowBlocks.length
+        !rowBlocks.length &&
+        !rowSplits.length
       )
         continue;
       runs.push({
@@ -5121,6 +5757,10 @@ export function replayTrace(
         firstByte,
         newFirstByteStops: firstByte.filter((b) => b.replayed === "stop" && b.recorded === "pass")
           .length,
+        streamOutputs,
+        newStreamOutputStops: streamOutputs.filter(
+          (b) => b.replayed === "stop" && b.recorded === "pass",
+        ).length,
         testSplits,
         newTestSplits: testSplits.filter((b) => b.replayed === "split" && b.recorded === "whole")
           .length,
@@ -5140,6 +5780,11 @@ export function replayTrace(
         newApplyDecisions: hostApply.filter((b) => b.replayed !== b.recorded).length,
         misquoteFixes,
         newMisquoteFixes: misquoteFixes.filter((b) => b.replayed !== b.recorded).length,
+        rowRestores,
+        newRowRestores: rowRestores.reduce(
+          (n, b) => n + b.replayed.filter((r) => !b.recorded.includes(r)).length,
+          0,
+        ),
         edgeProbes,
         newEdgeDecisions: edgeProbes.filter(
           (b) => b.replayed !== b.recorded || b.crashReplayed !== b.crashRecorded,
@@ -5210,6 +5855,9 @@ export function replayTrace(
           const replayed = [...b.moves.replayed.added, ...b.moves.replayed.duplicated];
           return n + replayed.filter((line) => !recorded.includes(line)).length;
         }, 0),
+        rowSplits,
+        newRowSplits: rowSplits.filter((b) => b.replayed === "split" && b.recorded === "resume")
+          .length,
       });
     }
     const gates = replayShareGate(store, options.shareGate);
