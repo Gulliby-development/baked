@@ -22,6 +22,7 @@ import {
   withLineEnding,
   withoutCopiedBom,
 } from "./line-endings.js";
+import { oldStringRange, rangeText, replaceRange } from "./line-range.js";
 import {
   appendAutoFormatResult,
   appendCloneHints,
@@ -306,19 +307,6 @@ async function readExisting(filePath: string): Promise<string | null> {
   }
 }
 
-function resolveLineRange(
-  content: string,
-  oldStr: string,
-  lineStart: number,
-): { start: number; end: number } | null {
-  const lines = content.split("\n");
-  const oldLineCount = oldStr.split("\n").length;
-  const start = lineStart - 1;
-  const end = start + oldLineCount;
-  if (start < 0 || start >= lines.length || end > lines.length || start >= end) return null;
-  return { start, end };
-}
-
 export const editFileTool = {
   name: "edit_file",
   description:
@@ -407,10 +395,9 @@ export const editFileTool = {
       // ═══════════════════════════════════════════════════════════════
       toolPhase("match");
       if (args.lineStart != null) {
-        const range = resolveLineRange(content, oldStr, args.lineStart);
+        const range = oldStringRange(lines, oldStr, args.lineStart);
         if (range) {
           const replacedLines = lines.slice(range.start, range.end);
-          const newLines = newStr.split("\n");
 
           // Safety: don't delete large blocks with empty/whitespace-only replacement
           if (replacedLines.length > 10 && newStr.trim() === "") {
@@ -422,18 +409,15 @@ export const editFileTool = {
           }
 
           // Verify oldString matches the line range content (warn if mismatch)
-          const rangeContent = replacedLines.join("\n");
+          const rangeContent = rangeText(lines, range);
           const label = ` (lines ${String(args.lineStart)}-${String(range.end)})`;
 
           // If oldString exactly matches the range, great — high confidence edit
           if (rangeContent === oldStr) {
-            const before = lines.slice(0, range.start);
-            const after = lines.slice(range.end);
-            const updated = [...before, ...newLines, ...after].join("\n");
             return applyEdit(
               filePath,
               content,
-              updated,
+              replaceRange(lines, range, newStr),
               args.lineStart,
               label,
               disk,
@@ -445,13 +429,10 @@ export const editFileTool = {
           // Try fuzzy match against the range content
           const rangeFixed = await fuzzyWhitespaceMatchAsync(rangeContent, oldStr, newStr);
           if (rangeFixed) {
-            const before = lines.slice(0, range.start);
-            const after = lines.slice(range.end);
-            const updated = [...before, ...rangeFixed.newStr.split("\n"), ...after].join("\n");
             return applyEdit(
               filePath,
               content,
-              updated,
+              replaceRange(lines, range, rangeFixed.newStr),
               args.lineStart,
               label,
               disk,
