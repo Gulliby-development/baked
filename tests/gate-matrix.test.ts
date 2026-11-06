@@ -7,7 +7,7 @@ import { evaluateAutoApproval, planScopeAdvice } from "../src/core/workflows/aut
 import { proseAfterRefusalScenario, refusalKinds } from "./helpers/prose-after-refusal-scenario.js";
 import { runScanner } from "../src/core/workflows/quality/rules.js";
 import { suppliedLineNumbers } from "../src/core/workflows/supplied-drift.js";
-import { ciCheckDrift } from "../src/core/workflows/ci-check-drift.js";
+import { ciCheckDrift, toolCommand } from "../src/core/workflows/ci-check-drift.js";
 import { upstreamSymbolGaps } from "../src/core/workflows/initiatives/upstream-symbols.js";
 import { GATE_PREREQUISITES, pendingPrerequisite } from "../src/core/workflows/gate-prerequisites.js";
 import { suspendClock } from "./helpers/suspend-clock.js";
@@ -6448,7 +6448,8 @@ describe("ci check drift gate: the PowerShell gates' cmdlets and the project's o
     const gate = { id: "verify", executable: "mvn", args: ["-B", "-q", "verify"], cwd: ".", timeoutMs: 600000, required: true, scope: "feature" as const, envNames: [], writes: [] };
     expect(ciCheckDrift(readme("", "42.5 tests/test_db.py", "1500ms", "shardplan: 3 shards", "tests/test_db.py"), [gate])).toEqual([]);
     expect(ciCheckDrift(readme("console", "$ mvn -B -q verify", "[INFO] BUILD SUCCESS"), [gate])).toEqual([]);
-    expect(ciCheckDrift(readme("", "mvn -B -q package"), [gate]).map((d) => d.tool)).toEqual(["mvn"]);
+    // The subcommand after leading flags is the tool (#2982): `mvn -B -q package` is no verify run.
+    expect(ciCheckDrift(readme("", "mvn -B -q -Pstrict verify"), [gate]).map((d) => d.tool)).toEqual(["mvn verify"]);
   });
 
   // #2634: a README command on a folder inside the check's broader path (`sqlfluff lint sql`
@@ -6662,6 +6663,21 @@ describe("row_block_drift gate: a base row is matched without its list separator
     test(name, () => {
       const at = file.split("\n").findIndex((l) => l.includes('["y"]')) + 1;
       expect(measureFileRows(rows, file, base).find((r) => r.line === at)?.base === true).toBe(marked);
+    });
+});
+
+describe("ci_check_drift gate: a subcommand after leading flags (#2982)", () => {
+  // R106 netsieve: the README's `sbt --server -batch compile` read as the tool `sbt`.
+  const cases: [string, string[], string][] = [
+    ["sbt, flags first", ["--server", "-batch", "compile"], "sbt compile"],
+    ["mvn, a valued flag first", ["-f", "pom.xml", "verify"], "mvn verify"],
+    ["go -C", ["-C", "sub", "test", "./..."], "go test"],
+    ["no subcommand after the flags", ["--version"], "sbt"],
+  ];
+  for (const [name, args, tool] of cases)
+    test(name, () => {
+      const program = tool.split(" ")[0] ?? "";
+      expect(toolCommand(program, args)?.tool).toBe(tool);
     });
 });
 
