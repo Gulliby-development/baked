@@ -1358,6 +1358,21 @@ const REJECTION_NOTE =
 const LONG_RETRY_AFTER_MS = 30_000;
 /** Immediate retries, each at one effort step lower, after a response ran past the output cap (#1479). */
 const OUTPUT_LIMIT_RETRIES = 2;
+/** The highest output cap an output-limit retry raises a document step to (#2961). */
+export const OUTPUT_LIMIT_CEILING = 32768;
+
+/**
+ * The doubled output cap of a step past its cap whose answer is one submit_result object, or
+ * null for an implementation step (it can split its edits into smaller tool calls) and for a step
+ * already at `OUTPUT_LIMIT_CEILING` (#2961).
+ */
+export function raisedOutputCap(
+  profile: Pick<AgentProfile, "output" | "maxOutputTokens">,
+): number | null {
+  if (profile.output === "implementation") return null;
+  const raised = Math.min(profile.maxOutputTokens * 2, OUTPUT_LIMIT_CEILING);
+  return raised > profile.maxOutputTokens ? raised : null;
+}
 /** How often a driving process writes the run's active time to the run row (#1038). */
 export const ACTIVE_FLUSH_MS = 1_000;
 
@@ -7241,7 +7256,7 @@ export class WorkflowScheduler {
        * Set on the retries after a response ran past the provider's output cap, with the effort
        * they run at: one step below the previous call's, or its own when none is lower.
        */
-      outputLimit?: { effort?: RouteEffort; tries: number };
+      outputLimit?: { effort?: RouteEffort; tries: number; maxOutputTokens?: number };
       /** The recovery ladder's rung after a stalled call (#1877). */
       recovery?: RecoveryPlacement;
     } = {},
@@ -7324,7 +7339,13 @@ export class WorkflowScheduler {
     const largerWindow = placement.largerWindow === true;
     const routedProfile = this.routed(runId, stepId, stageProfile, fallbackIndex, largerWindow);
     // The ladder's derived fallback runs on a sibling model the route does not name (#2271).
-    const profile = recovery?.model ? { ...routedProfile, model: recovery.model } : routedProfile;
+    const modelled = recovery?.model ? { ...routedProfile, model: recovery.model } : routedProfile;
+    // A document step past its output cap runs again at the raised cap (#2961).
+    const raisedCap = placement.outputLimit?.maxOutputTokens;
+    const profile =
+      raisedCap !== undefined && raisedCap > modelled.maxOutputTokens
+        ? { ...modelled, maxOutputTokens: raisedCap }
+        : modelled;
     // Under `context: auto` a step whose context does not fit tries the model's largest window
     // once, before the next model of the route (#1256).
     const upgrade = (): Promise<unknown> | null =>
@@ -8037,12 +8058,19 @@ export class WorkflowScheduler {
       // ladder with the same prompt and effort (bench round 41, fpbits: 20 minutes lost, #1479).
       // A route without effort gets one retry with the notice; after `OUTPUT_LIMIT_RETRIES` the
       // failure takes the usual path.
+      // A step whose answer is one submit_result object (a spec, a plan, a review) cannot split
+      // it into smaller calls: its retry keeps the effort and doubles the output cap, up to
+      // `OUTPUT_LIMIT_CEILING`; one already at the ceiling steps the effort down like the others
+      // (bench round R103, md-site specify: four attempts lost at the same 8192 cap, #2961).
       if (isOutputLimit(error) && !signal.aborted && !wrote) {
-        const lower = lowerEffort(effort);
         const tries = placement.outputLimit?.tries ?? 0;
-        if (tries === 0 || (lower && tries < OUTPUT_LIMIT_RETRIES)) {
+        const raised = raisedOutputCap(profile);
+        const lower = raised === null ? lowerEffort(effort) : null;
+        if (tries === 0 || ((raised !== null || lower) && tries < OUTPUT_LIMIT_RETRIES)) {
           const notice =
-            "Your previous response for this step ran past the provider's output limit and was discarded. Keep each response short: reason briefly, and split large files or edits into several smaller tool calls instead of one long one.";
+            raised !== null
+              ? `Your previous response for this step ran past the provider's output limit and was discarded. The host raised this step's output limit from ${profile.maxOutputTokens} to ${raised} tokens. Reason briefly and keep your submit_result object complete; leave out text the output schema does not ask for.`
+              : "Your previous response for this step ran past the provider's output limit and was discarded. Keep each response short: reason briefly, and split large files or edits into several smaller tool calls instead of one long one.";
           const retryExtra =
             extra && typeof extra === "object" && !Array.isArray(extra)
               ? { ...extra, outputLimit: notice }
@@ -8072,6 +8100,7 @@ export class WorkflowScheduler {
               outputLimit: {
                 ...((lower ?? effort) ? { effort: lower ?? effort } : {}),
                 tries: tries + 1,
+                ...(raised !== null ? { maxOutputTokens: raised } : {}),
               },
             },
           );
