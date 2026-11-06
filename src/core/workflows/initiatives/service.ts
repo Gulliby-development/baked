@@ -287,6 +287,8 @@ export interface RerouteResult {
   /** The run model before, for a rerouted run. */
   from?: string;
   reason?: string;
+  /** What the run's reroute warned about, such as configured routes left on the old model (#2960). */
+  warnings?: string[];
 }
 
 /** How often a drive with plan ahead looks for a feature that became ready to plan (#1834). */
@@ -1873,7 +1875,12 @@ export class InitiativeService {
         { model },
         plan,
       );
-      const result: RerouteResult = { ...run, result: "rerouted", from: plan.before.runModel };
+      const result: RerouteResult = {
+        ...run,
+        result: "rerouted",
+        from: plan.before.runModel,
+        ...(plan.after.warnings?.length ? { warnings: plan.after.warnings } : {}),
+      };
       // The switch stands even when the run cannot continue yet; its next drive reports why.
       if (resume && after.status === "blocked")
         await this.workflows
