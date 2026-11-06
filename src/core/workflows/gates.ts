@@ -8,6 +8,7 @@ import {
   SUPPORTED_LANGUAGES,
 } from "../intelligence/language-records.js";
 import { pwshExecutable, rscriptExecutable } from "../platform/index.js";
+import { pythonExecutable } from "../platform/python.js";
 import { gateSandbox } from "../security/sandbox.js";
 import { workspacePath } from "../specs/validate.js";
 import { BUN_FMT, bunFmtConfigured } from "../tools/bun-fmt.js";
@@ -217,7 +218,8 @@ export interface GateSuggestion {
   preselected: boolean;
 }
 
-export const pythonExecutable = (): string => (process.platform === "win32" ? "python" : "python3");
+// The Python a suggested gate starts, past the Windows Store stub (#2992).
+export { pythonExecutable } from "../platform/python.js";
 
 const gate = (
   id: string,

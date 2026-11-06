@@ -16,6 +16,7 @@ import { ProcessScope } from "../src/core/workflows/process-scope.js";
 import { ReproSchema, type Review } from "../src/core/workflows/schemas.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
+import { findPython } from "../src/core/platform/python.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -376,7 +377,9 @@ describe("run_repro with a list of cases (#1959)", () => {
   });
 
   // A pytest project's repros run through python, the runtime of its check's toolchain.
-  test.skipIf(!Bun.which("python3"))("pytest toolchain: python cases run in one call", async () => {
+  // A Windows `python3` may be the Store stub, which runs no Python (#2992).
+  const python3 = findPython(["python3", "python"]);
+  test.skipIf(!python3)("pytest toolchain: python cases run in one call", async () => {
     const root = workspace();
     writeFileSync(join(root, "pyproject.toml"), "[project]\nname = 'fixture'\nversion = '0.1.0'\n");
     writeFileSync(join(root, "emphasis.py"), "def parse(text):\n    return 'nested' if text.count('*') == 2 else 'flat'\n");
@@ -386,8 +389,8 @@ describe("run_repro with a list of cases (#1959)", () => {
     const program = (input: string) => ["-c", `import emphasis; print(emphasis.parse(${JSON.stringify(input)}))`];
     const result = (await tool.execute({
       cases: [
-        { executable: "python3", args: program("*a*"), expected: "nested", actual: "flat" },
-        { executable: "python3", args: program("**a *b***"), expected: "nested", actual: "flat" },
+        { executable: python3 ?? "python3", args: program("*a*"), expected: "nested", actual: "flat" },
+        { executable: python3 ?? "python3", args: program("**a *b***"), expected: "nested", actual: "flat" },
       ],
     })) as { status: string; reproduced: number[]; results: { case: number; status: string }[] };
     expect(result.results.map((r) => r.status)).toEqual(["refuted", "reproduced"]);

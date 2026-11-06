@@ -142,6 +142,7 @@ import { type Check, type RunPolicy, type RuntimeState, type Spec, type TaskGrap
 import type { TaskRow, WorkflowStore } from "../src/core/workflows/store.js";
 import { consolidateTargets, scanTestIntegrity, testChanges } from "../src/core/workflows/test-integrity.js";
 import type { Task } from "../src/core/workflows/types.js";
+import { findPython } from "../src/core/platform/python.js";
 import {
   createTaskWorktree,
   ensureRunWorktree,
@@ -5349,7 +5350,7 @@ describe.skipIf(!toolchains)("gate matrix: toolchains", () => {
     const files = rowFiles(task, rowsArtifact(spec, graph, { schemaVersion: 1, inputHash: "a".repeat(64), verdict: "pass", findings: [] }));
     mkdirSync(join(root, "tests"));
     for (const generated of files) writeFileSync(join(root, generated.path), generated.content);
-    const python = Bun.which("python") ?? Bun.which("python3");
+    const python = findPython(["python", "python3"]);
     if (!python) throw new Error("The gate-matrix toolchain tier requires Python and pytest");
     const run = () => spawnSync(python, ["-m", "pytest", "-q", "tests/test_rows.py"], {
       cwd: root, encoding: "utf8", timeout: 30000,
