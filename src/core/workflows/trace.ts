@@ -4948,7 +4948,8 @@ function preparedTrace(path: string): string {
   const known = PREPARED.get(path);
   if (known?.key === key && existsSync(known.file)) return known.file;
   if (!preparedDir || !existsSync(preparedDir)) {
-    // The exit hook frees it on a normal exit; a killed process leaves it for the next process's sweep (#2967).
+    // The exit hook frees it when a process exits normally; `bun test` and a killed process never run it,
+    // and the next process's sweep frees it then (#2967).
     const dir = processTempDir("baked-trace-cache-");
     preparedDir = dir;
     process.once("exit", () => rmSync(dir, { recursive: true, force: true }));

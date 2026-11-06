@@ -23,8 +23,9 @@ export function processAlive(pid: number): boolean {
 /**
  * Removes the directories under `root` that `processTempDir(prefix)` made for a process that is no
  * longer running, and the ones from before #2967 (`<prefix>XXXXXX`, no process id) older than
- * `LEGACY_TEMP_AGE_MS`. An `exit` hook never runs when a process is killed (SIGKILL, a default
- * SIGTERM or SIGINT, a test timeout, a cancelled CI job), so this sweep is what frees them.
+ * `LEGACY_TEMP_AGE_MS`. An `exit` hook never runs under `bun test` (1.4.4 does not emit `exit` to a
+ * test file's listeners) or when a process is killed (SIGKILL, a default SIGTERM or SIGINT, a timeout,
+ * a cancelled CI job), so this sweep is what frees them.
  */
 export function sweepProcessTempDirs(
   prefix: string,
