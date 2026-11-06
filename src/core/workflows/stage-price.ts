@@ -38,23 +38,23 @@ export function providerFamily(model: string): string {
 }
 
 /**
- * Claude task and other-stage mixes, measured from the Claude Code attempts of bench rounds R99
- * to R102 (`claude-code` prefix): every input token is a cache read or a cache write. Task
- * attempts read 68% and wrote 30% of their tokens, output 1.4%; single-call stages (research,
- * specify, plan, review, converge) wrote 69%, read 23%, output 8%. `TASK_MIX` at a Claude price
+ * Claude task and other-stage mixes, measured from the 219 Claude Code attempts of R99 to R103
+ * (`claude-code` prefix): every input token is a cache read or a cache write. Task attempts read
+ * 78% and wrote 20.5% of their tokens, output 1.5%; single-call stages (research, specify, plan,
+ * review, converge) wrote 60.5%, read 33%, output 6.5%. `TASK_MIX` at a Claude price
  * card left out the writes and priced R103's Claude tasks at about 35% under what they paid.
  */
 const CLAUDE_TASK_MIX: ProviderTokenMix = {
   input: 0,
-  cacheRead: 0.685,
-  cacheWrite: 0.3,
+  cacheRead: 0.78,
+  cacheWrite: 0.205,
   output: 0.015,
 };
 const CLAUDE_DEFAULT_MIX: ProviderTokenMix = {
   input: 0,
-  cacheRead: 0.23,
-  cacheWrite: 0.69,
-  output: 0.08,
+  cacheRead: 0.33,
+  cacheWrite: 0.605,
+  output: 0.065,
 };
 
 /**

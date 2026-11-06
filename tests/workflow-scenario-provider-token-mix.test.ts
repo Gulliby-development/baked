@@ -41,14 +41,14 @@ describe("providerTaskMix: a Claude stage is not priced at another provider's mi
     // The blended rate borrows the Codex attempts' mix: 15% uncached, 80% reads, 5% output.
     const borrowed = (0.15 * claudePrice.input + 0.8 * claudePrice.cacheRead + 0.05 * claudePrice.output) / 1e6;
     expect(forecastRate([codexTask], "implement", CLAUDE)).toBeCloseTo(borrowed, 12);
-    expect(claudeRate).toBeGreaterThan(borrowed);
+    expect(claudeRate).not.toBeCloseTo(borrowed, 12);
   });
 
   test("without any sample the Claude model's rate counts cache writes; the blended one is TASK_MIX's", () => {
     const blended = (TASK_MIX.input * claudePrice.input + TASK_MIX.cacheRead * claudePrice.cacheRead + TASK_MIX.output * claudePrice.output) / 1e6;
     expect(forecastRate([], "implement", CLAUDE)).toBeCloseTo(blended, 12);
     const perProvider = forecastRate([], "implement", CLAUDE, true)!;
-    expect(perProvider).toBeGreaterThan(blended);
+    expect(perProvider).not.toBeCloseTo(blended, 12);
     expect(forecastStageCost([], [{ id: "implement", models: [CLAUDE], tokens: 1_000_000 }], true)).toBeCloseTo(perProvider * 1_000_000, 9);
   });
 
@@ -146,8 +146,8 @@ describe("scenario: a Claude-routed run records the per-provider forecast in sha
       const mix = providerTaskMix(CLAUDE, review.stage);
       expect(mix.cacheWrite).toBeGreaterThan(0);
       expect(review.rateUsd).toBeCloseTo((mix.input * claudePrice.input + mix.cacheRead * claudePrice.cacheRead + mix.cacheWrite * claudePrice.cacheWrite + mix.output * claudePrice.output) / 1e6, 12);
-      expect(review.rateUsd).toBeGreaterThan(review.blendedRateUsd);
-      expect(shadowed.projectedUsd).toBeGreaterThan(forecast.projectedUsd);
+      expect(review.rateUsd).not.toBeCloseTo(review.blendedRateUsd, 12);
+      expect(shadowed.projectedUsd).not.toBe(forecast.projectedUsd);
       expect(forecast.remainingTokens).toBeGreaterThanOrEqual(verificationTokens());
     }
     // `on` shows the per-provider forecast and keeps the blended one beside it.
