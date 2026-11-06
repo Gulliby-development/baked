@@ -7,6 +7,7 @@
 
 import { type LanguageRecord, none } from "../intelligence/language-records.js";
 import { plainOutput } from "./plain-output.js";
+import { pathPattern, type RunRoots, slashes } from "./run-roots.js";
 
 /** One located diagnostic: the file it points at and its text without the location. */
 export interface Diagnostic {
@@ -232,30 +233,45 @@ const samePath = (reported: string, path: string): boolean =>
 const WORKTREE_PREFIX = /^.*?\/\.baked\/worktrees\/[^/]+\/[^/]+\//;
 
 /** The located diagnostics of a check run in `root`, with absolute paths made workspace-relative. */
-const relativeDiagnostics = (output: string, root: string): Diagnostic[] =>
-  relativeHeaded(output, root).map(({ path, text }) => ({ path, text }));
+const relativeDiagnostics = (output: string, root: string, run?: RunRoots): Diagnostic[] =>
+  relativeHeaded(output, root, run).map(({ path, text }) => ({ path, text }));
 
-/** `headedDiagnostics` of a check run in `root`, with absolute paths made workspace-relative. */
-export const relativeHeaded = (output: string, root: string): (Diagnostic & { line: string })[] => {
+/**
+ * `headedDiagnostics` of a check run in `root`, with absolute paths made workspace-relative. A path
+ * in another worktree of the run is found through `run` (`runRoots`), under
+ * `workflows.worktreeRoot` too, as well as by the `.baked/worktrees` spelling (#2731).
+ */
+export const relativeHeaded = (
+  output: string,
+  root: string,
+  run?: RunRoots,
+): (Diagnostic & { line: string })[] => {
   const prefix = `${normalizePath(root).replace(/\/$/, "")}/`;
   // The working copy behind the run's worktrees counts as the workspace too.
-  const project = prefix.replace(/\.baked\/worktrees\/.*$/, "");
+  const project = run
+    ? `${slashes(normalizePath(run.workspace))}/`
+    : prefix.replace(/\.baked\/worktrees\/.*$/, "");
+  const worktrees = run?.worktrees
+    ? new RegExp(`^${pathPattern(normalizePath(run.worktrees))}/[^/]+/`, "i")
+    : null;
   return headedDiagnostics(output).map((d) => ({
     path: d.path.startsWith(prefix)
       ? d.path.slice(prefix.length)
-      : WORKTREE_PREFIX.test(d.path)
-        ? d.path.replace(WORKTREE_PREFIX, "")
-        : d.path.startsWith(project)
-          ? d.path.slice(project.length)
-          : d.path,
+      : worktrees?.test(d.path)
+        ? d.path.replace(worktrees, "")
+        : WORKTREE_PREFIX.test(d.path)
+          ? d.path.replace(WORKTREE_PREFIX, "")
+          : d.path.startsWith(project)
+            ? d.path.slice(project.length)
+            : d.path,
     text: d.text,
     line: d.line,
   }));
 };
 
 /** Diagnostic keys of a baseline run in `root`, with absolute paths made workspace-relative. */
-export function baselineKeys(output: string, root: string): string[] {
-  return [...new Set(relativeDiagnostics(output, root).map(diagnosticKey))];
+export function baselineKeys(output: string, root: string, run?: RunRoots): string[] {
+  return [...new Set(relativeDiagnostics(output, root, run).map(diagnosticKey))];
 }
 
 /**
@@ -268,8 +284,9 @@ export function baselineDebt(
   output: string,
   root: string,
   options: { baseline: readonly string[]; changed: readonly string[]; summary: number | null },
+  run?: RunRoots,
 ): string[] | null {
-  const found = relativeDiagnostics(output, root);
+  const found = relativeDiagnostics(output, root, run);
   if (!found.length || options.summary === null || found.length < options.summary) return null;
   const baseline = new Set(options.baseline);
   const debt: string[] = [];

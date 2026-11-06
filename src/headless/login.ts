@@ -11,15 +11,17 @@ import {
   startCliLogin,
   submitCliLoginCode,
 } from "../core/llm/cli-login.js";
+import { readProviderAccounts } from "../core/llm/provider-accounts.js";
 
-const help = `Usage: baked login [codex|claude-code] [--json]
-       baked logout codex|claude-code [--json]
+const help = `Usage: baked login [codex|claude-code] [--account <id>] [--json]
+       baked logout codex|claude-code [--account <id>] [--json]
 
 login signs the provider's own CLI in with your subscription, as /codex login and
 /claude-code login do in the terminal UI: it prints the CLI's progress and the sign-in page to
 open, and waits until the sign-in ends. When the page ends on a code, paste it and press Enter. An already signed-in CLI succeeds at once. Without a
 provider it prints whether each CLI is installed and signed in. logout runs the CLI's own logout.
-BAKED never reads or stores the CLI's tokens.
+BAKED never reads or stores the CLI's tokens. --account signs one of your labelled accounts in
+or out (see baked accounts) in its own credential home, leaving the CLI's own sign-in as it is.
 
 Exit codes: 0 signed in or out, 1 failed or not installed, 130 interrupted.
 `;
@@ -32,11 +34,14 @@ function exitOf(login: CliLogin | null): number {
 }
 
 /** Prints the login's new lines and its URL to stderr until it ends. */
-async function follow(provider: (typeof CLI_LOGIN_PROVIDERS)[number]): Promise<CliLogin | null> {
+async function follow(
+  provider: (typeof CLI_LOGIN_PROVIDERS)[number],
+  account?: string,
+): Promise<CliLogin | null> {
   let printed = 0;
   let urlShown = false;
   const flush = (): CliLogin | null => {
-    const login = getCliLogin(provider);
+    const login = getCliLogin(provider, account);
     if (!login) return null;
     for (const line of login.lines.slice(printed))
       if (line.trim()) process.stderr.write(`${line}\n`);
@@ -56,7 +61,7 @@ async function follow(provider: (typeof CLI_LOGIN_PROVIDERS)[number]): Promise<C
   reader?.on("line", (line) => {
     if (!line.trim()) return;
     try {
-      submitCliLoginCode(provider, line);
+      submitCliLoginCode(provider, line, account);
     } catch (error) {
       process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     }
@@ -65,7 +70,7 @@ async function follow(provider: (typeof CLI_LOGIN_PROVIDERS)[number]): Promise<C
     let current = flush();
     while (current?.state === "running") {
       await Promise.race([
-        cliLoginSettled(provider),
+        cliLoginSettled(provider, account),
         new Promise((resolve) => setTimeout(resolve, POLL_MS)),
       ]);
       current = flush();
@@ -82,7 +87,16 @@ export async function runLoginCli(command: "login" | "logout", argv: string[]): 
     return 0;
   }
   const json = argv.includes("--json");
-  const rest = argv.filter((a) => a !== "--json");
+  let rest = argv.filter((a) => a !== "--json");
+  const at = rest.indexOf("--account");
+  const account = at >= 0 ? rest[at + 1] : undefined;
+  if (at >= 0) {
+    if (!account || account.startsWith("-")) {
+      process.stderr.write(`--account needs an account ID\n\n${help}`);
+      return 1;
+    }
+    rest = rest.filter((_, i) => i !== at && i !== at + 1);
+  }
   const [name, ...extra] = rest;
   if (extra.length || name?.startsWith("-")) {
     process.stderr.write(`Unknown argument: ${extra[0] ?? name ?? ""}\n\n${help}`);
@@ -113,22 +127,27 @@ export async function runLoginCli(command: "login" | "logout", argv: string[]): 
     );
     return 0;
   }
+  if (account && !readProviderAccounts(provider).accounts.some((a) => a.id === account)) {
+    process.stderr.write(`${provider} has no account ${account}; add it with baked accounts add\n`);
+    return 1;
+  }
   if (command === "logout") {
-    const result = await logoutCli(provider);
+    const result = await logoutCli(provider, account);
     process.stdout.write(
       json ? `${JSON.stringify({ provider, ...result })}\n` : `${result.message}\n`,
     );
     return result.ok ? 0 : 1;
   }
   const interrupt = (): void => {
-    void cancelCliLogin(provider);
+    void cancelCliLogin(provider, account);
   };
   process.on("SIGINT", interrupt);
   try {
-    startCliLogin(provider);
-    const login = await follow(provider);
+    startCliLogin(provider, account);
+    const login = await follow(provider, account);
     if (json) process.stdout.write(`${JSON.stringify(login, null, 2)}\n`);
-    else if (login?.state === "succeeded") process.stdout.write(`Signed in to ${provider}\n`);
+    else if (login?.state === "succeeded")
+      process.stdout.write(`Signed in to ${provider}${account ? ` as ${account}` : ""}\n`);
     else if (login?.state === "failed")
       process.stderr.write(`Sign-in failed: ${login.error ?? "unknown error"}\n`);
     else process.stderr.write("Sign-in cancelled\n");

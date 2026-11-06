@@ -203,6 +203,11 @@ export interface UpstreamInputs {
   testFile: boolean;
   /** It is the only file the corrective's evidence names outside its writes. */
   sole: boolean;
+  /**
+   * The feature depends on this run's feature, directly or through others (#2898): it runs after
+   * this one, so no wait of this run can bring its change. Absent when it does not.
+   */
+  later?: true;
 }
 
 /** One named path outside a corrective's writes, with the inputs of its decision. */
@@ -231,9 +236,11 @@ export const unownedRule: UnownedRule = (input) =>
     : input.owner
       ? "route"
       : input.feature
-        ? input.upstream?.closed && input.upstream.testFile && input.upstream.sole
-          ? "amend"
-          : "park"
+        ? input.upstream?.later
+          ? "refuse"
+          : input.upstream?.closed && input.upstream.testFile && input.upstream.sole
+            ? "amend"
+            : "park"
         : input.allowed
           ? "widen"
           : "refuse";
@@ -326,6 +333,24 @@ export function approvedPath(
   );
 }
 
+/**
+ * Whether `feature` depends on the run's own feature, directly or through others (#2898). R96
+ * varprompt template T010 parked on `VarsCommand.cs` and `StatsCommand.cs` of reports, which
+ * depends on template: the manual_evidence request asked for a change that only a later run makes.
+ */
+function laterFeature(bounds: RuntimeState["initiativeBounds"], feature: string): boolean {
+  if (!bounds || feature === bounds.featureId) return false;
+  const deps = new Map(bounds.features.map((f) => [f.id, f.dependsOn ?? []]));
+  const seen = new Set<string>();
+  const reaches = (id: string): boolean => {
+    if (id === bounds.featureId) return true;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return (deps.get(id) ?? []).some(reaches);
+  };
+  return reaches(feature);
+}
+
 /** The inputs of each named path outside `writes` (#2133). */
 function unownedPaths(
   state: ScopeState & Partial<Pick<RuntimeState, "initiativeBounds">>,
@@ -358,6 +383,7 @@ function unownedPaths(
               closed: evidence.upstreamClosed?.(feature) ?? false,
               testFile: evidence.testFile?.(path) ?? false,
               sole: outside.length === 1,
+              ...(laterFeature(bounds, feature) ? { later: true as const } : {}),
             },
           }
         : {}),
@@ -581,8 +607,14 @@ export function unownedSummary(
       return `${taskId} cannot write ${files}, which no task writes and the approved paths hold: ${taskId}'s writes would be widened by ${these[0]?.path ?? files}`;
     case "wait":
       return `${taskId} cannot write ${files}, which ${[...new Set(these.flatMap((p) => p.openWriters))].join(", ")} still write: ${taskId} waits for them`;
-    case "refuse":
-      return `${taskId} cannot write ${files}, which no task, feature or approved path of the run owns: the corrective would block without another session`;
+    case "refuse": {
+      const later = [
+        ...new Set(these.flatMap((p) => (p.upstream?.later && p.feature ? [p.feature] : []))),
+      ];
+      return later.length
+        ? `${taskId} cannot write ${files}, which feature ${later.join(", ")} owns and writes only after this feature: no wait of this run brings the change, so the corrective would block without another session; revise the initiative so this feature's tests or rows need only its own and upstream code, or so the files are this feature's`
+        : `${taskId} cannot write ${files}, which no task, feature or approved path of the run owns: the corrective would block without another session`;
+    }
   }
 }
 

@@ -1,4 +1,5 @@
 import type { RunSnapshot } from "../../shared/api.js";
+import { mockAccountRefusal } from "./mock-accounts.js";
 import { type MockRoute, response } from "./mock-response.js";
 import { addStartedRun } from "./mock-runs.js";
 import type {
@@ -425,6 +426,8 @@ function startRun(key: string, body: unknown): ReturnType<typeof response> {
         message: "More than one writer needs worktree execution",
       },
     });
+  const refusal = mockAccountRefusal(key, input.accounts);
+  if (refusal) return response(400, { error: { code: "INVALID_REFERENCE", message: refusal } });
   const known = byCommand.get(commandId);
   if (known) return response(202, known);
   const run: RunSnapshot = {

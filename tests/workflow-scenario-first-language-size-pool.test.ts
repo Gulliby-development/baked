@@ -114,8 +114,9 @@ describe("scenario: a language new to the size pool gets a high end that covers 
       expect(f.tokens.high).toBeGreaterThan(before?.tokens.high ?? 0);
       expect(f.newLanguage).toBe(true);
       // A first-initiative overrun of 2.5 times the low end (R73 flatelens's bits, R74
-      // ladlemath's head) was above the range and is within it now.
-      expect(2.5 * f.tokens.low).toBeGreaterThan(before?.tokens.high ?? 0);
+      // ladlemath's head) is within the range. A known language's high end is the general
+      // ratios' bound, which since #2950 also lifts a size pool's upper quartile.
+      expect(before?.tokens.high).toBe(Math.round(f.tokens.low * (known.highCalibration?.high ?? 0)));
       expect(2.5 * f.tokens.low).toBeLessThanOrEqual(f.tokens.high);
     }
     // The whole initiative's bound widens with its features, from first initiatives' totals.

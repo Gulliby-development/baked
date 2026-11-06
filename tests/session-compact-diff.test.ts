@@ -36,7 +36,10 @@ describe("manual compaction", () => {
     const messages = assembleCompacted("SUMMARY", [toolResult("1"), assistant("x"), user("y"), toolResult("2")]);
     expect(messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
     expect(messages[0]?.content).toBe("SUMMARY");
-    expect(messages[1]?.content).toBe("Continuing.");
+    // The kept assistant step follows the summary itself; the summary never saw it.
+    expect(messages[1]?.content).toBe("x");
+    const acked = assembleCompacted("SUMMARY", [user("y"), assistant("z")]);
+    expect(acked.map((m) => m.content)).toEqual(["SUMMARY", "Continuing.", "y", "z"]);
   });
 
   test("short conversations are not compacted", () => {

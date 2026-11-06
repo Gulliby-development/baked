@@ -396,6 +396,40 @@ describe("parseHeadlessArgs", () => {
 	});
 });
 
+describe("parseHeadlessArgs numeric options", () => {
+	for (const [flag, value] of [
+		["--timeout", "30s"],
+		["--timeout", "abc"],
+		["--timeout", "0"],
+		["--timeout", "-5"],
+		["--timeout", "1.5"],
+		["--max-steps", "ten"],
+		["--max-steps", "3x"],
+		["--max-steps", "0"],
+		["--max-steps", "-1"],
+	] as const) {
+		test(`${flag} ${value} is rejected with exit 1`, async () => {
+			try {
+				await parseHeadlessArgs(["--headless", flag, value, "hi"]);
+			} catch {}
+			expect(exitCode).toBe(1);
+		});
+		test(`${flag} ${value} is rejected in --chat too`, async () => {
+			try {
+				await parseHeadlessArgs(["--headless", "--chat", flag, value]);
+			} catch {}
+			expect(exitCode).toBe(1);
+		});
+	}
+
+	test("positive integers are kept", async () => {
+		const result = await parseHeadlessArgs(["--headless", "--timeout", "60000", "--max-steps", "7", "hi"]);
+		expect(exitCode).toBeUndefined();
+		expect(result!.type === "run" && result!.opts.timeout).toBe(60000);
+		expect(result!.type === "run" && result!.opts.maxSteps).toBe(7);
+	});
+});
+
 describe("parseHeadlessArgs --flag=value", () => {
 	test("every value option takes the --flag=value spelling like --flag value", async () => {
 		const spaced = await parseHeadlessArgs([

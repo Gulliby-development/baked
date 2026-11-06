@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, relative } from "node:path";
 import { codeWithoutComments } from "../intelligence/comments.js";
-import { isTestFileAt } from "../intelligence/language-traits.js";
+import { isTestFileAt } from "../intelligence/test-file-at.js";
 import { detectLanguageFromPath } from "../intelligence/types.js";
 import { largerContextModel } from "../llm/context-sizes.js";
 import {
@@ -43,17 +43,26 @@ import { validatePackage, workspacePath } from "../specs/validate.js";
 import { captureEndings, restoreEndings } from "../tools/line-endings.js";
 import {
   INDENT_DEFAULT,
+  MOVE_NOTE,
   placeRowForms,
+  placeRowNumbers,
   placeRowTargets,
   SEPARATOR_DEFAULT,
 } from "../tools/place-rows.js";
 import {
   assertAcceptance,
   assertAcceptanceV2,
+  assertNoPendingDecisions,
   v1ReviewDimensions,
 } from "../verification/acceptance.js";
+import { acceptanceRefusal, effectsAdvice } from "../verification/acceptance-advice.js";
 import { caseCommand, probeCase } from "../verification/case-source-probe.js";
-import { buildCheckEnv, CheckRunner, executeCheckCommand } from "../verification/check-runner.js";
+import {
+  buildCheckEnv,
+  CheckRunner,
+  executeCheckCommand,
+  storedSignatureOutput,
+} from "../verification/check-runner.js";
 import {
   appendCorrections,
   checkClaims,
@@ -99,6 +108,7 @@ import {
   repairCaseTask,
   writtenTestPaths,
 } from "../verification/criteria-cases.js";
+import { caseEvidence } from "../verification/criteria-evidence.js";
 import { canHold } from "../verification/deliverable-paths.js";
 import {
   copyWorkspace,
@@ -195,6 +205,7 @@ import {
   testCapProblem,
   testCapsOf,
 } from "../verification/test-cap.js";
+import { ACCEPTANCE_REFUSAL, ACCEPTANCE_REFUSALS_DIR } from "./acceptance-refusal.js";
 import {
   literalPropertyProblems,
   plannerRows,
@@ -382,6 +393,15 @@ import {
   conflictFinishReady,
 } from "./conflict-finish.js";
 import {
+  CONFLICT_ROWS_DIR,
+  CONFLICT_ROWS_KIND,
+  type ConflictRowRecord,
+  conflictRowDiff,
+  conflictRowEvidence,
+  conflictRowFiles,
+  conflictRowNote,
+} from "./conflict-row-reply.js";
+import {
   auditVerified,
   type ContestedRow,
   contestedRows,
@@ -471,6 +491,7 @@ import {
   reportRequestEvidence,
 } from "./evidence-decisions.js";
 import { ExecutionBudgetClock, executionClock, executionTimeout } from "./execution-clock.js";
+import { formatRowList } from "./feature-rows.js";
 import {
   BATTERY_CASE_CLAIM,
   BATTERY_CASES,
@@ -526,20 +547,27 @@ import {
   type ForkSeed,
   seedBytes,
 } from "./fork-stage.js";
-import { formatWrittenChecks } from "./format-written.js";
+import { formatWrittenChecks, runsFormatter } from "./format-written.js";
 import { formatCommandLine, outputTail } from "./gates.js";
 import {
   HOST_APPLY_DIR,
   HOST_APPLY_KIND,
   HOST_PLAN_CONTENT_DIR,
+  type HostApplyPartial,
   type HostApplyRecord,
+  type HostApplyRerun,
+  type HostApplyWrite,
   hostAppliableTasks,
   hostApplyContents,
   hostApplyDecision,
   hostApplyInputs,
+  hostApplyPartialMode,
+  hostApplyPartialSplit,
   hostApplyRecord,
   hostApplyRecords,
   hostApplyText,
+  hostPartialTasks,
+  hostRerunDecision,
   hostRowFileTasks,
   rowFileTasks,
 } from "./host-apply.js";
@@ -573,6 +601,7 @@ import {
   repairChangedFiles,
 } from "./invalidation.js";
 import {
+  commandLiveness,
   commandMayBeRunning,
   mutationLeaseFor,
   type WorkspaceLeases,
@@ -745,6 +774,7 @@ import {
   ruleFindingKey,
 } from "./quality/rules.js";
 import { DEFAULT_SAST_CONFIG, QUALITY_SAST, runSast, sastClaim, sastOf } from "./quality/sast.js";
+import { putBackOutsideRange } from "./range-fixer-scope.js";
 import { carriesOver, changedSince, previousRound } from "./re-review.js";
 import { preloadTaskFiles } from "./read-outline.js";
 import { recoverRun, requestRecovery, settleSupersededEffects } from "./recovery.js";
@@ -752,6 +782,7 @@ import { recordReleasedCreates, staleReleasedCreates } from "./release-writes.js
 import { type RecoveryAdvice, recoveryAdvice } from "./remedies.js";
 import { RepairBlockSchema } from "./repairable-schema.js";
 import {
+  failureHash,
   REPEAT_KIND,
   REPEAT_TASKS_DIR,
   type RepeatCheck,
@@ -774,6 +805,8 @@ import {
   requestConflictPath,
   sidesSettle,
   sideTests,
+  sliceForeignDecision,
+  sliceForeignInput,
 } from "./request-conflict.js";
 import { deliverableProblems, repairDeliverables, requestCoverage } from "./request-coverage.js";
 import {
@@ -812,6 +845,7 @@ import {
   UNFINISHED_BLOCK_PREFIX,
   uncommittedEdits,
 } from "./rollback.js";
+import { ROW_SPLIT_DIR, ROW_SPLIT_KIND, rowSplitRecord, rowSplitSummary } from "./row-split.js";
 import { runSubject } from "./run-title.js";
 import {
   type AgentProfile,
@@ -860,6 +894,7 @@ import {
 import {
   criterionExpected,
   SOURCE_DEFECT_KIND,
+  type SourceDefectInput,
   type SourceDefectRecord,
   sourceDefectDecision,
   sourceDefectPath,
@@ -906,6 +941,7 @@ import {
 type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
 import { linkDependencies, worktreePathRisks } from "./dependency-dirs.js";
+import { docTextSources } from "./doc-text-sources.js";
 import { browserLayoutProbe, type LayoutProbe, layoutVerdict } from "./layout-check.js";
 import { personRequest } from "./person-request.js";
 import { planCostOf, planCostWarning } from "./plan-cost.js";
@@ -918,9 +954,13 @@ import {
   type ConvergenceVerdict,
   convergenceGateCrashKeeps,
   convergenceGateDecision,
+  convergenceGateDocCarries,
+  convergenceGateDocKeeps,
+  convergenceGateDocRepeats,
   convergenceGateFinding,
   convergenceReproCandidates,
   type GateFinding,
+  type GateShadowRules,
   gateFinding,
   REVIEW_GATE_DIR,
   REVIEW_GATE_KIND,
@@ -929,6 +969,9 @@ import {
   reviewGateCandidates,
   reviewGateCrashKeeps,
   reviewGateDecision,
+  reviewGateDocCarries,
+  reviewGateDocKeeps,
+  reviewGateDocRepeats,
 } from "./review-gate.js";
 import {
   applyRevision,
@@ -943,11 +986,14 @@ import {
   ROW_RUN_DIR,
   ROW_RUN_KIND,
   type RowBlockDrift,
+  rowBlockDecision,
   rowBlockDriftSummary,
   rowBlockDrifts,
   rowBlockExtraSummary,
+  rowMoveDecision,
   rowRunFindings,
   rowRunText,
+  rowTupleHeld,
 } from "./row-block-drift.js";
 import { repairRunRows, rowClaimRecords } from "./row-claim-repair.js";
 import {
@@ -978,6 +1024,7 @@ import {
   overCeilingOf,
   plannerSizing,
   rateHistory,
+  rowBlockFiles,
   runPace,
   type SizingReport,
   samplesFrom,
@@ -1003,6 +1050,7 @@ import { forgetProgress } from "./stall.js";
 import { statedRequest } from "./stated-request.js";
 import type { AttemptUsageRecord } from "./step-budget.js";
 import {
+  type FindingRow,
   type LeaseResource,
   newId,
   type RequestRow,
@@ -1014,7 +1062,7 @@ import {
   isNotPrescribedFinding,
   isSuppliedContentFinding,
   notPrescribedFindings,
-  perRowNotPrescribed,
+  perRowReading,
   prescribedRowFiles,
   suppliedConflictCriteria,
   suppliedContentFindings,
@@ -1083,10 +1131,11 @@ import type {
   Check,
   ExecutionRequest,
   HostTool,
+  ReviewNote,
   RuntimeState,
   Task,
 } from "./types.js";
-import { acceptanceGrants, blocksRun } from "./v2/acceptance.js";
+import { acceptanceGrants } from "./v2/acceptance.js";
 import { type BrowserDriverOptions, runAcceptanceGate } from "./v2/acceptance-gate.js";
 import {
   effectiveMode,
@@ -1125,6 +1174,7 @@ import {
   removeTaskWorktree,
   runContentCommit,
   runRoot,
+  runRoots,
   userChangesInScope,
   WORKTREES_DIR,
   worktreePath,
@@ -1184,6 +1234,10 @@ const repairSeverities = (
     : policy.lowFindings === "note"
       ? NOT_LOW
       : ALL_SEVERITIES;
+
+/** The findings a reviewer says repeat an earlier one (`repeatOf`), by ID (#2868). */
+const repeatsOf = (findings: readonly Review["findings"][number][]): Set<string> =>
+  new Set(findings.filter((f) => f.repeatOf).map((f) => f.id));
 
 /** The task graph as the scheduler stores it: hashes are bound to the accepted spec and plan. */
 function planGraph(
@@ -1307,6 +1361,21 @@ const REJECTION_NOTE =
 const LONG_RETRY_AFTER_MS = 30_000;
 /** Immediate retries, each at one effort step lower, after a response ran past the output cap (#1479). */
 const OUTPUT_LIMIT_RETRIES = 2;
+/** The highest output cap an output-limit retry raises a document step to (#2961). */
+export const OUTPUT_LIMIT_CEILING = 32768;
+
+/**
+ * The doubled output cap of a step past its cap whose answer is one submit_result object, or
+ * null for an implementation step (it can split its edits into smaller tool calls) and for a step
+ * already at `OUTPUT_LIMIT_CEILING` (#2961).
+ */
+export function raisedOutputCap(
+  profile: Pick<AgentProfile, "output" | "maxOutputTokens">,
+): number | null {
+  if (profile.output === "implementation") return null;
+  const raised = Math.min(profile.maxOutputTokens * 2, OUTPUT_LIMIT_CEILING);
+  return raised > profile.maxOutputTokens ? raised : null;
+}
 /** How often a driving process writes the run's active time to the run row (#1038). */
 export const ACTIVE_FLUSH_MS = 1_000;
 
@@ -1335,6 +1404,18 @@ const CHECK_KIND =
   /test|lint|ruff|eslint|biome|clippy|flake8|mypy|pyright|tsc|typecheck|type check/i;
 /** A linter rule code such as Ruff's ISC004 or ESLint-style E501: naming one reports a violation. */
 const RULE_CODE = /\b[A-Z]{1,4}\d{3,4}\b/;
+/**
+ * A task step's result, bound to the task the step ran: `taskId` is a host field (#2828,
+ * `HOST_FIELDS`), so a result that names another task, such as windowfit 08da8647 T003's
+ * `T002` copied from the task before it, is this task's result and not a reason to reject it.
+ * Every task path parses here: planned tasks and correctives, batch workers, best-of-N
+ * candidates and integrators.
+ */
+export function taskImplementation(taskId: string, output: unknown): Implementation {
+  return ImplementationSchema.parse(
+    output && typeof output === "object" && !Array.isArray(output) ? { ...output, taskId } : output,
+  );
+}
 /**
  * A task that changed its files and reports, as unresolved, only failing tests or lint findings in
  * those files has done its work: the failures go to a corrective task like a failed task check,
@@ -1480,6 +1561,22 @@ const REVIEW_ATTEMPT_STEPS = 16;
 const TASK_END_ERRORS = 20;
 /** Commands the case walk runs per attempt before it refuses a test task (#1836). */
 const CASE_PROBES = 4;
+
+/**
+ * The gate rules a policy applies live: `doc_finding_unrepaired` under `enforce` repairs a
+ * documentation finding marked `noRepro` as a `partial` one in the review and converge gates
+ * (#2866); in shadow and advisory it only records the would-stop (#2835).
+ */
+const docGateRules = (policy: RunPolicy): GateShadowRules => ({
+  doc: stopMode(policy, "doc_finding_unrepaired") === "enforce",
+});
+
+/**
+ * A check result's output for a comparison with another run: in stream order when the runner
+ * kept it (`inStreamOrder`, #2859), else as recorded.
+ */
+const signedOutput = (result: { output?: string; signatureOutput?: string }): string =>
+  result.signatureOutput ?? result.output ?? "";
 
 export class WorkflowScheduler {
   dispose(): void {
@@ -2550,28 +2647,31 @@ export class WorkflowScheduler {
               );
               findings = [...findings.filter((f) => !isNotPrescribedFinding(f)), ...notPrescribed];
               const notPrescribedMode = stopMode(policy, "case_not_prescribed");
-              if (notPrescribedMode !== "enforce")
+              if (notPrescribedMode !== "enforce") {
+                // The same rows read row by row (#2544, shadow): recorded beside the joined answer.
+                const perRow = perRowReading(
+                  spec,
+                  graph,
+                  statedRequest(state, this.store.requests(runId)),
+                  { checks: policy.checks },
+                );
                 for (const finding of notPrescribed)
                   recordWouldStop(this.store, runId, {
                     reason: "case_not_prescribed",
                     mode: notPrescribedMode,
                     key: `analysis-${finding.refs[1] ?? finding.id}`,
                     summary: finding.description,
-                    // `literal`: a quoted case no prescribed row holds, as against `per-row` (#2532).
+                    // `literal`: a quoted case no prescribed row holds, as against `per-row` (#2532);
+                    // `perRow`: whether one row holds its literals read row by row (#2544).
                     inputs: {
                       criterionId: finding.refs[1] ?? null,
                       finding: finding.id,
                       kind: "literal",
+                      perRow: perRow.noted.get(finding.refs[1] ?? "") ?? "none",
                     },
                   });
-              // The cases only the joined rows hold, read row by row (#2544, shadow): recorded only.
-              if (notPrescribedMode !== "enforce")
-                for (const found of perRowNotPrescribed(
-                  spec,
-                  graph,
-                  statedRequest(state, this.store.requests(runId)),
-                  { checks: policy.checks },
-                ))
+                // The cases only the joined rows hold, which no single row holds: recorded only.
+                for (const found of perRow.notPrescribed)
                   recordWouldStop(this.store, runId, {
                     reason: "case_not_prescribed",
                     mode: notPrescribedMode,
@@ -2579,6 +2679,7 @@ export class WorkflowScheduler {
                     summary: `${found.criterionId} cites ${JSON.stringify(found.literal)}, whose values the request's prescribed rows hold only spread over several rows; read row by row, no row holds it`,
                     inputs: { ...found, kind: "per-row" },
                   });
+              }
               // Analysis passes when no finding blocks: the rest are notes, whatever the model's verdict.
               const blocking = findings.some((f) => f.blocking);
               state.analysisPassed = !blocking && analysis.verdict !== "inconclusive";
@@ -3189,8 +3290,10 @@ export class WorkflowScheduler {
                 // The approved boundary includes paths supplied by the host's sibling merge.
                 const proposed =
                   settings && !settings.keepFeatures
-                    ? mergeSmallSiblings(plan, { byDependents: policy.criticalPath === "split" })
-                        .plan
+                    ? mergeSmallSiblings(plan, {
+                        byDependents: policy.criticalPath === "split",
+                        request: state.requestText || state.prompt,
+                      }).plan
                     : plan;
                 // A row file with a later feature's row goes back only when enforced (#2487).
                 return testOwnershipProblems(proposed, {
@@ -3255,6 +3358,7 @@ export class WorkflowScheduler {
               const touched = this.runChangedPaths(runId, state);
               const repro = (r: Repro, file?: string | null) =>
                 runRepro(this.processes, r, {
+                  run: runRoots(this.store.workspace, state),
                   root: runRoot(this.store.workspace, state),
                   executables,
                   generated: generatedPaths(policy),
@@ -3528,7 +3632,14 @@ export class WorkflowScheduler {
                   ),
                 );
               const crashes = this.reproCrashes(gate.findings, outcomes, review.findings);
-              const decision = convergenceGateDecision(gate);
+              // Under `enforce` a noRepro documentation finding repairs as a partial one (#2866).
+              const decision = convergenceGateDecision(gate, docGateRules(policy));
+              const verdictOf = new Map(decision.verdicts.map((v) => [v.id, v.verdict]));
+              // A kept documentation finding rides the correction this gate starts anyway (#2868).
+              const carried = new Set(
+                convergenceGateDocCarries(gate).filter((id) => verdictOf.get(id) !== "repair"),
+              );
+              for (const id of carried) verdictOf.set(id, "repair");
               const gatePath = `${CONVERGENCE_GATE_DIR}${newId()}.json`;
               this.store.transaction(() =>
                 this.store.artifact(
@@ -3539,6 +3650,7 @@ export class WorkflowScheduler {
                     schemaVersion: 1,
                     ...gate,
                     decision,
+                    ...(carried.size ? { carried: [...carried] } : {}),
                   } satisfies ConvergenceGateRecord),
                 ),
               );
@@ -3549,7 +3661,15 @@ export class WorkflowScheduler {
                 convergenceGateCrashKeeps(gate),
                 crashes,
               );
-              const verdictOf = new Map(decision.verdicts.map((v) => [v.id, v.verdict]));
+              this.docFindingWouldStops(
+                runId,
+                policy,
+                gatePath,
+                convergenceGateDocKeeps(gate),
+                review.findings,
+                carried,
+                convergenceGateDocRepeats(gate, repeatsOf(review.findings)),
+              );
               const ofVerdict = (verdict: ConvergenceVerdict) =>
                 review.findings.filter((f) => verdictOf.get(f.id) === verdict);
               const noted = ofVerdict("notes");
@@ -3575,6 +3695,14 @@ export class WorkflowScheduler {
               // acceptance needs every automated criterion to pass.
               const repair = ofVerdict("repair");
               const findings = this.recordFindings(runId, review, repair);
+              this.store.transaction(() =>
+                this.retireStranded(
+                  runId,
+                  state,
+                  "convergence",
+                  new Set(findings.map((f) => f.id)),
+                ),
+              );
               const kept = new Set([...repair, ...noted, ...unshown].map((f) => f.id));
               addReviewNotes(
                 state.reviewNotes,
@@ -3734,6 +3862,9 @@ export class WorkflowScheduler {
       await this.processes.stop();
       const fault =
         signal.aborted && signal.reason instanceof WorkflowFault ? signal.reason : error;
+      // A recovery request checks command processes: read them before the write lock is taken.
+      const recovering = fault instanceof WorkflowFault && fault.code === "RECOVERY_REQUIRED";
+      using _liveness = commandLiveness(this.store, recovering ? [runId] : []);
       this.store.transaction(() => {
         if (stepId) {
           // Task, review and transition steps opened under the stage end with it (#1745).
@@ -3819,6 +3950,15 @@ export class WorkflowScheduler {
             "recovery",
             `recovery/advice-${diagnostic.id}.json`,
             canonical(recovery),
+          );
+        // A refusal of acceptance is a host predicate, not a model's output: its own advice stands
+        // after a second stop too, and the repeat guard leaves it alone (#2879).
+        if (fault instanceof WorkflowFault && fault.details.hostPredicate === ACCEPTANCE_REFUSAL)
+          this.store.artifact(
+            runId,
+            "recovery",
+            `${ACCEPTANCE_REFUSALS_DIR}${diagnostic.id}.json`,
+            canonical({ predicate: fault.details.predicate ?? null }),
           );
         const repair = RepairBlockSchema.safeParse(
           fault instanceof WorkflowFault ? fault.details.repairBlock : undefined,
@@ -4675,6 +4815,7 @@ export class WorkflowScheduler {
       (repro) => {
         const file = battery.find((c) => c.repro === repro)?.finding.file;
         return runRepro(this.processes, repro, {
+          run: runRoots(this.store.workspace, state),
           root,
           executables,
           generated: generatedPaths(policy),
@@ -4853,6 +4994,7 @@ export class WorkflowScheduler {
     const touched = this.runChangedPaths(runId, state);
     const outcomes = await runReproBattery(cases, (repro) =>
       runRepro(this.processes, repro, {
+        run: runRoots(this.store.workspace, state),
         root,
         executables,
         generated: generatedPaths(policy),
@@ -5207,8 +5349,17 @@ export class WorkflowScheduler {
         );
         if (result.timeout) timeouts[commandKey(check)] = result.timeout.note;
         if (result.status === "failed" && check.required && !result.truncated) {
-          failures[commandKey(check)] = failureSignature(result.output, root);
-          shapes[commandKey(check)] = shapedFailureSignature(result.output, root);
+          // In stream order: the pipes' arrival order is not fixed (#2859).
+          failures[commandKey(check)] = failureSignature(
+            result.signatureOutput,
+            root,
+            runRoots(this.store.workspace, state),
+          );
+          shapes[commandKey(check)] = shapedFailureSignature(
+            result.signatureOutput,
+            root,
+            runRoots(this.store.workspace, state),
+          );
           failing.push({ check, output: result.output });
         }
         if (
@@ -5218,12 +5369,16 @@ export class WorkflowScheduler {
           isStaticCheck(check) &&
           !isTestCheck(check)
         ) {
-          const keys = baselineKeys(result.output, root);
+          const keys = baselineKeys(result.output, root, runRoots(this.store.workspace, state));
           if (keys.length) debt[commandKey(check)] = keys;
         }
         if (scaffold) continue;
         if (result.status === "failed" && isWholeUnitCheck(check))
-          diagnostics[commandKey(check)] = baselineKeys(result.output, root);
+          diagnostics[commandKey(check)] = baselineKeys(
+            result.output,
+            root,
+            runRoots(this.store.workspace, state),
+          );
         if (result.truncated || result.status === "inconclusive") continue;
         const found = outputCounts(result.output, result.status === "passed");
         if (found.length) counts[commandKey(check)] = found;
@@ -5269,7 +5424,12 @@ export class WorkflowScheduler {
     );
     const tracked = new Set((await gitBaseline(root))?.tracked ?? []);
     for (const { check, output } of failing) {
-      const found = baselineFindings(output, root, check.cwd);
+      const found = baselineFindings(
+        output,
+        root,
+        check.cwd,
+        runRoots(this.store.workspace, state),
+      );
       const input: BaselineFailureInput = {
         fileLocal: isStaticCheck(check) && !isTestCheck(check) && !isWholeUnitCheck(check),
         fix: Boolean(check.fix),
@@ -5474,6 +5634,10 @@ export class WorkflowScheduler {
         graph,
         (path) => readText(workspacePath(root, path)),
         mode,
+        rowBlockDecision,
+        rowMoveDecision,
+        // A row the file held before the run (a scaffold's placeholder) is not added (#2969).
+        (path) => runBaseContent(this.store, runId, path) ?? null,
       );
       for (const { record, drifts, extras } of compared) {
         found.push(...drifts);
@@ -5963,11 +6127,12 @@ export class WorkflowScheduler {
     const changed = ((state.rootGraph ?? state.graph)?.tasks ?? []).flatMap((t) =>
       t.writes.map((w) => w.path),
     );
-    const debt = baselineDebt(output, runRoot(this.store.workspace, state), {
-      baseline,
-      changed,
-      summary: diagnosticCount(output)?.count ?? null,
-    });
+    const debt = baselineDebt(
+      output,
+      runRoot(this.store.workspace, state),
+      { baseline, changed, summary: diagnosticCount(output)?.count ?? null },
+      runRoots(this.store.workspace, state),
+    );
     if (!debt) return null;
     this.store.transaction(() =>
       this.store.artifact(
@@ -6079,6 +6244,7 @@ export class WorkflowScheduler {
         const repro = ReproSchema.safeParse(earlier.body.repro);
         if (!repro.success) continue;
         const outcome = await runRepro(this.processes, repro.data, {
+          run: runRoots(this.store.workspace, state),
           root,
           executables,
           generated: generatedPaths(policy),
@@ -6169,7 +6335,7 @@ export class WorkflowScheduler {
     // A failure without output tells nothing about its cause, so it is never matched.
     if (!before) return false;
     const root = runRoot(this.store.workspace, state);
-    const after = failureSignature(output, root);
+    const after = failureSignature(output, root, runRoots(this.store.workspace, state));
     // With `subset`, a failure that only lost diagnostics the baseline had is still that debt (#1913).
     const matched = before === after || (subset && withinBaseline(before, after));
     const shaped = baseline.shapes?.[commandKey(check)];
@@ -6178,7 +6344,9 @@ export class WorkflowScheduler {
         legacy: { before: signatureLines(before), after: signatureLines(after) },
         shaped: {
           before: signatureLines(shaped),
-          after: signatureLines(shapedFailureSignature(output, root)),
+          after: signatureLines(
+            shapedFailureSignature(output, root, runRoots(this.store.workspace, state)),
+          ),
         },
         subset,
       });
@@ -6654,6 +6822,7 @@ export class WorkflowScheduler {
     const writes = task.writes.map((w) => w.path);
     if (!repros.length) return undefined;
     return async (root, signal) => {
+      const run = runRoots(this.store.workspace, this.store.state(runId));
       const outcomes: {
         findingId: string;
         repro: Repro;
@@ -6680,6 +6849,7 @@ export class WorkflowScheduler {
           findingId,
           repro,
           outcome: await runRepro(this.processes, repro, {
+            run,
             root,
             executables,
             generated: generatedPaths(policy),
@@ -6705,7 +6875,7 @@ export class WorkflowScheduler {
               before.fileHash !== undefined &&
               fileHash !== before.fileHash,
             sameOutput: before.output === outcome.output,
-            outside: reproOutsidePaths(repro, root).length,
+            outside: reproOutsidePaths(repro, root, run).length,
           })
         );
       });
@@ -6733,8 +6903,8 @@ export class WorkflowScheduler {
             reason: "repro_blind",
             mode,
             key: `${path}#${findingId}`,
-            summary: `Finding ${findingId}'s repro printed the same output after task ${task.id} changed the finding's file, and it reads ${reproOutsidePaths(repro, root).join(", ")} outside the root it runs in: it cannot see the correction, and would be inconclusive instead of reproduced.`,
-            inputs: { taskId: task.id, findingId, outside: reproOutsidePaths(repro, root) },
+            summary: `Finding ${findingId}'s repro printed the same output after task ${task.id} changed the finding's file, and it reads ${reproOutsidePaths(repro, root, run).join(", ")} outside the root it runs in: it cannot see the correction, and would be inconclusive instead of reproduced.`,
+            inputs: { taskId: task.id, findingId, outside: reproOutsidePaths(repro, root, run) },
           });
       return outcomes
         .filter(({ outcome }) => outcome.status === "reproduced")
@@ -7093,7 +7263,7 @@ export class WorkflowScheduler {
        * Set on the retries after a response ran past the provider's output cap, with the effort
        * they run at: one step below the previous call's, or its own when none is lower.
        */
-      outputLimit?: { effort?: RouteEffort; tries: number };
+      outputLimit?: { effort?: RouteEffort; tries: number; maxOutputTokens?: number };
       /** The recovery ladder's rung after a stalled call (#1877). */
       recovery?: RecoveryPlacement;
     } = {},
@@ -7176,7 +7346,13 @@ export class WorkflowScheduler {
     const largerWindow = placement.largerWindow === true;
     const routedProfile = this.routed(runId, stepId, stageProfile, fallbackIndex, largerWindow);
     // The ladder's derived fallback runs on a sibling model the route does not name (#2271).
-    const profile = recovery?.model ? { ...routedProfile, model: recovery.model } : routedProfile;
+    const modelled = recovery?.model ? { ...routedProfile, model: recovery.model } : routedProfile;
+    // A document step past its output cap runs again at the raised cap (#2961).
+    const raisedCap = placement.outputLimit?.maxOutputTokens;
+    const profile =
+      raisedCap !== undefined && raisedCap > modelled.maxOutputTokens
+        ? { ...modelled, maxOutputTokens: raisedCap }
+        : modelled;
     // Under `context: auto` a step whose context does not fit tries the model's largest window
     // once, before the next model of the route (#1256).
     const upgrade = (): Promise<unknown> | null =>
@@ -7306,8 +7482,12 @@ export class WorkflowScheduler {
               hostRows: generatedRows.filter((file) => file.inline === true),
               // The rows the request prescribes, for files written yet or not (#2501).
               prescribedRows: this.prescribedRows(runId, state),
+              // The per-row reader of a row restated as a tuple, in shadow (#2544).
+              rowHold: rowTupleHeld,
               // The files it supplies verbatim, whose helpers a criterion may name (#2646).
               suppliedFiles: this.suppliedFiles(runId, state),
+              // Every row file it names, also another feature's (#2889).
+              rowFiles: rowBlockFiles(statedRequest(state, this.store.requests(runId))),
               ...(policy.citedCases ? { citedCases: policy.citedCases } : {}),
               generatedKinds: this.bannedGeneratedKinds(state, task),
               refuseGenerated: stopMode(policy, "generated_case") === "enforce",
@@ -7885,12 +8065,19 @@ export class WorkflowScheduler {
       // ladder with the same prompt and effort (bench round 41, fpbits: 20 minutes lost, #1479).
       // A route without effort gets one retry with the notice; after `OUTPUT_LIMIT_RETRIES` the
       // failure takes the usual path.
+      // A step whose answer is one submit_result object (a spec, a plan, a review) cannot split
+      // it into smaller calls: its retry keeps the effort and doubles the output cap, up to
+      // `OUTPUT_LIMIT_CEILING`; one already at the ceiling steps the effort down like the others
+      // (bench round R103, md-site specify: four attempts lost at the same 8192 cap, #2961).
       if (isOutputLimit(error) && !signal.aborted && !wrote) {
-        const lower = lowerEffort(effort);
         const tries = placement.outputLimit?.tries ?? 0;
-        if (tries === 0 || (lower && tries < OUTPUT_LIMIT_RETRIES)) {
+        const raised = raisedOutputCap(profile);
+        const lower = raised === null ? lowerEffort(effort) : null;
+        if (tries === 0 || ((raised !== null || lower) && tries < OUTPUT_LIMIT_RETRIES)) {
           const notice =
-            "Your previous response for this step ran past the provider's output limit and was discarded. Keep each response short: reason briefly, and split large files or edits into several smaller tool calls instead of one long one.";
+            raised !== null
+              ? `Your previous response for this step ran past the provider's output limit and was discarded. The host raised this step's output limit from ${profile.maxOutputTokens} to ${raised} tokens. Reason briefly and keep your submit_result object complete; leave out text the output schema does not ask for.`
+              : "Your previous response for this step ran past the provider's output limit and was discarded. Keep each response short: reason briefly, and split large files or edits into several smaller tool calls instead of one long one.";
           const retryExtra =
             extra && typeof extra === "object" && !Array.isArray(extra)
               ? { ...extra, outputLimit: notice }
@@ -7920,6 +8107,7 @@ export class WorkflowScheduler {
               outputLimit: {
                 ...((lower ?? effort) ? { effort: lower ?? effort } : {}),
                 tries: tries + 1,
+                ...(raised !== null ? { maxOutputTokens: raised } : {}),
               },
             },
           );
@@ -9131,13 +9319,15 @@ ${note}`;
           )
         : [];
     // The host writes the task's files from the request: its verbatim content (#2333) or its
-    // prescribed rows in the file's shape (#2528).
+    // prescribed rows in the file's shape (#2528). A rerun of a task it applied is the host's
+    // again (#2877), never a session's.
     const applied =
       !checking &&
       task.writes.length > 0 &&
       !hostWritten(task) &&
-      firstRun &&
-      (await this.hostApply(runId, child, state, policy, task));
+      (firstRun
+        ? await this.hostApply(runId, child, state, policy, task)
+        : await this.hostReapply(runId, child, state, policy, task));
     if (
       !checking &&
       (task.writes.length === 0 ||
@@ -9194,7 +9384,7 @@ ${note}`;
         });
         return;
       }
-      await this.beforeSession(runId, state, task, root, firstRun);
+      await this.beforeSession(runId, state, policy, task, root, firstRun);
       if (await this.affectedBaseline(runId, child, state, policy, task, signal, root))
         this.store.transaction(() => this.store.saveState(runId, state));
       const before = await sourceManifest(root, generatedPaths(policy), signal);
@@ -9233,12 +9423,21 @@ ${note}`;
         ? null
         : narrowCorrectionWrites(task, focus.files, !diagnostics);
       // The task as this attempt may write it: a correction's first attempt only where its
-      // findings point.
+      // findings point, a task the host applied in part only its declined files, the host's
+      // files then read hints (#2937).
+      const partial = this.partialScope(runId, task.id);
+      const own: Task = partial
+        ? {
+            ...task,
+            writes: task.writes.filter((w) => partial.session.includes(w.path)),
+            readHints: [...new Set([...task.readHints, ...partial.written])],
+          }
+        : task;
       const scoped: Task = this.rowRepairedTask(
         runId,
         state,
         policy,
-        narrow ? { ...task, writes: narrow } : task,
+        narrow ? { ...task, writes: narrow } : own,
       );
       if (narrow) state.narrowedCorrections[task.id] ??= narrow.map((w) => w.path);
       const preloaded = await preloadTaskFiles(
@@ -9280,7 +9479,8 @@ ${note}`;
       let result = this.settleSizeTargets(
         runId,
         task.id,
-        ImplementationSchema.parse(
+        taskImplementation(
+          task.id,
           await this.call(
             runId,
             child,
@@ -9315,6 +9515,15 @@ ${note}`;
               ...this.misquoteContinue(runId, state, task.id),
               ...this.exactText(runId, state, policy, task),
               ...rowRunContext(rowRuns),
+              ...(partial
+                ? {
+                    hostWritten: {
+                      files: partial.written,
+                      writable: partial.session,
+                      note: "The host already wrote these files of the task from the request's own content; they are in place and are not yours to write. Do not retype them: write only the writable files, and read the host's files only when your files need them.",
+                    },
+                  }
+                : {}),
               ...this.rowClaimContext(runId, state, policy, task),
               ...(focus.files.length
                 ? {
@@ -9377,7 +9586,7 @@ ${note}`;
           }),
         ),
       );
-      if (result.outcome === "spec_conflict" && result.taskId === task.id) {
+      if (result.outcome === "spec_conflict") {
         const attemptId = this.store
           .attempts(runId)
           .filter((a) => a.step_id === child)
@@ -9492,7 +9701,6 @@ ${note}`;
       }
       const ownFailures = ownCheckFailures(task, result, changed);
       if (
-        result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         (result.unresolved.length > 0 && !ownFailures) ||
         correction !== true
@@ -9812,6 +10020,10 @@ ${note}`;
         ...(policy.rowFileWrite === "on" && state.graph
           ? rowFileTasks(state.requestText || state.prompt, state.graph)
           : []),
+        // And a task the host may apply in part under `hostApplyPartial: "on"` (#2937).
+        ...(state.graph
+          ? hostPartialTasks(state.requestText || state.prompt, state.graph, policy)
+          : []),
       ]);
       const pending = new Set(
         this.store
@@ -9819,11 +10031,17 @@ ${note}`;
           .filter((t) => t.status === "pending")
           .map((t) => t.id),
       );
+      // A rerun of a task the host applied comes here too (#2877): the host decides it again.
       const single =
         checking ??
         ready.find(
           (t) =>
-            t.writes.length === 0 || hostWritten(t) || (appliable.has(t.id) && pending.has(t.id)),
+            t.writes.length === 0 ||
+            hostWritten(t) ||
+            (appliable.has(t.id) &&
+              (pending.has(t.id) ||
+                this.appliedRecord(runId, t.id) !== null ||
+                this.partialScope(runId, t.id) !== null)),
         );
       signal.throwIfAborted();
       if (single) {
@@ -10577,6 +10795,8 @@ ${note}`;
     stepId: string,
     taskId: string,
     lines = FAILED_CHECK_LINES,
+    /** For a comparison with another run: the output in stream order where it was kept (#2861). */
+    signed = false,
   ): { id: string; output: string }[] {
     const last = new Map<string, { status: string; artifactId: string }>();
     for (const row of this.store.taskCheckRuns(runId, taskId))
@@ -10587,10 +10807,11 @@ ${note}`;
       if (row.status !== "failed") continue;
       let output = "";
       try {
-        output = String(
-          (JSON.parse(this.store.readArtifact(runId, row.artifactId)) as { output?: unknown })
-            .output ?? "",
-        );
+        const body = JSON.parse(this.store.readArtifact(runId, row.artifactId)) as {
+          output?: unknown;
+          orderedTail?: unknown;
+        };
+        output = signed ? storedSignatureOutput(body) : String(body.output ?? "");
       } catch {}
       failed.push({ id, output: output.split("\n").slice(0, lines).join("\n") });
     }
@@ -10624,7 +10845,65 @@ ${note}`;
         ...(failedChecks.length ? { failedChecks } : {}),
       }),
     );
-    return this.recordUnfinishedRepeat(runId, policy, stepId, taskId, result.unresolved);
+    const repeat = this.recordUnfinishedRepeat(runId, policy, stepId, taskId, result.unresolved);
+    this.recordRowSplit(runId, policy, taskId);
+    return repeat;
+  }
+  /**
+   * Records whether the host would split a test task that ended unfinished again into slices of
+   * the prescribed rows its file still lacks (`rowSplitRecord`, #2458), at each unfinished end
+   * after `recordUnfinishedRepeat` counted it, and the `unfinished_row_split` would-stop when it
+   * would. Shadow only: the resume takes the whole task as before, and a failure to read never
+   * touches the run.
+   */
+  private recordRowSplit(runId: string, policy: RunPolicy, taskId: string): void {
+    try {
+      const state = this.store.state(runId);
+      const task = state.graph?.tasks.find((t) => t.id === taskId);
+      if (!task) return;
+      const ends = this.store
+        .artifacts(runId)
+        .filter((a) => a.logical_path === `${REPEAT_TASKS_DIR}${taskId}.json`)
+        .filter((a) => this.repeatRecordOf(runId, a.id)?.end === "unfinished").length;
+      if (!ends) return;
+      const root = runRoot(this.store.workspace, state);
+      const record = rowSplitRecord(
+        task,
+        state.requestText || state.prompt,
+        ends,
+        (path) => {
+          try {
+            return readFileSync(workspacePath(root, path), "utf8");
+          } catch {
+            return null;
+          }
+        },
+        policy,
+      );
+      if (!record) return;
+      this.store.artifact(
+        runId,
+        ROW_SPLIT_KIND,
+        `${ROW_SPLIT_DIR}${taskId}.json`,
+        canonical(record),
+      );
+      const mode = stopMode(policy, "unfinished_row_split");
+      if (record.decision !== "split" || mode === "enforce") return;
+      recordWouldStop(this.store, runId, {
+        reason: "unfinished_row_split",
+        mode,
+        key: `task-${taskId}`,
+        summary: rowSplitSummary(record),
+        inputs: {
+          taskId,
+          path: record.path,
+          ends: record.ends,
+          rows: record.rows,
+          missing: record.missing.length,
+          slices: record.slices.map((slice) => slice.length),
+        },
+      });
+    } catch {}
   }
   /**
    * Records the failing checks of a task's unfinished end (`repeats/tasks/<task>.json`, #2437)
@@ -10642,7 +10921,7 @@ ${note}`;
     unresolved: string[] = [],
   ): UnfinishedRepeat | null {
     const tasks = this.store.state(runId).graph?.tasks ?? [];
-    const checks = this.failedChecksOf(runId, stepId, taskId, Number.POSITIVE_INFINITY).map(
+    const checks = this.failedChecksOf(runId, stepId, taskId, Number.POSITIVE_INFINITY, true).map(
       ({ id, output }) => repeatCheck(id, output, failingFilesInOutput(output, tasks)),
     );
     const path = `${REPEAT_TASKS_DIR}${taskId}.json`;
@@ -10889,7 +11168,7 @@ ${note}`;
       before = await sourceManifest(root, generatedPaths(policy), signal);
       const kept = keepOutside(root, before, new Set(task.writes.map((w) => w.path)));
       // On the task's base, before an earlier attempt's edits are carried over (#2138).
-      await this.beforeSession(runId, state, task, root, entry.firstRun);
+      await this.beforeSession(runId, state, policy, task, root, entry.firstRun);
       await this.affectedBaseline(runId, entry.child, state, policy, task, signal, root);
       const earlierEdits = await this.applyCarry(runId, state, entry, root);
       // A correction's first attempt writes only where its findings point, as on the single-writer
@@ -10902,11 +11181,21 @@ ${note}`;
             correctionFocus(this.store, runId, state, task).files,
             !staticCorrection(this.store, runId, policy, task),
           );
+      // A task the host applied in part writes only the declined files; the host's are read
+      // hints (#2937).
+      const partial = this.partialScope(runId, task.id);
+      const own: Task = partial
+        ? {
+            ...task,
+            writes: task.writes.filter((w) => partial.session.includes(w.path)),
+            readHints: [...new Set([...task.readHints, ...partial.written])],
+          }
+        : task;
       const scoped: Task = this.rowRepairedTask(
         runId,
         state,
         policy,
-        narrow ? { ...task, writes: narrow } : task,
+        narrow ? { ...task, writes: narrow } : own,
       );
       if (narrow) state.narrowedCorrections[task.id] ??= narrow.map((w) => w.path);
       const currentChanges = async (): Promise<{
@@ -10923,7 +11212,8 @@ ${note}`;
       let result = this.settleSizeTargets(
         runId,
         task.id,
-        ImplementationSchema.parse(
+        taskImplementation(
+          task.id,
           await this.call(
             runId,
             entry.child,
@@ -10988,7 +11278,7 @@ ${note}`;
       );
       // Check results the host ran to finish a stopped attempt, reused by the task checks.
       const hostChecked = new Map<string, WorkerCheck["checked"]>();
-      if (result.outcome === "spec_conflict" && result.taskId === task.id) {
+      if (result.outcome === "spec_conflict") {
         const fix: MisquoteFixContext = {
           root,
           attemptId: entry.attemptId,
@@ -11166,7 +11456,6 @@ ${note}`;
       if (correction instanceof WorkflowFault)
         return { kind: "rejected", entry, error: correction };
       if (
-        result.taskId !== task.id ||
         ["blocked", "failed"].includes(result.outcome) ||
         (result.unresolved.length > 0 && !ownCheckFailures(task, result, changed)) ||
         correction !== true
@@ -11754,7 +12043,8 @@ ${note}`;
     const result = this.settleSizeTargets(
       runId,
       task.id,
-      ImplementationSchema.parse(
+      taskImplementation(
+        task.id,
         await this.call(
           runId,
           entry.child,
@@ -11797,7 +12087,6 @@ ${note}`;
         `The integrator of ${task.id} changed files outside the conflict: ${outside.slice(0, 5).join(", ")}`,
       );
     if (
-      result.taskId !== task.id ||
       ["blocked", "failed", "spec_conflict"].includes(result.outcome) ||
       result.unresolved.length > 0
     ) {
@@ -12388,10 +12677,13 @@ ${note}`;
     notationRows?: { files: { path: string; rows: number[] }[]; note: string };
   } {
     if (policy.rowFileWrite !== "on") return {};
-    const targets = placeRowTargets(state.requestText || state.prompt, task);
+    const request = state.requestText || state.prompt;
+    const targets = placeRowTargets(request, task);
     if (!targets.size) return {};
+    // A feature run's rows keep the request's numbers, as its prompt names them (#2939 follow-up).
+    const numbers = placeRowNumbers(request, targets);
     // Rows in the request's own notation are the session's to translate, never placed (#2583).
-    const { code, notation } = placeRowForms(targets);
+    const { code, notation } = placeRowForms(targets, numbers);
     const translated = [...notation].map(([path, rows]) => ({ path, rows }));
     const notationRows = translated.length
       ? {
@@ -12403,11 +12695,17 @@ ${note}`;
       : {};
     if (!code.size) return notationRows;
     const files = [...code].map(([path, rows]) => ({ path, rows: rows.length }));
+    const named = (path: string, count: number) => {
+      const list = numbers.get(path);
+      return list
+        ? `${count} rows: rows ${formatRowList(list)} of the request's block`
+        : `${count} rows`;
+    };
     return {
       ...notationRows,
       placeRows: {
         files,
-        note: `The request prescribes the rows of ${files.map((f) => `${f.path} (${f.rows} rows)`).join(", ")}. You must place them with place_rows and never type a row: write everything else in the file with edit_file (imports, the row type, the list's opening and close, the harness calls), leaving the rows out, then call place_rows with the path, the line the rows follow and rows [first, last]. The host inserts the request's rows exactly as written, one per line in order. The indent of a placed row is by default ${INDENT_DEFAULT}; the separator that ends each row is by default ${SEPARATOR_DEFAULT}; give indent and separator when they do not fit the language or the request's layout. The result shows the first placed line; place_rows with reindent: true fixes the indentation of rows already placed.`,
+        note: `The request prescribes the rows of ${files.map((f) => `${f.path} (${named(f.path, f.rows)})`).join(", ")}. You must place them with place_rows and never type a row: write everything else in the file with edit_file (imports, the row type, the list's opening and close, the harness calls), leaving the rows out, then call place_rows with the path, the line the rows follow and rows [first, last], by the request's row numbers. Give that line as after, its text (the opening line of the list the rows belong in), when the file has more than one list or you place rows in more than one call, since every insert moves the lines below it, and when two lists open with the same line (such as \`return [\`) give occurrence too, 2 for the second from the top; the result names the list that holds the placed rows. The host inserts the request's rows exactly as written, one per line in order. The indent of a placed row is by default ${INDENT_DEFAULT}; the separator that ends each row is by default ${SEPARATOR_DEFAULT}; give indent and separator when they do not fit the language or the request's layout. The result shows the first placed line; place_rows with reindent: true fixes the indentation of rows already placed. ${MOVE_NOTE}`,
       },
     };
   }
@@ -12541,7 +12839,8 @@ ${note}`;
           t.id !== task.id &&
           !done(t.id) &&
           t.writes.some(
-            (w) => w.action !== "delete" && holdsWrittenTests(w.path, compiled, task.readHints),
+            (w) =>
+              w.action !== "delete" && holdsWrittenTests(w.path, compiled, task.readHints, root),
           ),
       )
     )
@@ -13035,6 +13334,7 @@ ${note}`;
     status: "passed" | "failed" | "inconclusive";
     evidenceId: string;
     output?: string;
+    signatureOutput?: string;
     reason?: string;
   }> {
     const attempt = this.store.reserve(runId, child, null, 0, policy);
@@ -13603,6 +13903,11 @@ ${note}`;
       ...(rows.length ? { criterionIds: rows.map((r) => r.criterion.id) } : {}),
     };
     const assumedPath = `assumptions/conflicts/${task.id}.json`;
+    // A conflict about a test file whose rows the request prescribes is answered first, with the
+    // row diff the host reads itself: the request's rows win over a transcription that dropped
+    // one (#2493, R80 deltaglue cli T010). Shadow unless `conflictRowReply` is on.
+    if (this.replyWithRows(runId, state, policy, child, task, account, report, result, root))
+      return null;
     // A criterion that contradicts what the request states loses to the request, on quotes the
     // host checked and on every report of the task, whatever words the report uses (#2016). It
     // comes before the rows are compared with the test: a test that changed a row because the
@@ -13617,6 +13922,7 @@ ${note}`;
       result,
       account,
       report,
+      root,
       signal,
       fix,
     );
@@ -14156,6 +14462,7 @@ ${note}`;
         tasks: (state.rootGraph ?? state.graph)?.tasks ?? [],
         hostRows: (files ?? []).filter((file) => file.inline === true),
         prescribedRows: this.prescribedRows(runId, state),
+        rowFiles: rowBlockFiles(statedRequest(state, this.store.requests(runId))),
       },
     );
     const cases = walk ? (await walk(fix.root)).length : 0;
@@ -14882,6 +15189,113 @@ ${note}`;
     return null;
   }
   /**
+   * A spec conflict whose test side is a file the request prescribes rows for, answered with the
+   * row diff (#2493): the files the conflict names (its test sides, the paths its report names,
+   * the files the task's failing check names) that `suppliedRows` reads are compared with their
+   * rows through `rowBlockDrifts` on the attempt's tree. A delivered file that drifts is verified
+   * evidence for the `prescribed-rows` site: with `conflictRowReply: "on"` the request's rows win,
+   * the task is interrupted and its next attempt reads the row diff, and no model settle runs.
+   * Every comparison is recorded under `conflicts/rows/` (with the reply, sent or not) and its
+   * decision under `conflicts/evidence/`. True when the host replied.
+   */
+  private replyWithRows(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    child: string,
+    task: Task,
+    account: Record<string, unknown>,
+    report: string,
+    result: Implementation,
+    root: string,
+  ): boolean {
+    const graph = state.rootGraph ?? state.graph;
+    if (!graph) return false;
+    const assumedPath = `assumptions/conflicts/${task.id}-rows.json`;
+    if (this.store.latestArtifact(runId, assumedPath)) return false;
+    const failing = this.failedCheckOutput(runId, task.id);
+    const named = new Set(
+      [
+        ...pathsInOutput(report, graph.tasks),
+        ...(failing ? failingFilesInOutput(failing, graph.tasks) : []),
+        ...sideTests(result.conflictSides),
+      ].filter(isTestPath),
+    );
+    if (!named.size) return false;
+    // Only the named files: `rowBlockDrifts` compares the files the graph writes.
+    const scoped = {
+      tasks: graph.tasks.map((t) => ({ ...t, writes: t.writes.filter((w) => named.has(w.path)) })),
+    };
+    let compared: ReturnType<typeof rowBlockDrifts> = [];
+    try {
+      compared = rowBlockDrifts(state.requestText || state.prompt, scoped, (path) =>
+        readText(workspacePath(root, path)),
+      );
+    } catch {
+      return false;
+    }
+    if (!compared.length) return false;
+    const files = conflictRowFiles(compared.map((c) => c.record));
+    const drifts = compared.flatMap((c) => c.drifts);
+    const input: EvidenceInput = {
+      site: "prescribed-rows",
+      eligible: policy.clarification === "assume",
+      evidence: conflictRowEvidence(files),
+      wording: false,
+      fallback: false,
+    };
+    const decision = evidenceDecision(input);
+    this.recordEvidenceDecisions(runId, [{ ref: task.id, input }]);
+    const mode = policy.conflictRowReply === "on" ? "on" : "shadow";
+    const n =
+      this.store
+        .artifacts(runId)
+        .filter(
+          (a) =>
+            a.kind === CONFLICT_ROWS_KIND &&
+            a.logical_path.startsWith(`${CONFLICT_ROWS_DIR}${task.id}-`),
+        ).length + 1;
+    const record: ConflictRowRecord = {
+      schemaVersion: 1,
+      taskId: task.id,
+      report: n,
+      mode,
+      files,
+      decision,
+      reply: decision ? conflictRowDiff(drifts) : null,
+    };
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        CONFLICT_ROWS_KIND,
+        `${CONFLICT_ROWS_DIR}${task.id}-${n}.json`,
+        canonical(record),
+      ),
+    );
+    if (!decision || mode !== "on") return false;
+    const paths = [...new Set(drifts.map((d) => d.path))];
+    const assumed = `The request's rows win over ${paths.join(", ")}: ${record.reply}`;
+    this.store.transaction(() => {
+      this.store.artifact(
+        runId,
+        "diagnostic",
+        `tasks/conflicts/${task.id}.json`,
+        canonical(account),
+      );
+      this.store.artifact(runId, "assumption", assumedPath, canonical({ ...account, assumed }));
+      recordConflictDecision(this.store, runId, {
+        requestId: `assumed-${task.id}-rows`,
+        taskId: task.id,
+        findingIds: task.findingIds,
+        answer: `Assumed under clarification assume (${assumedPath}): ${assumed}.`,
+      });
+      this.store.taskStatus(runId, task.id, "interrupted", null, { cause: "spec_conflict" });
+      this.store.finishStep(runId, child, "failed");
+    });
+    state.prompt += `\n${conflictRowNote(task.id, assumedPath, report, drifts)}`;
+    return true;
+  }
+  /**
    * Whether the task's latest request conflict record holds a request side that only the host's
    * framing of a feature holds (#2492): the scope fence quoted as if it were the person's words.
    */
@@ -14919,6 +15333,7 @@ ${note}`;
     result: Implementation,
     account: Record<string, unknown>,
     report: string,
+    root: string,
     signal: AbortSignal,
     fix?: MisquoteFixContext,
   ): Promise<boolean | ConflictFinished> {
@@ -14983,6 +15398,8 @@ ${note}`;
       reaudit: null,
       reauditedBefore: earlier.some((r) => r.reaudit !== null),
     };
+    const slice = this.sliceForeign(spec, task, tasks, criteria, root, policy);
+    if (slice) input.slice = slice;
     let decision = requestConflictDecision(input);
     let derivations: NonNullable<Analysis["derivations"]> = [];
     if (decision === "reaudit") {
@@ -15006,20 +15423,40 @@ ${note}`;
       input.reaudit = reauditVerdicts(derivations, input.criterionIds, sections.person);
       decision = requestConflictDecision(input);
     }
+    const foreignSlice = sliceForeignDecision(input, decision);
     const record: RequestConflictRecord = {
       taskId: task.id,
       report: earlier.length + 1,
       ...input,
       decision,
+      ...(foreignSlice ? { sliceForeign: true as const } : {}),
     };
-    this.store.transaction(() =>
+    this.store.transaction(() => {
       this.store.artifact(
         runId,
         REQUEST_CONFLICT_KIND,
         `${REQUEST_CONFLICTS_DIR}${task.id}-${record.report}.json`,
         canonical(record),
-      ),
-    );
+      );
+      // A report about literals only another slice's rows hold (#2476): shadow until promoted, so
+      // the would-stop is recorded and the person is still asked.
+      if (foreignSlice && input.slice) {
+        const mode = stopMode(policy, "slice_foreign_conflict");
+        if (mode !== "enforce")
+          recordWouldStop(this.store, runId, {
+            reason: "slice_foreign_conflict",
+            mode,
+            key: `${task.id}-${record.report}`,
+            summary: `${task.id}'s spec conflict asks for ${input.slice.missing} literal${input.slice.missing === 1 ? "" : "s"} of ${input.criterionIds.join(", ")} that the rows of ${input.slice.holders.join(", ")} (slices of ${input.slice.taskId}) hold; the host would record it as slice-foreign and ask no one`,
+            inputs: {
+              taskId: task.id,
+              report: record.report,
+              criterionIds: input.criterionIds,
+              slice: input.slice,
+            },
+          });
+      }
+    });
     if (decision !== "request") return false;
     const bySides = sidesSettle(input.sides);
     const overruled = bySides
@@ -15196,6 +15633,34 @@ ${note}`;
    * Whether this run created a file: absent from the baseline snapshot, or, without one, created
    * by a task of the plan.
    */
+  /**
+   * The slice-foreign inputs of a row slice's spec conflict (#2476): the cited criteria's whole
+   * cases (no plan identity, so no slice split them yet), which of them the slice's test files on
+   * disk lack, by the walk's evidence, and which of those another slice owns by its rows.
+   */
+  private sliceForeign(
+    spec: Spec,
+    task: Task,
+    tasks: readonly Task[],
+    criteria: Spec["criteria"],
+    root: string,
+    policy: RunPolicy,
+  ): ReturnType<typeof sliceForeignInput> {
+    if (!task.sizingSlice?.rows?.length || !criteria.length) return undefined;
+    const cases = criterionCases(
+      { ...spec, criteria },
+      { criterionIds: criteria.map((c) => c.id), writes: task.writes },
+      { checks: policy.checks },
+    ).filter((c) => !c.cited);
+    const texts = writtenTestPaths(task).map((path) => {
+      try {
+        return caseEvidence(path, readFileSync(workspacePath(root, path), "utf8"));
+      } catch {
+        return "";
+      }
+    });
+    return sliceForeignInput(task, tasks, cases, (c) => missingCases([c], texts).length === 0);
+  }
   private createdByRun(runId: string, state: RuntimeState, path: string): boolean {
     const baselineId = state.manifest.baselineSnapshotId;
     const baseline = baselineId ? this.store.snapshotFiles(runId, baselineId) : null;
@@ -15462,13 +15927,43 @@ ${note}`;
     const parsed = stored ? PolicySchema.safeParse(JSON.parse(stored)) : null;
     if (!parsed?.success) return owner;
     const policy = parsed.data;
+    const decided = this.sourceDefectMatch(
+      runId,
+      state,
+      policy,
+      policy.sourceDefectRoute === "on" ? "on" : "shadow",
+      task,
+      output,
+      rows,
+    );
+    return decided?.route && decided.mode === "on"
+      ? { kind: "finished", owners: decided.owners, files: decided.files }
+      : owner;
+  }
+  /**
+   * The #2220 decision for a planned test task's failing output, recorded once per failure under
+   * `source-defect/tasks/`: the criterion literals its expected values match, and the sources that
+   * the finished planned tasks carrying those criteria wrote and the failing tests import. Null
+   * when the output states no expected value.
+   */
+  private sourceDefectMatch(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    mode: SourceDefectRecord["mode"],
+    task: Task,
+    output: string,
+    rows: TaskRow[],
+    level?: SourceDefectRecord["level"],
+  ): (SourceDefectInput & { route: boolean; mode: SourceDefectRecord["mode"] }) | null {
+    if (!state.spec) return null;
     const graph = state.rootGraph ?? state.graph;
     const cases = criterionCases(state.spec, task, {
       checks: policy.checks,
       tasks: graph?.tasks ?? [],
     });
     const found = criterionExpected(output, cases);
-    if (!found.expected) return owner;
+    if (!found.expected) return null;
     const done = new Set(
       rows.filter((r) => ["implemented", "verified"].includes(r.status)).map((r) => r.id),
     );
@@ -15509,8 +16004,9 @@ ${note}`;
       files,
     };
     const route = sourceDefectDecision(input);
-    const mode = policy.sourceDefectRoute === "on" ? "on" : "shadow";
-    const path = sourceDefectPath(task.id, hashBytes(failingLines(output)).slice(0, 12));
+    const signature = hashBytes(failingLines(output)).slice(0, 12);
+    // A run-level record keeps its own path: the task's gate may have failed with the same lines.
+    const path = sourceDefectPath(task.id, level ? `${level}-${signature}` : signature);
     if (!this.store.latestArtifact(runId, path))
       this.store.artifact(
         runId,
@@ -15520,12 +16016,73 @@ ${note}`;
           schemaVersion: 1,
           taskId: task.id,
           mode,
+          ...(level ? { level } : {}),
           criterionIds: found.criterionIds,
           ...input,
           route,
         } satisfies SourceDefectRecord),
       );
-    return route && mode === "on" ? { kind: "finished", owners, files } : owner;
+    return { ...input, route, mode };
+  }
+  /**
+   * The findings of a failed run-level check, with a finding on each source the #2220 decision
+   * finds at fault (#2888): when the failing tests the output names are a planned test task's
+   * only, and every expected value is a literal of its criteria, the sources a finished sibling
+   * carrying those criteria wrote and the tests import get a finding of their own. The check run's
+   * findings become one corrective, so its first session may write the source. R95 windowgate
+   * 7bbc2758: a Gradle row test failed on a version that Cli.kt wrote with an escaped `$`, and the
+   * first two correctives (219k tokens) could write only the test files. Live: it only widens
+   * the corrective's writes, as the subjects of the named tests do (#1270).
+   */
+  private sourceDefectFindings(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    output: string,
+    found: Review["findings"],
+  ): Review["findings"] {
+    const tasks = (state.rootGraph ?? state.graph)?.tasks ?? [];
+    if (!state.spec || !output || !found.length) return found;
+    const named = failingFilesInOutput(output, tasks);
+    if (!named.length || !named.every((path) => isTestPath(path))) return found;
+    const testers = tasks.filter(
+      (t) =>
+        t.origin === "planned" &&
+        isTestTask(t) &&
+        t.writes.some((w) => w.action !== "delete" && named.includes(w.path)),
+    );
+    if (!testers.length) return found;
+    const rows = this.store.tasks(runId);
+    const extra: Review["findings"] = [];
+    for (const tester of testers) {
+      const decided = this.sourceDefectMatch(
+        runId,
+        state,
+        policy,
+        "on",
+        tester,
+        output,
+        rows,
+        "run",
+      );
+      if (!decided?.route) continue;
+      const base = found.find((f) => f.file !== null && named.includes(f.file)) ?? found[0];
+      if (!base) continue;
+      for (const file of decided.files) {
+        if ([...found, ...extra].some((f) => f.file === file)) continue;
+        const owner = tasks.find(
+          (t) => decided.owners.includes(t.id) && t.writes.some((w) => w.path === file),
+        );
+        extra.push({
+          ...base,
+          id: newId(),
+          file,
+          requirementIds: owner?.requirementIds ?? base.requirementIds,
+          criterionIds: owner?.criterionIds ?? base.criterionIds,
+        });
+      }
+    }
+    return extra.length ? [...found, ...extra] : found;
   }
   /**
    * The open correctives of a sibling test task's failed check whose failing tests import a source
@@ -15601,7 +16158,12 @@ ${note}`;
     state: RuntimeState,
     task: Task,
     check: Check,
-    checked: { status: "passed" | "failed" | "inconclusive"; evidenceId: string; output?: string },
+    checked: {
+      status: "passed" | "failed" | "inconclusive";
+      evidenceId: string;
+      output?: string;
+      signatureOutput?: string;
+    },
     taskFailures: Review["findings"],
     checkEvidence: string[],
     policy?: RunPolicy,
@@ -15627,7 +16189,7 @@ ${note}`;
       checked.status === "failed" &&
       checked.output &&
       !failingFilesInOutput(checked.output, [task]).length &&
-      this.failsAsBaseline(runId, state, check, checked.output, true)
+      this.failsAsBaseline(runId, state, check, signedOutput(checked), true)
     )
       return undefined;
     const owner =
@@ -15828,7 +16390,7 @@ ${note}`;
       ]),
     ];
     if (scope.length) state.repairScope[findingId] = scope;
-    const signature = checked.output ? failingLines(checked.output) : "";
+    const signature = checked.output ? failingLines(signedOutput(checked)) : "";
     taskFailures.push({
       id: findingId,
       kind: "correctness",
@@ -15875,7 +16437,94 @@ ${note}`;
     const timedOut = /timed out after|did not finish within/.test(checked.output ?? "");
     if (last && !regression && timedOut && check.minCases !== undefined)
       last.suggestedFix += ` Keep at least ${String(check.minCases)} generated inputs, as ${task.id} requires: make each case cheap so ${check.id} finishes within ${String(check.timeoutMs)} ms rather than generating fewer.`;
+    if (policy && owner?.kind === "finished")
+      this.recordCascadeRepeat(runId, state, policy, task, check, checked, owner);
     return undefined;
+  }
+  /**
+   * The `repeated_failure` would-stop of a corrective cascade (#2948): a planned task's whole-unit
+   * check (lint, type check, build; not a test check) fails only on files finished tasks wrote,
+   * exactly as an earlier planned task's check failed before a corrective of this run, now
+   * finished, corrected it. The fix did not hold, and each later task opens one more corrective
+   * for the one defect. R101 turntrim c1633b0b: `lintr` red on `R/input.R` after the host's styler
+   * fixer, 16 correctives with the same edit set (3.79M tokens), no record, since the chain
+   * comparison of `recordRepeatedFailures` sees only correctives of correctives and each of these
+   * was opened for another planned task. Recorded once per defect (key: the check and the failure
+   * hash), naming the files' writers (`failureOwner`) as the one owner. Shadow only: the
+   * correction is opened as before, since parking the task is a stop (`stop-reasons.ts`). A
+   * corrective that is still open needs no record: it runs before the later tasks that depend on
+   * the file's writer (`readyTasks`), so one defect opens a second corrective only after the first
+   * one's fix did not hold.
+   */
+  private recordCascadeRepeat(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+    check: Check,
+    checked: { evidenceId: string; output?: string; signatureOutput?: string },
+    owner: FailureOwner,
+  ): void {
+    const graph = state.graph;
+    if (!graph || task.origin !== "planned" || isTestCheck(check)) return;
+    const round = (evidenceIds: readonly string[]): RepeatCheck | null => {
+      const output = this.commandOutput(runId, evidenceIds, true);
+      return output
+        ? repeatCheck(check.id, output, failingFilesInOutput(output, graph.tasks))
+        : null;
+    };
+    const current =
+      round([checked.evidenceId]) ??
+      repeatCheck(
+        check.id,
+        signedOutput(checked),
+        failingFilesInOutput(signedOutput(checked), graph.tasks),
+      );
+    if (!current.files.length || current.files.some((p) => task.writes.some((w) => w.path === p)))
+      return;
+    const hash = failureHash([current]);
+    const status = new Map(this.store.tasks(runId).map((r) => [r.id, r.status]));
+    const findings = new Map(this.store.findings(runId).map((row) => [row.id, row]));
+    const earlier = graph.tasks.flatMap((corrective) => {
+      if (
+        corrective.origin === "planned" ||
+        !["implemented", "verified"].includes(status.get(corrective.id) ?? "pending")
+      )
+        return [];
+      const opened = corrective.findingIds.find((id) => {
+        const predecessor = graph.tasks.find((t) => t.id === state.repairPredecessors[id]);
+        const row = findings.get(id);
+        if (!row || !predecessor || predecessor.id === task.id || predecessor.origin !== "planned")
+          return false;
+        const finding = JSON.parse(row.body_json) as Review["findings"][number];
+        if (taskCheckOfClaim(finding.claim) !== check.id) return false;
+        const before = round(finding.evidenceIds);
+        return before !== null && failureHash([before]) === hash;
+      });
+      return opened
+        ? [{ corrective: corrective.id, failed: state.repairPredecessors[opened] }]
+        : [];
+    });
+    const first = earlier[0];
+    if (!first) return;
+    const mode = stopMode(policy, "repeated_failure");
+    if (mode === "enforce") return;
+    recordWouldStop(this.store, runId, {
+      reason: "repeated_failure",
+      mode,
+      key: `defect-${check.id}-${hash.slice(0, 16)}`,
+      summary: `${task.id} failed ${check.id} on ${owner.files.slice(0, 5).join(", ")}, written by ${owner.owners.join(", ")}, exactly as ${first.failed} did before ${first.corrective} corrected it: a correction of ${task.id} would not start another model session`,
+      inputs: {
+        rounds: [first.corrective, task.id],
+        correctives: earlier.map((e) => e.corrective),
+        failed: [...earlier.map((e) => e.failed), task.id],
+        failureOwner: owner.owners,
+        checks: [check.id],
+        files: current.files,
+        hash,
+        firstDifference: null,
+      },
+    });
   }
   /**
    * A failed task check is repaired first, and the repaired task reruns all its checks; an
@@ -16185,6 +16834,75 @@ ${note}`;
     }
   }
   /**
+   * The `doc_finding_unrepaired` would-stops (#2835): documentation findings marked `noRepro` that
+   * the review or converge gate kept notes for their kind, where a `partial` one repairs (R91
+   * stopcut's README escapes with doubled backslashes). Shadow: the gate's decision is unchanged.
+   * A repeat the round's severity floor keeps out also records a `doc_finding_repeat` would-stop
+   * in every mode (#2931).
+   */
+  private docFindingWouldStops(
+    runId: string,
+    policy: RunPolicy,
+    gatePath: string,
+    keeps: readonly string[],
+    findings: readonly Review["findings"][number][],
+    carried: ReadonlySet<string>,
+    repeats: readonly string[],
+  ): void {
+    // A repeat below the round's floor is its own rule (#2931): the enforced first-round repair
+    // does not reach it, so it is recorded whatever the first rule's mode.
+    const repeatMode = stopMode(policy, "doc_finding_repeat");
+    // The reason takes no enforce (`NOT_ENFORCED`), so it only records.
+    for (const findingId of repeatMode === "enforce" ? [] : repeats) {
+      const finding = findings.find((f) => f.id === findingId);
+      if (!finding || repeatMode === "enforce") continue;
+      const repeatOf = finding.repeatOf ?? null;
+      recordWouldStop(this.store, runId, {
+        reason: "doc_finding_repeat",
+        mode: repeatMode,
+        key: `${gatePath}#${findingId}`,
+        summary: `Documentation finding ${findingId} (${finding.kind}, noRepro) on ${finding.file ?? "its file"} repeats ${repeatOf ?? "an earlier finding"} and is kept a note by the round's severity floor (${finding.severity}): it would open one more correction`,
+        inputs: {
+          findingId,
+          kind: finding.kind,
+          severity: finding.severity,
+          file: finding.file ?? null,
+          repeatOf,
+          carried: carried.has(findingId),
+        },
+      });
+    }
+    const mode = stopMode(policy, "doc_finding_unrepaired");
+    if (mode === "enforce") return;
+    for (const findingId of [...keeps, ...repeats]) {
+      const finding = findings.find((f) => f.id === findingId);
+      if (!finding) continue;
+      const repeatOf = finding.repeatOf ?? null;
+      // A carried finding rides a correction already (#2868); a repeat that rides none is what
+      // the promotion would open one more correction for.
+      const outcome = carried.has(findingId)
+        ? "it rides the correction another finding of this review starts"
+        : repeatOf
+          ? `it repeats ${repeatOf}, which no correction repaired: as a partial finding it would open one more correction`
+          : "as a partial finding it would start a correction";
+      recordWouldStop(this.store, runId, {
+        reason: "doc_finding_unrepaired",
+        mode,
+        key: `${gatePath}#${findingId}`,
+        summary: `Documentation finding ${findingId} (${finding.kind}, noRepro) on ${finding.file ?? "its file"} is kept a note for its kind: ${outcome}`,
+        inputs: {
+          findingId,
+          kind: finding.kind,
+          file: finding.file ?? null,
+          carried: carried.has(findingId),
+          repeatOf,
+          // Kept out only by the round's severity floor (#2868).
+          belowFloor: repeats.includes(findingId),
+        },
+      });
+    }
+  }
+  /**
    * The edge-input probe of a planned source task (#1808), once after it settled without
    * failures: the `edge-cases` profile is shown the task's criteria, files and the edge taxonomy
    * of its languages (edge-inputs.ts) and proposes extreme legal inputs; the host runs each
@@ -16275,6 +16993,7 @@ ${note}`;
       cases.map(({ criterionId: _, ...c }) => ({ ...c, actual: c.expected })),
       (repro) =>
         runRepro(this.processes, repro, {
+          run: runRoots(this.store.workspace, state),
           root,
           executables,
           generated: generatedPaths(policy),
@@ -16845,7 +17564,8 @@ ${note}`;
    * `decision.would_rerun` and returns null, so the failure opens its correction as before. Under
    * `enforce` it runs the check again, records `checks/<id>/rerun-<evidence>.json` and returns the
    * second result: a pass makes the first an inconclusive flake that opens nothing, a second
-   * failure opens the correction as before. Null when the rule does not apply.
+   * failure opens the correction as before. Null when the rule does not apply, and for a check
+   * with a `fix` command or one that runs a formatter (#2829).
    */
   private async silentRerun<R>(
     runId: string,
@@ -16855,10 +17575,14 @@ ${note}`;
     first: { status: string; evidenceId: string; output?: string; reason?: string },
     again: () => Promise<R & { status: string; evidenceId: string; reason?: string }>,
   ): Promise<R | null> {
+    // A check with a fixer, or one that runs a formatter, fails by printing a diff or a file list
+    // that names no failure word; its fixer is the host's answer to it, not a second run (#2829).
     if (
       !check.required ||
       first.status !== "failed" ||
       first.reason !== "exit" ||
+      check.fix !== undefined ||
+      runsFormatter(check) ||
       !silentFailure(first.output ?? "")
     )
       return null;
@@ -16973,7 +17697,13 @@ ${note}`;
       }
       if ((result.status === "failed" || regression) && check.required) {
         if (!regression)
-          this.assertNotBaselineFailure(runId, state, check, result.output, result.evidenceId);
+          this.assertNotBaselineFailure(
+            runId,
+            state,
+            check,
+            signedOutput(result),
+            result.evidenceId,
+          );
         // A formatter that hung on the files hangs as their fixer too (#2240).
         if (result.reason !== "timeout_slow") failedIds.push(check.id);
         const task =
@@ -16995,7 +17725,14 @@ ${note}`;
         failures.push(
           ...(regression
             ? found
-            : this.rowRunFindings(runId, state, policy, check.id, found, rowDrifts)),
+            : this.rowRunFindings(
+                runId,
+                state,
+                policy,
+                check.id,
+                this.sourceDefectFindings(runId, state, policy, result.output, found),
+                rowDrifts,
+              )),
         );
       }
     }
@@ -17141,6 +17878,9 @@ ${note}`;
               path,
               id: journal(path, check, images.get(path) ?? null),
             }));
+            // A range fixer's file as it was, to put back its changes outside the range (#2970).
+            const ranged = check.fixLines && targets.length === 1 ? targets[0] : undefined;
+            const rangedBefore = ranged ? readText(workspacePath(root, ranged)) : null;
             // A fixer that writes text mode on Windows turns a LF file into CRLF (#2214).
             const endings = captureEndings(paths.map((path) => workspacePath(root, path)));
             let result: FixerResult;
@@ -17161,6 +17901,32 @@ ${note}`;
               throw error;
             }
             restoreEndings(endings);
+            if (ranged) {
+              const done = await putBackOutsideRange(
+                workspacePath(root, ranged),
+                ranged,
+                rangedBefore,
+                check.fixLines,
+                async () =>
+                  (
+                    await runFixer(
+                      scope,
+                      { executable: check.executable, args: check.args },
+                      {
+                        cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                        env: buildCheckEnv(check),
+                        timeoutMs: check.timeoutMs,
+                        signal,
+                        sandbox: runSandbox(policy, root, {
+                          gitWrite: root !== this.store.workspace,
+                        }),
+                      },
+                    )
+                  ).exitCode === 0,
+              );
+              if (done)
+                recordPutBack(this.store, runId, attempt, `fixer ${check.id} range`, [done]);
+            }
             let fixed = false;
             for (const effect of effects) {
               const target = workspacePath(root, effect.path);
@@ -17782,6 +18548,26 @@ ${note}`;
     if (!graph) return new Map();
     return prescribedRowFiles(statedRequest(state, this.store.requests(runId)), graph);
   }
+  /**
+   * The files of the plan the request gives verbatim: a whole file, or an exact diff, that is not
+   * an API listing (`suppliedBlocks`). A host default that adds a test construct gives way to them
+   * (#2886).
+   */
+  private suppliedPlanPaths(
+    runId: string,
+    state: RuntimeState,
+    tasks: readonly Task[],
+  ): Set<string> {
+    const paths = [...new Set(tasks.flatMap((t) => t.writes.map((w) => w.path)))];
+    if (!paths.length) return new Set();
+    const blocks = suppliedBlocks(statedRequest(state, this.store.requests(runId)), paths);
+    return new Set(
+      paths.filter((path) => {
+        const given = blocks.get(path) ?? [];
+        return given.length > 0 && given.every((b) => b.kind === "diff" || !b.listing);
+      }),
+    );
+  }
   /** The content of the files the request supplies verbatim (`suppliedFileContents`, #2646). */
   private suppliedFiles(runId: string, state: RuntimeState): string[] {
     const graph = state.rootGraph ?? state.graph;
@@ -17793,7 +18579,8 @@ ${note}`;
    * which the walk did not demand from a task that writes only prescribed row files, once per task,
    * criterion and literal, with both. `inputs.kind` says which reader answered `none` (#2532):
    * `literal` for the walk's own answer, `per-row` for the shadow reader that asks each row alone
-   * (#2544, `prescribedPerRow`) where the joined rows held the case.
+   * (#2544, `prescribedPerRow`) where the joined rows held the case. A `literal` record carries
+   * that reader's answer as `perRow` (`own` or `sibling` where one row holds it after all).
    */
   private caseNotPrescribedWouldStop(
     runId: string,
@@ -17819,6 +18606,7 @@ ${note}`;
             criterionId: found.criterionId,
             literal: found.literal,
             kind: "literal",
+            perRow: c.prescribedPerRow ?? "none",
           },
         });
       else if (c.prescribedPerRow === "none")
@@ -17922,6 +18710,7 @@ ${note}`;
         }
       },
       this.propertyLibraries(runId, state),
+      this.suppliedPlanPaths(runId, state, tasks),
     );
     const evidenceId = this.store.transaction(() => {
       const artifact = this.store.artifact(runId, "quality", QUALITY_PROPERTIES, canonical(result));
@@ -19172,6 +19961,44 @@ ${note}`;
       }));
     });
   }
+  /**
+   * Retires the findings a refused correction left without a repair task (#2878) once a pass of
+   * the kind that raised them has run after the grant and not raised them again (`live`). Only
+   * a finding still without a task and still open, confirmed or inconclusive is retired; one the
+   * pass raised again keeps its row and gets its correction. The decision is recorded.
+   */
+  private retireStranded(
+    runId: string,
+    state: RuntimeState,
+    pass: "review" | "convergence",
+    live: ReadonlySet<string>,
+  ): void {
+    const handed = state.strandedFindings.filter((f) => f.pass === pass);
+    if (!handed.length) return;
+    state.strandedFindings = state.strandedFindings.filter((f) => f.pass !== pass);
+    const rows = new Map(this.store.findings(runId).map((row) => [row.id, row]));
+    const retired = handed
+      .map((f) => rows.get(f.id))
+      .filter(
+        (row): row is FindingRow =>
+          row !== undefined &&
+          !row.repair_task_id &&
+          !live.has(row.id) &&
+          !["refuted", "resolved"].includes(row.status),
+      );
+    for (const row of retired) this.store.findingStatus(runId, row.id, "resolved");
+    this.store.artifact(
+      runId,
+      "recovery",
+      `stranded-findings/${newId()}.json`,
+      canonical({
+        pass,
+        retired: retired.map((row) => row.id),
+        raisedAgain: handed.filter((f) => live.has(f.id)).map((f) => f.id),
+        reason: `the ${pass} pass after a repair grant did not raise them again`,
+      }),
+    );
+  }
   /** The v1 review stage: correctness, security when triggered and language, each blocking. */
   private v1Reviewers(state: RuntimeState, policy: RunPolicy): Reviewer[] {
     const dimensions = v1ReviewDimensions(state, policy);
@@ -19257,16 +20084,17 @@ ${note}`;
   }
   /**
    * The prose and table defects of the documents the run changed (#2549): code spans that copy
-   * an escaped string literal of the spec instead of its value, and table code spans with a bare
-   * `|`. Evidence for the correctness reviewer, as the documented examples are; recorded per
+   * an escaped string literal of the spec, the request or an upstream spec (`docTextSources`,
+   * #2921) instead of its value, and table code spans with a bare `|`. Evidence for the correctness reviewer, as the documented examples are; recorded per
    * snapshot when there is any.
    */
   private documentedText(runId: string, state: RuntimeState, spec: Spec): DocTextProblem[] {
     if (!state.snapshotId) return [];
-    const sources = [
-      ...spec.requirements.map((r) => r.text),
-      ...spec.criteria.flatMap((c) => [c.given, c.when, c.then]),
-    ].join("\n");
+    const sources = docTextSources(
+      spec,
+      statedRequest(state, this.store.requests(runId)),
+      state.baseFiles,
+    );
     const problems = this.changedDocs(runId, state).flatMap((doc) =>
       docTextProblems(doc.path, doc.text, sources),
     );
@@ -19291,6 +20119,12 @@ ${note}`;
       throw new WorkflowFault("ARTIFACT_MISSING", "Review snapshot missing");
     const findings: Review["findings"] = [];
     const owners = new Map<string, Reviewer>();
+    // Each reviewer's kept documentation findings that ride a correction it starts (#2868).
+    const carries: {
+      reviewer: Reviewer;
+      result: Review;
+      notes: { finding: Review["findings"][number]; reason: ReviewNote["reason"] }[];
+    }[] = [];
     const severities = repairSeverities(
       this.store.run(runId),
       policy,
@@ -19303,6 +20137,7 @@ ${note}`;
     const touched = this.runChangedPaths(runId, state);
     const repro = (r: Repro, file?: string | null) =>
       runRepro(this.processes, r, {
+        run: runRoots(this.store.workspace, state),
         root: runRoot(this.store.workspace, state),
         executables,
         generated: generatedPaths(policy),
@@ -19565,7 +20400,10 @@ ${note}`;
             ),
           );
         const crashes = this.reproCrashes(gate.findings, outcomes, result.findings);
-        const decided = new Set(reviewGateDecision(gate));
+        // Under `enforce` a noRepro documentation finding repairs as a partial one (#2866).
+        const decided = new Set(reviewGateDecision(gate, docGateRules(policy)));
+        // A kept documentation finding rides the correction this gate starts anyway (#2868).
+        const carried = new Set(reviewGateDocCarries(gate).filter((id) => !decided.has(id)));
         const gatePath = `${REVIEW_GATE_DIR}${reviewer.key}-${newId()}.json`;
         this.store.transaction(() =>
           this.store.artifact(
@@ -19576,29 +20414,44 @@ ${note}`;
               schemaVersion: 1,
               ...gate,
               repaired: [...decided],
+              ...(carried.size ? { carried: [...carried] } : {}),
             } satisfies ReviewGateRecord),
           ),
         );
         this.reproCrashWouldStops(runId, policy, gatePath, reviewGateCrashKeeps(gate), crashes);
+        this.docFindingWouldStops(
+          runId,
+          policy,
+          gatePath,
+          reviewGateDocKeeps(gate),
+          result.findings,
+          carried,
+          reviewGateDocRepeats(gate, repeatsOf(result.findings)),
+        );
         const blocking = result.findings.filter((f) => decided.has(f.id));
         const repaired = new Set(blocking.map((f) => f.id));
+        const reasoned = (finding: Review["findings"][number]) => ({
+          finding,
+          reason: reviewer.required
+            ? noteReason(
+                finding,
+                severities.filter((s) => reviewer.blocking.includes(s)),
+                policy.reviewMinConfidence,
+              )
+            : "advisory",
+        });
         addReviewNotes(
           state.reviewNotes,
           reviewer.dimension,
           reviewSnapshotId,
-          result.findings
-            .filter((f) => !repaired.has(f.id))
-            .map((finding) => ({
-              finding,
-              reason: reviewer.required
-                ? noteReason(
-                    finding,
-                    severities.filter((s) => reviewer.blocking.includes(s)),
-                    policy.reviewMinConfidence,
-                  )
-                : "advisory",
-            })),
+          result.findings.filter((f) => !repaired.has(f.id) && !carried.has(f.id)).map(reasoned),
         );
+        if (carried.size)
+          carries.push({
+            reviewer,
+            result,
+            notes: result.findings.filter((f) => carried.has(f.id)).map(reasoned),
+          });
         for (const finding of this.recordFindings(runId, result, blocking)) {
           findings.push(finding);
           owners.set(finding.id, reviewer);
@@ -19667,10 +20520,25 @@ ${note}`;
       for (const old of this.store.findings(runId))
         if (old.repair_task_id && !live.has(old.id))
           this.store.findingStatus(runId, old.id, "resolved");
+      this.retireStranded(runId, state, "review", live);
     });
     const open = findings.filter(
       (f) => this.store.findings(runId).find((entry) => entry.id === f.id)?.status !== "refuted",
     );
+    // The kept documentation findings ride a correction that still opens (#2868); when the host or
+    // a skeptic refuted every finding that opened it, they stay notes, so no correction is added.
+    for (const carry of carries)
+      if (open.length)
+        for (const finding of this.recordFindings(
+          runId,
+          carry.result,
+          carry.notes.map((n) => n.finding),
+        )) {
+          open.push(finding);
+          owners.set(finding.id, carry.reviewer);
+        }
+      else
+        addReviewNotes(state.reviewNotes, carry.reviewer.dimension, reviewSnapshotId, carry.notes);
     if (state.position)
       for (const reviewer of reviewers) {
         const result = state.reviews[reviewer.key];
@@ -19800,6 +20668,8 @@ ${note}`;
     /** Set when the host failed the gate without running it. */
     reason?: string;
     output?: string;
+    /** `output` in stream order, for a comparison with the baseline (#2859). */
+    signatureOutput?: string;
     /** The gate timed out on the run's own work (`timeout_slow`, #2240): no fixer runs. */
     slow?: boolean;
     /** The check runner's reason for the last attempt (`exit`, `timeout`, ...). */
@@ -19855,6 +20725,7 @@ ${note}`;
           attempts,
           flaky: false,
           output: result.output,
+          signatureOutput: result.signatureOutput,
           checkReason: result.reason,
           ...(slow ? { slow } : {}),
         };
@@ -19952,7 +20823,7 @@ ${note}`;
         continue;
       }
       if (!result.reason && !regression)
-        this.assertNotBaselineFailure(runId, state, check, result.output ?? "", result.evidenceId);
+        this.assertNotBaselineFailure(runId, state, check, signedOutput(result), result.evidenceId);
       if (!result.reason && !result.slow) failedIds.push(check.id);
       const task =
         state.graph?.tasks.find((t) => t.checkIds.includes(check.id)) ?? state.graph?.tasks[0];
@@ -19980,7 +20851,14 @@ ${note}`;
       failures.push(
         ...(result.reason || regression
           ? found
-          : this.rowRunFindings(runId, state, policy, check.id, found, rowDrifts)),
+          : this.rowRunFindings(
+              runId,
+              state,
+              policy,
+              check.id,
+              this.sourceDefectFindings(runId, state, policy, result.output ?? "", found),
+              rowDrifts,
+            )),
       );
     }
     this.resolveCoveredFindings(runId, passedIds);
@@ -20333,6 +21211,12 @@ ${note}`;
                 : stageKind(v2.stage) === "review"
                   ? state.extraReviewRounds
                   : 0);
+          const strandedPass =
+            position.repairKind === "convergence"
+              ? ("convergence" as const)
+              : stageKind(v2.stage) === "review"
+                ? ("review" as const)
+                : null;
           if (count > bound)
             throw new WorkflowFault(
               "RECOVERY_REQUIRED",
@@ -20350,6 +21234,10 @@ ${note}`;
                   scope: "transition",
                   transitionId: transition.id,
                   required: count - bound,
+                  // The loop's findings got no task: a grant hands them to the next pass (#2878).
+                  ...(strandedPass
+                    ? { stranded: { pass: strandedPass, findingIds: findings.map((f) => f.id) } }
+                    : {}),
                 },
               },
             );
@@ -20409,7 +21297,12 @@ ${note}`;
     }
   }
   /** The last lines of the command output behind a finding's evidence, or null when it has none. */
-  private commandOutput(runId: string, evidenceIds: readonly string[]): string | null {
+  private commandOutput(
+    runId: string,
+    evidenceIds: readonly string[],
+    /** For a comparison with another run: the output in stream order where it was kept (#2861). */
+    signed = false,
+  ): string | null {
     const ids = new Set(evidenceIds);
     const tails: string[] = [];
     for (const row of this.store.evidence(runId)) {
@@ -20417,9 +21310,11 @@ ${note}`;
       try {
         const body = JSON.parse(this.store.readArtifact(runId, row.artifact_id)) as {
           output?: unknown;
+          orderedTail?: unknown;
         };
-        if (typeof body.output === "string" && body.output.trim())
-          tails.push(outputTail(body.output, HANDOFF_OUTPUT_LINES));
+        const text = signed ? storedSignatureOutput(body) : body.output;
+        if (typeof text === "string" && text.trim())
+          tails.push(outputTail(text, HANDOFF_OUTPUT_LINES));
       } catch {
         // Redacted or missing evidence hands over the finding without output.
       }
@@ -20612,15 +21507,21 @@ ${note}`;
     );
     const acceptable = (): void => {
       if (writes) assertAcceptanceV2(this.store, runId, state, policy, definition, gates);
-      else if (this.store.requests(runId).some(blocksRun))
-        throw new WorkflowFault("STALE_DECISION", "Pending decisions remain");
+      else assertNoPendingDecisions(this.store, runId);
       const unreconciled = this.store
         .effects(runId)
         .filter((e) => ["prepared", "unknown"].includes(e.status));
       if (unreconciled.length)
-        throw new WorkflowFault("RECOVERY_REQUIRED", "Unreconciled effects remain", {
-          effectIds: unreconciled.map((e) => e.id),
-        });
+        throw acceptanceRefusal(
+          "RECOVERY_REQUIRED",
+          "effects",
+          effectsAdvice(
+            this.store,
+            runId,
+            unreconciled.map((e) => e.id),
+          ),
+          { effectIds: unreconciled.map((e) => e.id) },
+        );
     };
     settleSupersededEffects(this.store, runId);
     await this.commitAccepted(runId, state, acceptable);
@@ -20895,12 +21796,14 @@ ${note}`;
   private async beforeSession(
     runId: string,
     state: RuntimeState,
+    policy: RunPolicy,
     task: Task,
     root: string,
     firstRun: boolean,
   ): Promise<void> {
     // Shadow (#2023): whether the host would apply the request's verbatim content itself.
-    if (firstRun && task.origin === "planned") await this.recordHostApply(runId, state, task, root);
+    if (firstRun && task.origin === "planned")
+      await this.recordHostApply(runId, state, policy, task, root);
     // Shadow (#2275): whether the request's verbatim content passes the project's static checks.
     if (firstRun && task.origin === "planned")
       await this.recordSuppliedChecks(runId, state, task, root);
@@ -21377,6 +22280,7 @@ ${note}`;
   private async recordHostApply(
     runId: string,
     state: RuntimeState,
+    policy: RunPolicy,
     task: Task,
     root: string,
   ): Promise<void> {
@@ -21394,7 +22298,17 @@ ${note}`;
         runId,
         HOST_APPLY_KIND,
         path,
-        canonical(hostApplyRecord(task.id, writes)),
+        canonical(
+          hostApplyRecord(
+            task.id,
+            writes,
+            hostApplyDecision,
+            "shadow",
+            null,
+            // Shadow under `on` too: this record is made only when the host wrote nothing (#2937).
+            hostApplyPartialMode(policy) === "off" ? "off" : "shadow",
+          ),
+        ),
       );
     } catch {}
   }
@@ -21405,6 +22319,10 @@ ${note}`;
    * `applied`. True when the host wrote them: no implementer runs, the task checks decide it.
    * False (and the implementer runs as before) when the policy is off, the request gives the task
    * no verbatim block, the decision keeps the implementer, or the content cannot be computed.
+   * When the decision keeps the implementer for some writes only (`hostApplyPartialSplit`,
+   * #2937), the record names the split under `hostApplyPartial` shadow, and under `on` the host
+   * writes the other files the same way (`partial.applied`) and the session gets only the
+   * declined ones (`partialScope`); false then too.
    */
   private async hostApply(
     runId: string,
@@ -21419,30 +22337,40 @@ ${note}`;
     if (this.store.latestArtifact(runId, path)) return false;
     const root = runRoot(this.store.workspace, state);
     const request = state.requestText || state.prompt;
+    const partialMode = hostApplyPartialMode(policy);
     let record: HostApplyRecord;
     let contents: { path: string; content: string }[] = [];
+    // Each kind of write is the host's under its own setting (#2528): a prescribed row file under
+    // `rowFileWrite`, the request's verbatim content under `hostApply`.
+    const hostKind = (w: HostApplyWrite): boolean => (w.rows ? rowsOn : policy.hostApply === "on");
+    let partialOn = false;
     try {
       const writes = await hostApplyInputs(root, request, task, state.graph);
       if (!writes) return false;
-      // Each kind of write is the host's under its own setting (#2528): a prescribed row file under
-      // `rowFileWrite`, the request's verbatim content under `hostApply`. Otherwise the shadow
-      // record before the session (`recordHostApply`) keeps the decision.
-      if (!writes.every((w) => (w.rows ? rowsOn : policy.hostApply === "on"))) return false;
       // Content the project's own file-scoped check rejects goes to an implementer (#2462): the
       // task's supplied-checks record, made just before this, is read only through its veto.
-      record = hostApplyRecord(
-        task.id,
-        writes,
-        hostApplyDecision,
-        "on",
-        suppliedCheckVeto(this.suppliedCheckOf(runId, task.id)),
-      );
+      const veto = suppliedCheckVeto(this.suppliedCheckOf(runId, task.id));
+      // A partial apply writes only kinds whose setting is on; a declined write needs none (#2937).
+      const split = partialMode === "on" ? hostApplyPartialSplit(writes, veto) : null;
+      partialOn =
+        split?.written.every((p) => writes.some((w) => w.path === p && hostKind(w))) === true;
+      // Otherwise the shadow record before the session (`recordHostApply`) keeps the decision.
+      if (!writes.every(hostKind) && !partialOn) return false;
+      record = hostApplyRecord(task.id, writes, hostApplyDecision, "on", veto, partialMode);
     } catch {
       return false;
     }
-    if (record.wouldApply)
+    const partial = partialOn ? record.partial : undefined;
+    if (record.wouldApply || partial)
       try {
-        contents = await hostApplyContents(root, request, task, state.graph);
+        contents = await hostApplyContents(
+          root,
+          request,
+          partial
+            ? { ...task, writes: task.writes.filter((w) => partial.written.includes(w.path)) }
+            : task,
+          state.graph,
+        );
       } catch (error) {
         record = {
           ...record,
@@ -21450,8 +22378,8 @@ ${note}`;
           applyError: (error instanceof Error ? error.message : String(error)).slice(0, 300),
         };
       }
-    const applied = record.wouldApply && record.applied !== false;
-    if (applied) {
+    const wrote = (record.wouldApply || partial !== undefined) && record.applied !== false;
+    if (wrote) {
       this.writeHostFiles(runId, child, state, policy, {
         writes: contents.map((c) => ({
           path: c.path,
@@ -21459,10 +22387,111 @@ ${note}`;
           content: c.content,
         })),
       });
-      record = { ...record, applied: true };
+      record = {
+        ...record,
+        applied: record.wouldApply,
+        written: Object.fromEntries(contents.map((c) => [c.path, hashBytes(c.content)])),
+        ...(partial ? { partial: { ...partial, applied: true as const } } : {}),
+      };
     } else if (record.applied === undefined) record = { ...record, applied: false };
     this.store.artifact(runId, HOST_APPLY_KIND, path, canonical(record));
-    return applied;
+    return record.wouldApply && wrote;
+  }
+  /**
+   * The split of a task the host applied in part (`partial.applied`, #2937): the session of this
+   * and every later attempt (a retry, a restart, a rerun after an invalidation) writes only
+   * `session`, and reads the host's `written` files. Null for any other task.
+   */
+  private partialScope(runId: string, taskId: string): HostApplyPartial | null {
+    const artifact = this.store.latestArtifact(runId, `${HOST_APPLY_DIR}${taskId}.json`);
+    if (!artifact) return null;
+    try {
+      const record = JSON.parse(this.store.readArtifact(runId, artifact.id)) as HostApplyRecord;
+      return record.partial?.applied ? record.partial : null;
+    } catch {
+      return null;
+    }
+  }
+  /**
+   * A rerun of a planned task the host applied before (#2877): a corrective's edit invalidated it,
+   * or a drive resumes it. The host decides it, never a session it did not need on the first run:
+   * `hostRerunDecision` keeps the files that hold the host's content and writes a changed row file
+   * again through `writeHostFiles`; true when no session is needed. Each decision is added to the
+   * task's `host-apply/tasks/<task>.json` (`rerun`) for a replay. False (the implementer runs, as
+   * before) when the host did not apply the task, its setting is off now, or a file a correction
+   * changed is not the host's to rewrite. Every path that reruns a task asks this before a session:
+   * the single-writer path calls it, and the batch path sends such a task there (`implement`).
+   */
+  private async hostReapply(
+    runId: string,
+    child: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    task: Task,
+  ): Promise<boolean> {
+    const record = this.appliedRecord(runId, task.id);
+    if (
+      !record ||
+      task.origin !== "planned" ||
+      !record.writes.every((w) => (w.rows ? policy.rowFileWrite : policy.hostApply) === "on")
+    )
+      return false;
+    const root = runRoot(this.store.workspace, state);
+    let computed: { path: string; content: string }[] | null = null;
+    try {
+      computed = await hostApplyContents(
+        root,
+        state.requestText || state.prompt,
+        task,
+        state.graph,
+      );
+    } catch {}
+    const current = new Map(
+      record.writes.map((w) => [w.path, fileHash(workspacePath(root, w.path))] as const),
+    );
+    const decided = hostRerunDecision(record, current, computed, hashBytes);
+    if (decided.writes.length)
+      this.writeHostFiles(runId, child, state, policy, {
+        writes: decided.writes.map((w) => ({ ...w, action: "modify" as const })),
+      });
+    const generation = this.store.tasks(runId).find((t) => t.id === task.id)?.generation ?? 0;
+    const rerun: HostApplyRerun = {
+      generation,
+      decision: decided.decision,
+      reason: decided.reason,
+      ...(decided.writes.length ? { writes: decided.writes.map((w) => w.path) } : {}),
+    };
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        HOST_APPLY_KIND,
+        `${HOST_APPLY_DIR}${task.id}.json`,
+        canonical({
+          ...record,
+          ...(decided.writes.length
+            ? {
+                written: {
+                  ...record.written,
+                  ...Object.fromEntries(decided.writes.map((w) => [w.path, hashBytes(w.content)])),
+                },
+              }
+            : {}),
+          rerun: [...(record.rerun ?? []), rerun],
+        }),
+      ),
+    );
+    return decided.decision !== "session";
+  }
+  /** The task's latest host apply record when the host applied it (`applied: true`, #2877). */
+  private appliedRecord(runId: string, taskId: string): HostApplyRecord | null {
+    const artifact = this.store.latestArtifact(runId, `${HOST_APPLY_DIR}${taskId}.json`);
+    if (!artifact) return null;
+    try {
+      const record = JSON.parse(this.store.readArtifact(runId, artifact.id)) as HostApplyRecord;
+      return record.applied === true ? record : null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -21664,7 +22693,7 @@ ${note}`;
         const id = taskCheckOfClaim(finding.claim) ?? checkOfClaim(finding.claim);
         if (!id) return [];
         const output =
-          this.commandOutput(runId, finding.evidenceIds) ?? failingOf(finding.impact) ?? "";
+          this.commandOutput(runId, finding.evidenceIds, true) ?? failingOf(finding.impact) ?? "";
         const files = [
           ...(finding.file ? [finding.file] : []),
           ...failingFilesInOutput(output, graph.tasks),
@@ -21878,9 +22907,16 @@ ${note}`;
         .effects(runId)
         .filter((e) => ["prepared", "unknown"].includes(e.status));
       if (unreconciled.length)
-        throw new WorkflowFault("RECOVERY_REQUIRED", "Unreconciled effects remain", {
-          effectIds: unreconciled.map((e) => e.id),
-        });
+        throw acceptanceRefusal(
+          "RECOVERY_REQUIRED",
+          "effects",
+          effectsAdvice(
+            this.store,
+            runId,
+            unreconciled.map((e) => e.id),
+          ),
+          { effectIds: unreconciled.map((e) => e.id) },
+        );
     };
     settleSupersededEffects(this.store, runId);
     await this.commitAccepted(runId, state, acceptable);

@@ -611,7 +611,8 @@ describe("platform shim: process tree liveness", () => {
     mock.module("node:child_process", () => ({
       ...cp,
       spawnSync: (...args: Parameters<typeof cp.spawnSync>) => {
-        tableReads++;
+        // Only the process-table query counts: other modules may call spawnSync meanwhile.
+        if (String(args[0]).toLowerCase().startsWith("powershell")) tableReads++;
         return originalChildProcess.spawnSync(...args);
       },
     }));
@@ -634,5 +635,106 @@ describe("platform shim: process tree liveness", () => {
       // mock.restore does not undo module replacements in Bun.
       mock.module("node:child_process", () => originalChildProcess);
     }
+  });
+});
+
+describe.skipIf(!IS_WIN)("platform shim: Windows process table in process (#2839)", () => {
+  test("a stopped process and its live child are read without PowerShell", async () => {
+    // The PowerShell CIM query ran past its 15 s timeout on a loaded runner, which read as "may
+    // still run" and refused a recovery whose command had stopped.
+    const { mock } = await import("bun:test");
+    const cp = await import("node:child_process");
+    let tableReads = 0;
+    mock.module("node:child_process", () => ({
+      ...cp,
+      spawnSync: (...args: Parameters<typeof cp.spawnSync>) => {
+        // Only the process-table query counts: other modules may call spawnSync meanwhile.
+        if (String(args[0]).toLowerCase().startsWith("powershell")) tableReads++;
+        return originalChildProcess.spawnSync(...args);
+      },
+    }));
+    const since = Date.now();
+    // The parent starts a long child, prints its PID and exits; Windows keeps the dead parent's
+    // PID on the orphan. `detached` keeps the child out of the parent's job, which kills it on exit.
+    const script = `const c = Bun.spawn([process.execPath, "-e", "setTimeout(() => {}, 30000)"], { stdout: "ignore", stderr: "ignore", detached: true }); c.unref(); console.log(c.pid);`;
+    const parent = Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", stderr: "ignore" });
+    const orphan = Number((await new Response(parent.stdout).text()).trim());
+    await parent.exited;
+    try {
+      const { processTreeAlive } = await import(`../src/core/platform/index.ts?t=${Date.now()}`);
+      expect(orphan).toBeGreaterThan(0);
+      expect(processTreeAlive(parent.pid, since)).toBe(true);
+      process.kill(orphan);
+      for (let i = 0; i < 50 && processTreeAlive(orphan, since) !== false; i++)
+        await new Promise((r) => setTimeout(r, 100));
+      expect(processTreeAlive(parent.pid, since)).toBe(false);
+      expect(tableReads).toBe(0);
+    } finally {
+      try {
+        process.kill(orphan);
+      } catch {}
+      mock.restore();
+      // mock.restore does not undo module replacements in Bun.
+      mock.module("node:child_process", () => originalChildProcess);
+    }
+  });
+
+  test("the snapshot lists this process", async () => {
+    const { windowsProcessTree } = await import("../src/core/platform/process-table-win32.ts");
+    expect(windowsProcessTree(process.pid)?.listed).toBe(true);
+  });
+});
+
+describe("platform shim: Windows process tree exit race (#2840)", () => {
+  // Runs on every OS with fake reads: the race needs a process to exit between the snapshot and
+  // OpenProcess, which a real Windows runner hits only now and then.
+  const PARENT = 100;
+  const CHILD = 200;
+
+  test("a child that exits before it is opened does not count as live", async () => {
+    const { readProcessTree } = await import("../src/core/platform/process-table-win32.ts");
+    const snapshots = [
+      new Map([
+        [4, 0],
+        [CHILD, PARENT],
+      ]),
+      new Map([[4, 0]]),
+    ];
+    // OpenProcess fails on the child: its process object was freed after the first snapshot.
+    const tree = readProcessTree(PARENT, () => snapshots.shift() ?? null, () => null);
+    expect(tree).toEqual({ listed: false, children: [] });
+  });
+
+  test("a child this user may not open still counts as live", async () => {
+    const { readProcessTree } = await import("../src/core/platform/process-table-win32.ts");
+    const table = new Map([
+      [4, 0],
+      [CHILD, PARENT],
+    ]);
+    const tree = readProcessTree(PARENT, () => table, () => null);
+    expect(tree).toEqual({ listed: false, children: [{ id: CHILD, startedMs: null }] });
+  });
+
+  test("a pid reused under another parent before it is opened is not the child", async () => {
+    const { readProcessTree } = await import("../src/core/platform/process-table-win32.ts");
+    const snapshots = [
+      new Map([
+        [4, 0],
+        [CHILD, PARENT],
+      ]),
+      new Map([
+        [4, 0],
+        [CHILD, 4],
+      ]),
+    ];
+    const tree = readProcessTree(PARENT, () => snapshots.shift() ?? null, () => null);
+    expect(tree?.children).toEqual([]);
+  });
+
+  test("the asked process that exits before it is opened is not listed", async () => {
+    const { readProcessTree } = await import("../src/core/platform/process-table-win32.ts");
+    const snapshots = [new Map([[4, 0], [PARENT, 4]]), new Map([[4, 0]])];
+    const tree = readProcessTree(PARENT, () => snapshots.shift() ?? null, () => null);
+    expect(tree).toEqual({ listed: false, children: [] });
   });
 });

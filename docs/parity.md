@@ -87,6 +87,7 @@ bun test tests/feature-parity.test.ts
 | Sign in through the Codex or Claude Code CLI | `/codex`, `/codex login`, `/codex logout` +6 | `baked login`, `baked logout` | `/v1/providers/:id/login`, `/v1/providers/:id/login/code`, `/v1/providers/:id/logout` | `settings/providers` |
 | Subscription usage limits left (Codex, Claude Code, Copilot) | `/limits` | `baked limits` | `/v1/providers/limits` | `settings/providers` |
 | Switch Codex accounts | `/codex switch` | Not needed: scripts sign in once | `/v1/providers/:id/switch` | `settings/providers` |
+| Several accounts of one provider, chosen per project (Codex, Claude Code) | `/accounts`, `/accounts add`, `/accounts login` +5 | `baked accounts`, `baked login --account`, `baked logout --account` +2 | `/v1/providers/:id/accounts`, `/v1/providers/:id/account`, `/v1/workflow/runs` +1 | `settings/providers`, `project/overview` |
 | Pick a model from the list | `/models`, `/providers` | `baked workflow models`, `--list-models`, `--model` | `/v1/models` | `project/chat` |
 | Default chat model (project or global) | `/model-scope` | Not needed: --model picks the model per run | `/v1/settings` | `settings/chat` |
 | Provider options: thinking, speed, cache TTL, server compaction, tool streaming | `/provider-settings` | Not needed: set in config.json | `/v1/settings` | `settings/chat` |
@@ -178,7 +179,9 @@ bun test tests/feature-parity.test.ts
 | Send a test task's wrong-value failure to the task that wrote the code under test | `/code-quality` | Not needed: quality.sourceDefectRoute in config.json; the route shows as the test task's corrective | `/v1/settings` | `settings/chat` |
 | Tell each implementer its language's pitfalls and the first error line of the run's other tasks' failing checks | `/code-quality` | Not needed: quality.languagePitfalls in config.json; the record shows as pitfalls/tasks/<task>.json | `/v1/settings` | `settings/chat` |
 | Send a failing check to the test's task when the test miscounts a prescribed row's byte run | `/code-quality` | Not needed: quality.rowRunRoute in config.json; the route shows as the test task's corrective | `/v1/settings` | `settings/chat` |
+| Answer a spec conflict about a prescribed-row test file with the row diff | `/code-quality` | Not needed: quality.conflictRowReply in config.json; the reply shows as the task's settled conflict | `/v1/settings` | `settings/chat` |
 | Write a prescribed test row file on the host from its shape, without a session, or place its rows from the request with place_rows | `/code-quality` | Not needed: quality.rowFileWrite in config.json; the write shows as the task's host-apply record and a host edit of the test file, a placed row as the session's place_rows call | `/v1/settings` | `settings/chat` |
+| Write the other files of a task on the host when one of its host-applied or host-written row files declines, and give the session only the declined files | `/code-quality` | Not needed: quality.hostApplyPartial in config.json; the split shows as the task's host-apply record (partial) in baked workflow status and as host edits of the written files | `/v1/settings` | `settings/chat` |
 | Restore a miscounted prescribed test row on resume and before a task's session | `/code-quality` | Not needed: quality.rowRunRestore in config.json; the restore shows as a host edit of the test file | `/v1/settings` | `settings/chat` |
 | Keep a test's prescribed rows through a task's edits | `/code-quality` | Not needed: quality.rowEditGuard in config.json; a put-back edit shows as the tool call's answer | `/v1/settings` | `settings/chat` |
 | Check a restated test row against the request's text | `/code-quality` | Not needed: quality.rowClaimCheck in config.json; an override shows as a refuted finding or a settled conflict in baked workflow report | `/v1/settings` | `settings/chat` |
@@ -203,6 +206,7 @@ bun test tests/feature-parity.test.ts
 | Import, export, gc and redact runs | `/workflow` | `baked workflow import`, `baked workflow export`, `baked workflow gc` +1 | `/v1/workflow/import`, `/v1/workflow/runs/:id/export`, `/v1/workflow/gc` +2 | `project/runs` |
 | Export a run or initiative as a portable SDD package (folder or zip) | `/workflow` | `baked workflow export-package` | `/v1/workflow/runs/:id/package`, `/v1/initiatives/:id/package` | `project/runs`, `project/initiatives` |
 | Import an SDD export package to continue its initiative or run; accepted features start at analysis | `/workflow` | `baked workflow import`, `baked-export` | `/v1/workflow/import` | `project/runs` |
+| A reroute warns about configured routes it left on another model and names the stage routes that move them | `/workflow` | `baked workflow reroute`, `baked workflow initiative reroute` | `/v1/workflow/runs/:id`, `/v1/initiatives/:id/reroute` | `project/runs` |
 
 ### Initiatives
 

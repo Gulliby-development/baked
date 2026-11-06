@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getCwd } from "../cwd.js";
 import {
   compareWithBaseline,
@@ -12,6 +12,7 @@ import {
 } from "../intelligence/post-edit.js";
 import { atomicWriteFile } from "../platform/index.js";
 import { displayPath } from "../utils/path-display.js";
+import { runWorktreeAt } from "../verification/run-roots.js";
 import { autoFormatOutcome, formatTimeoutNote } from "./auto-format.js";
 import { assertEditActive, boundedEditWork } from "./edit-deadline.js";
 import { configuredDiagnosticsTimeoutMs, editDiagnosticsMode } from "./edit-diagnostics.js";
@@ -61,13 +62,19 @@ async function importersOf(
   if (!client?.isReady) return [];
   const cwd = getCwd();
   let rel = relative(cwd, filePath).split(sep).join("/");
-  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return [];
   let base = cwd;
   const worktree = WORKTREE_PREFIX.exec(rel);
   if (worktree) {
     base = join(cwd, worktree[0]);
     rel = rel.slice(worktree[0].length);
+  } else if (rel.startsWith("..") || isAbsolute(rel)) {
+    // A run worktree under `workflows.worktreeRoot` is outside the project (#2731).
+    const run = runWorktreeAt(filePath);
+    if (!run || resolve(run.project) !== resolve(cwd)) return [];
+    base = run.worktree;
+    rel = relative(base, filePath).split(sep).join("/");
   }
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return [];
   const dependents = await client.getFileDependents(rel);
   return dependents
     .map((d) => join(base, d.path))

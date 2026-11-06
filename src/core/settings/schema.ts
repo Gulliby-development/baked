@@ -1168,6 +1168,33 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.hostApplyPartial",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Partial host apply of a task",
+    help: "When one file of a task the host would write from the request (verbatim content under host apply, prescribed rows under the host-written row file) declines, the host writes the task's other files and a session gets only the declined files to write; the host-written files are the session's read hints.",
+    scopes: BOTH,
+    type: "enum",
+    default: "shadow",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "A session writes every file of the task, and nothing is recorded.",
+      },
+      {
+        value: "shadow",
+        label: "shadow",
+        help: "A session writes every file of the task; the host records which files it would write and which the session would get.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Write the files the host can and give the session only the declined ones.",
+      },
+    ],
+  },
+  {
     id: "quality.defectClasses",
     page: "code-quality",
     section: "Workflow runs",
@@ -1372,6 +1399,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
         value: "on",
         label: "on",
         help: "Send the failing check's correction to the test's task only.",
+      },
+    ],
+  },
+  {
+    id: "quality.conflictRowReply",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Answer a conflict about prescribed test rows with the row diff",
+    help: "When a task reports that a test file whose rows the request prescribes contradicts the program, the host compares the file with the request's rows. With this on, a file that does not keep a row as given gets a reply naming the row and the literal it lacks, and the request's rows win, instead of a model settle. Off records the reply it would send.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "The conflict takes the other settles; the host records the row diff it would reply with.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Reply with the row diff and keep the request's rows.",
       },
     ],
   },
