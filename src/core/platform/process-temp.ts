@@ -1,6 +1,6 @@
 import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tmpDir } from "./index.js";
 
 /** How old a directory from before #2967 (no process id in its name) must be before a sweep removes it. */
 export const LEGACY_TEMP_AGE_MS = 60 * 60 * 1000;
@@ -29,7 +29,7 @@ export function processAlive(pid: number): boolean {
  */
 export function sweepProcessTempDirs(
   prefix: string,
-  root = tmpdir(),
+  root = tmpDir(),
   now = Date.now(),
   alive: (pid: number) => boolean = processAlive,
 ): string[] {
@@ -65,7 +65,7 @@ export function sweepProcessTempDirs(
 }
 
 /**
- * Makes a temporary directory named `<prefix><pid>-XXXXXX` under the OS temp directory. The first
+ * Makes a temporary directory named `<prefix><pid>-XXXXXX` under `tmpDir()` (the OS temp directory, as a long path on Windows). The first
  * call for a prefix in a process sweeps the directories that killed processes left behind with
  * `sweepProcessTempDirs`, so a directory that outlives its process is freed by the next one (#2967).
  */
@@ -74,5 +74,5 @@ export function processTempDir(prefix: string): string {
     swept.add(prefix);
     sweepProcessTempDirs(prefix);
   }
-  return mkdtempSync(join(tmpdir(), `${prefix}${process.pid}-`));
+  return mkdtempSync(join(tmpDir(), `${prefix}${process.pid}-`));
 }

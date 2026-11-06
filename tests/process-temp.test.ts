@@ -8,6 +8,7 @@ import {
   processTempDir,
   sweepProcessTempDirs,
 } from "../src/core/platform/process-temp.js";
+import { tmpDir } from "../src/core/platform/index.js";
 import { removeTempDir } from "./helpers/temp-dir.js";
 
 const modulePath = join(import.meta.dir, "..", "src", "core", "platform", "process-temp.ts");
@@ -35,7 +36,7 @@ describe("process temp dirs (#2967)", () => {
       text += new TextDecoder().decode(value);
     }
     const leaked = text.trim();
-    expect(leaked.startsWith(join(tmpdir(), `${prefix}${child.pid}-`))).toBe(true);
+    expect(leaked.startsWith(join(tmpDir(), `${prefix}${child.pid}-`))).toBe(true);
     // SIGKILL: the child's exit hook never runs, as with a test timeout or a cancelled CI job.
     child.kill("SIGKILL");
     await child.exited;
