@@ -14,7 +14,10 @@
     "Tests/RuntimeTests.swift": "let dir = FileManager.default.temporaryDirectory\nlet want = \"bad: \\(dir.path)\"\n"
   },
   "expected": {
+    "rowIndent": ["\"    row(1),\""],
+    "languagePitfalls": ["Swift"],
     "generatedValues": ["Tests/GenTests.swift:1 repeat","Tests/GenTests.swift:2 interpolate"],
+    "exampleBuild": ["swift run --skip-build; link .build"],
     "runtimePaths": ["Tests/RuntimeTests.swift: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken"
@@ -74,7 +77,27 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["/p/Sources/Calc/Calc.swift: error: cannot convert value of type 'String' to specified type 'Int'"],
     "testClasses": null,
-    "testDeclarations": ["Tests/SumTests/SumTests.swift: 3 tests, per class 1, 2"]
+    "testDeclarations": ["Tests/SumTests/SumTests.swift: 3 tests, per class 1, 2"],
+    "rowFileShapes": [
+      "Tests/SplitTests/SplitRowsTests.swift",
+      "import Split",
+      "import XCTest",
+      "",
+      "final class SplitRowsTests: XCTestCase {",
+      "  let rows: [(String, [String])] = [",
+      "    (\"a,b\", [\"a\", \"b\"]),",
+      "    (\"a\\tb,\\\"c\\\"\", [\"a\\tb\", \"\\\"c\\\"\"]),",
+      "  ]",
+      "",
+      "  func testRows() {",
+      "    for (input, out) in rows {",
+      "      XCTAssertEqual(split(input), out)",
+      "    }",
+      "  }",
+      "}",
+      ""
+    ]
   }
 }

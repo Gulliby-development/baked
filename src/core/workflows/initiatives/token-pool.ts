@@ -1,6 +1,7 @@
 import { tokenText } from "../estimate.js";
 import {
   EXTEND_WITHIN_DOLLARS_MODES,
+  PLAN_CHARGE_EXPECTED_MODES,
   STAGE_RESERVE_MODES,
   TIME_POOL_GROWTH_MODES,
 } from "../schemas.js";
@@ -21,7 +22,7 @@ import { TIME_STEP_MS } from "./time-pool.js";
 
 /** Suggested pool sizes are rounded up to this step, so the answer is a short number. */
 export const POOL_STEP = 100_000;
-const roundUp = (n: number): number => Math.ceil(n / POOL_STEP) * POOL_STEP;
+export const roundUp = (n: number): number => Math.ceil(n / POOL_STEP) * POOL_STEP;
 const roundDown = (n: number): number => Math.floor(n / POOL_STEP) * POOL_STEP;
 const usd = (n: number): string => `$${n.toFixed(2)}`;
 
@@ -237,17 +238,46 @@ export function planChargeUsd(
  * above their limits while unmeasured, names is the only one whose low end was above it; the high
  * end stays where a plan straddles the limit (R71 xmlvet's scanner, 4.26M-11.75M against 8.0M,
  * used 12.10M). The dollar charge (`planChargeUsd`) prices these tokens, so it follows.
+ *
+ * `point: "expected"` (`workflows.planChargeExpected: on`, #2534) holds every plan with expected
+ * tasks at its expected need while the ratio is unmeasured, never below what the run used, as the
+ * exception above does; a measured ratio keeps the high end. R82 tinyflate's first wave was held at its plans' high
+ * ends, 21.5M of a 19.6M pool, for runs that used 12.4M in all (core 8.05M against 3.02M), and
+ * R83 pnmforge's at 18.98M of 19.6M while they had used 4.7M: geometry parked 30 minutes and the
+ * host extended the pool by 2.7M that the initiative never used.
  */
 export function planChargeTokens(
   usedTokens: number,
   plan: PlannedRun,
   ratio: number | null,
   limitTokens: number,
+  point: PlanChargePoint = "high",
 ): number {
   const need = ownPlanNeed(plan, ratio);
-  const contradicts = ratio === null && plan.low > limitTokens;
-  return Math.max(usedTokens, contradicts ? need.low : need.high);
+  // A plan from before #2043 has no expected tasks: only its range, so it keeps the high end.
+  const expected =
+    ratio === null &&
+    ((point === "expected" && plan.expected !== undefined) || plan.low > limitTokens);
+  return Math.max(usedTokens, expected ? need.low : need.high);
 }
+
+/**
+ * Which point of a sized plan the pool holds an open run at before a plan-to-actual ratio is
+ * measured (#2534): `high`, the plan's high end (the rule since #2100), or `expected`, its expected
+ * need (`workflows.planChargeExpected: on`).
+ */
+export type PlanChargePoint = "high" | "expected";
+
+/**
+ * Whether the pool holds open runs at their plan's expected need while the ratio is unmeasured
+ * (`workflows.planChargeExpected`, #2534). `shadow`, the default, keeps the high end and records
+ * what the expected need would free (`PlanChargeView.expected`, a `decision.would_release` at a
+ * share gate it would turn); `on` (opt-in) holds the expected need; `off` records nothing. Making
+ * `on` the default is its own pull request.
+ */
+export { PLAN_CHARGE_EXPECTED_MODES };
+export type PlanChargeExpected = (typeof PLAN_CHARGE_EXPECTED_MODES)[number];
+export const DEFAULT_PLAN_CHARGE_EXPECTED: PlanChargeExpected = "shadow";
 
 /**
  * The plan charge of an initiative's open feature runs (the `initiative-plan-charge` stop
@@ -259,6 +289,8 @@ export interface PlanChargeView {
   mode: StopMode;
   /** The measured plan-to-actual ratio the charges use; null while unmeasured (times 1). */
   ratio: number | null;
+  /** The plan point an unmeasured charge holds (#2534); `high` unless `planChargeExpected: on`. */
+  point?: PlanChargePoint;
   runs: PlanChargeRun[];
   /** What all runs hold with each open run at max(used, limit): the rule before #2100. */
   limitCommittedTokens: number;
@@ -277,11 +309,17 @@ export interface PlanChargeView {
     planCommittedUsd: number;
     releasedUsd: number;
   } | null;
+  /**
+   * `planChargeExpected: shadow` (#2534): the same charge with each unmeasured plan held at its
+   * expected need (`point: "expected"`); absent when it holds what this one holds.
+   */
+  expected?: PlanChargeView;
 }
 
 /**
  * The plan charge over the open runs with a sized plan, or null when none has one.
- * `limitCommitted` is what the pool holds with every open run at max(used, limit).
+ * `limitCommitted` is what the pool holds with every open run at max(used, limit); `point` is
+ * the plan point an unmeasured charge holds (`planChargeTokens`).
  */
 export function planCharge(
   mode: StopMode,
@@ -289,10 +327,11 @@ export function planCharge(
   limitCommitted: number,
   runs: readonly Omit<PlanChargeRun, "chargeTokens" | "chargeUsd">[],
   dollars?: { taskRate: number | null; limitCommittedUsd: number },
+  point: PlanChargePoint = "high",
 ): PlanChargeView | null {
   if (!runs.length) return null;
   const charged = runs.map((run) => {
-    const chargeTokens = planChargeTokens(run.usedTokens, run.plan, ratio, run.limitTokens);
+    const chargeTokens = planChargeTokens(run.usedTokens, run.plan, ratio, run.limitTokens, point);
     return {
       ...run,
       chargeTokens,
@@ -320,6 +359,7 @@ export function planCharge(
   return {
     mode,
     ratio,
+    ...(point === "expected" ? { point } : {}),
     runs: charged,
     limitCommittedTokens: limitCommitted,
     planCommittedTokens: limitCommitted - released,
@@ -435,27 +475,65 @@ export function tokenPool(inputs: PoolInputs): TokenPoolView {
     capTokens,
     notice: null,
   };
-  if (forecastTokens !== null && suggestedTokens !== null) {
-    const ratio = advice?.ratio ?? inputs.ratio;
-    const basis =
-      ratio !== null
-        ? `At the measured ${ratio.toFixed(1)}x of the estimates`
-        : "At the estimates so far";
-    // Both forecasts, when the blend that budget decisions use says another figure (#2062).
-    const blended =
-      advice &&
-      inputs.ratio !== null &&
-      tokenText(advice.forecastTokens) !== tokenText(forecastTokens)
-        ? `${tokenText(forecastTokens)} at the blended ${inputs.ratio.toFixed(1)}x that budget decisions use; `
-        : "";
-    const command = `baked workflow initiative extend ${inputs.initiativeId} --tokens ${suggestedTokens}`;
-    const extend =
-      byDollars !== null && cost.capUsd !== null && usdPerMillion !== null
-        ? `Extend to ${tokenText(suggestedTokens)}, what the ${usd(cost.capUsd)} cap pays for at ${usd(usdPerMillion)} per million, so the pool stops no feature before the dollar cap does (${command}).`
-        : `Extend to ${tokenText(suggestedTokens)} (${command})${dollarRoom(pool, cost)}.`;
-    pool.notice = `${basis} the ${inputs.features} features need about ${tokenText(advice?.forecastTokens ?? forecastTokens)} tokens (${blended}${tokenText(usedTokens)} used); the shared pool is ${tokenText(limitTokens)}. ${extend}`;
-  }
+  if (forecastTokens !== null && suggestedTokens !== null)
+    pool.notice = poolNoticeText({
+      initiativeId: inputs.initiativeId,
+      features: inputs.features,
+      pool: { ...pool, forecastTokens },
+      suggestedTokens,
+      byDollars: byDollars !== null,
+      exactUsdPerMillion: usdPerMillion,
+      cost,
+    });
   return pool;
+}
+
+/**
+ * The forecast notice's sentence (#2042, #2244): what the features need beside the pool, and the
+ * one-line extend command. The split approval's budget preview ends with the same sentence (#2502).
+ */
+export function poolNoticeText(n: {
+  initiativeId: string;
+  features: number;
+  pool: Pick<
+    TokenPoolView,
+    "limitTokens" | "usedTokens" | "advice" | "ratio" | "capTokens" | "usdPerMillion"
+  > & { forecastTokens: number };
+  suggestedTokens: number;
+  /** Whether `suggestedTokens` is what the dollar cap pays for (`dollarTokens`). */
+  byDollars: boolean;
+  /** The unrounded price the cap's tokens were counted at. */
+  exactUsdPerMillion: number | null;
+  cost: PoolCost;
+  /**
+   * The split approval's high end (#2525): the sentence then names it beside the expected tokens,
+   * and an amount that is not the cap's as the high end with margin (`splitExtension`).
+   */
+  highTokens?: number;
+}): string {
+  const { pool, cost, suggestedTokens } = n;
+  const { advice, forecastTokens } = pool;
+  const ratio = advice?.ratio ?? pool.ratio;
+  const basis =
+    ratio !== null
+      ? `At the measured ${ratio.toFixed(1)}x of the estimates`
+      : "At the estimates so far";
+  // Both forecasts, when the blend that budget decisions use says another figure (#2062).
+  const blended =
+    advice && pool.ratio !== null && tokenText(advice.forecastTokens) !== tokenText(forecastTokens)
+      ? `${tokenText(forecastTokens)} at the blended ${pool.ratio.toFixed(1)}x that budget decisions use; `
+      : "";
+  const command = `baked workflow initiative extend ${n.initiativeId} --tokens ${suggestedTokens}`;
+  const extend =
+    n.byDollars && cost.capUsd !== null && n.exactUsdPerMillion !== null
+      ? `Extend to ${tokenText(suggestedTokens)}, what the ${usd(cost.capUsd)} cap pays for at ${usd(n.exactUsdPerMillion)} per million, so the pool stops no feature before the dollar cap does (${command}).`
+      : `Extend to ${tokenText(suggestedTokens)}${n.highTokens !== undefined ? ", the high end with margin" : ""} (${command})${dollarRoom(pool, cost)}.`;
+  const expected = tokenText(advice?.forecastTokens ?? forecastTokens);
+  const need =
+    n.highTokens !== undefined
+      ? `expect about ${expected} tokens and up to ${tokenText(n.highTokens)} at the high end`
+      : `need about ${expected} tokens`;
+  return `${basis} the ${n.features} features ${need} (${blended}${tokenText(pool.usedTokens)} used); the shared pool is ${tokenText(pool.limitTokens)}. ${extend}`;
 }
 
 /**
@@ -468,6 +546,32 @@ export function dollarTokens(capTokens: number | null, limitTokens: number): num
   if (capTokens === null) return null;
   const tokens = roundDown(capTokens);
   return tokens > limitTokens ? tokens : null;
+}
+
+/**
+ * The one pool a split approval names (#2525), which its budget preview, its message and the
+ * message's `extend` remedy all read: the high-end need with margin, held to what the dollar cap
+ * pays for (`dollarTokens`); null when the pool already covers the high end, or when the cap pays
+ * for no more than the pool (a larger pool would go unpaid). Without a cap, or without a price
+ * that counts its tokens, the high end with margin. Advice only: no decision reads it.
+ */
+export function splitExtension(n: {
+  limitTokens: number;
+  /** The estimate's high end, with what is used so far. */
+  highTokens: number;
+  /** The high end plus its margin (`InitiativeEstimate.withMargin`). */
+  withMargin: number;
+  /** What the dollar cap pays for at the split's price; null without a cap or a price. */
+  capTokens: number | null;
+}): { tokens: number; byDollars: boolean } | null {
+  if (n.highTokens <= n.limitTokens) return null;
+  const need = Math.max(n.withMargin, n.highTokens);
+  if (n.capTokens === null) return { tokens: need, byDollars: false };
+  const byDollars = dollarTokens(n.capTokens, n.limitTokens);
+  if (byDollars === null) return null;
+  return byDollars < need
+    ? { tokens: byDollars, byDollars: true }
+    : { tokens: need, byDollars: false };
 }
 
 /**
@@ -514,7 +618,10 @@ export function tokensForUsd(capUsd: number, usdPerMillion: number | null): numb
 }
 
 /** What the dollar cap says beside the pool, for a notice or a block message. */
-function dollarRoom(pool: TokenPoolView, cost: PoolCost): string {
+function dollarRoom(
+  pool: Pick<TokenPoolView, "capTokens" | "usdPerMillion">,
+  cost: PoolCost,
+): string {
   if (cost.capUsd === null) return "";
   if (pool.capTokens !== null && pool.usdPerMillion !== null)
     return `; the ${usd(cost.capUsd)} cap would pay for about ${tokenText(pool.capTokens)} at ${usd(pool.usdPerMillion)} per million`;
@@ -699,6 +806,8 @@ export interface PlanShareInputs {
   /** The run's latest plan sizing and the initiative's measured plan-to-actual ratio (#2043). */
   plan: PlannedRun;
   planRatio: number | null;
+  /** The plan point the pool charges an unmeasured plan at (#2534); `high` when absent. */
+  planPoint?: PlanChargePoint;
   /** What the pool counts the run at now: its plan charge when enforced, else max(used, limit). */
   heldTokens: number;
   /** What every other run of the initiative used: the pool hold reads it (#2468). */
@@ -750,6 +859,7 @@ export function planShareDecision(inputs: PlanShareInputs): PlanShareDecision {
     inputs.plan,
     inputs.planRatio,
     inputs.limitTokens,
+    inputs.planPoint,
   );
   const target = Math.min(inputs.baseCeilingTokens ?? Number.POSITIVE_INFINITY, needTokens);
   const extra = Math.max(0, needTokens - inputs.heldTokens);

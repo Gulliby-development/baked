@@ -1,0 +1,1 @@
+A test that expects a path the code built with `path.join` builds the expected path with `path.join` too, never from a literal folder with `/` or `\`: on Windows a POSIX folder joins as `\home\...` (#2188).

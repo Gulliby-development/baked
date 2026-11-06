@@ -15,7 +15,10 @@
     "tests/runtime.test.js": "const dir = mkdtempSync(join(tmpdir(), \"rt-\"));\nconst file = join(dir, \"a.txt\");\nconst want = `bad: ${file}`;\n"
   },
   "expected": {
+    "rowIndent": ["\"  row(1),\""],
+    "languagePitfalls": null,
     "generatedValues": ["tests/gen.test.js:1 repeat","tests/gen.test.js:2 interpolate","tests/gen.test.js:3 loop"],
+    "exampleBuild": null,
     "runtimePaths": ["tests/runtime.test.js: dir, file"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
@@ -91,7 +94,21 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/a.js: error TS2322: Type 'string' is not assignable to type 'number'."],
     "testClasses": null,
-    "testDeclarations": ["tests/sum.test.js: 3 tests"]
+    "testDeclarations": ["tests/sum.test.js: 3 tests"],
+    "rowFileShapes": [
+      "test/split-rows.test.js",
+      "import { expect, test } from \"vitest\";",
+      "import { split } from \"../src/split.js\";",
+      "",
+      "const rows = [",
+      "  [\"a,b\", [\"a\", \"b\"]],",
+      "  [\"a,,b\", [\"a\", \"\", \"b\"]],",
+      "];",
+      "",
+      "test.each(rows)(\"split(%j)\", (input, out) => expect(split(input)).toEqual(out));",
+      ""
+    ]
   }
 }

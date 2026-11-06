@@ -14,7 +14,10 @@
     "tests/Runtime.Tests.ps1": "$dir = [System.IO.Path]::GetTempPath()\n$want = \"bad: $dir\"\n"
   },
   "expected": {
+    "rowIndent": ["\"    row(1),\""],
+    "languagePitfalls": ["PowerShell"],
     "generatedValues": ["tests/Gen.Tests.ps1:1 repeat","tests/Gen.Tests.ps1:2 interpolate"],
+    "exampleBuild": null,
     "runtimePaths": ["tests/Runtime.Tests.ps1: dir"],
     "memberSyntax": [
       "Scanner calls [Reader]::IsEncodingToken for each token.: Reader::IsEncodingToken",
@@ -37,7 +40,8 @@
     ],
     "gates": [
       "pester",
-      "psscriptanalyzer"
+      "psscriptanalyzer",
+      "psformat"
     ],
     "testRunners": [
       "pester 3",
@@ -61,7 +65,9 @@
       "Sum.psd1:1",
       "PSScriptAnalyzerSettings.psd1:1"
     ],
-    "formatters": null,
+    "formatters": [
+      "psformat-written: pwsh -NoProfile -NonInteractive -Command \"& { $s = @{}; if (Test-Path -LiteralPath ./PSScriptAnalyzerSettings.psd1) { $s.Settings = './PSScriptAnalyzerSettings.psd1' }; $files = if ($args.Count) { $args } else { Get-ChildItem -Recurse -File -Include *.ps1, *.psm1, *.psd1 | ForEach-Object { $_.FullName } }; $bad = 0; foreach ($f in $files) { $p = (Resolve-Path -LiteralPath $f).ProviderPath; $b = [IO.File]::ReadAllBytes($p); $bom = $b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF; $t = [IO.File]::ReadAllText($p); if (-not $t.Trim()) { continue }; $o = Invoke-Formatter -ScriptDefinition $t @s; if ($o -cne $t) { Write-Output ($f + ': would be reformatted by Invoke-Formatter'); $bad = 1 } }; exit $bad }\" src/Sum.ps1 tests/Sum.Tests.ps1 Sum.psd1 PSScriptAnalyzerSettings.psd1"
+    ],
     "packageContents": null,
     "numericLimits": [
       "[int] and [long] arithmetic past their range silently widens to [double] and loses integers past 2^53",
@@ -77,7 +83,24 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": null,
     "testClasses": null,
-    "testDeclarations": ["tests/Sum.Tests.ps1: 2 tests"]
+    "testDeclarations": ["tests/Sum.Tests.ps1: 2 tests"],
+    "rowFileShapes": [
+      "tests/Cols.Tests.ps1",
+      "BeforeAll {",
+      "    . \"$PSScriptRoot/../src/Cols.ps1\"",
+      "}",
+      "",
+      "Describe 'cols' {",
+      "    It 'cols <Argv>' -TestCases @(",
+      "        @{ Argv = @('5'); Stdin = \"a b c`n\"; Out = \"a b c`n\" }",
+      "        @{ Argv = @('1'); Stdin = \"it's`n\"; Out = \"it's`n\" }",
+      "    ) {",
+      "        $Stdin | Invoke-Cols @Argv | Should -BeExactly $Out",
+      "    }",
+      "}",
+      ""
+    ]
   }
 }

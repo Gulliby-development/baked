@@ -149,3 +149,91 @@ export function upstreamOwners(
     return files.length ? [{ featureId, files }] : [];
   });
 }
+
+type Graph = NonNullable<RuntimeState["graph"]>;
+/**
+ * A planned write a `host-release` correction converts (#2514): from `create` into `modify`, or,
+ * with `action: "create"`, from `modify` into `create` (#2517).
+ */
+export interface ReleasedWrite {
+  taskId: string;
+  path: string;
+  /** The action the write becomes when it is not `modify` (a link before #2517 has none). */
+  action?: "create";
+}
+
+/**
+ * The planned `create` writes of a planned-ahead run (#1834) whose file its release brought in:
+ * `arrived` holds for a path the provisional base does not track and the released base does,
+ * which an accepted upstream feature wrote. The plan was checked on the provisional base, where
+ * the file was missing, so `create` was right then; on the released base the tool policy refuses
+ * it as "Create target already exists" (R82 slotprompt: blocks and filters planned
+ * lib/src/template.dart and render.dart before core was accepted, and T001 ended invalid_output).
+ * A write with host content is left alone: the host writes that file whole either way.
+ */
+export function releasedCreates(graph: Graph, arrived: (path: string) => boolean): ReleasedWrite[] {
+  return graph.tasks.flatMap((task) =>
+    task.origin === "planned"
+      ? task.writes
+          .filter((w) => w.action === "create" && w.content === undefined && arrived(w.path))
+          .map((w) => ({ taskId: task.id, path: w.path }))
+      : [],
+  );
+}
+
+/**
+ * The mirror of `releasedCreates` (#2517): the planned `modify` writes of a planned-ahead run
+ * whose file its release removed. `removed` holds for a path the provisional base tracks (an
+ * upstream skeleton stub, say) and the released base does not, because the accepted upstream
+ * deleted or renamed it; on the released base the tool policy refuses the modify as "Modify
+ * target is missing". Only the first task in plan order that writes such a path is converted,
+ * and only when no task of the graph creates it, so a later task's modify edits the file the
+ * converted task created. A write with host content is left alone, as in `releasedCreates`.
+ */
+export function releasedModifies(
+  graph: Graph,
+  removed: (path: string) => boolean,
+): ReleasedWrite[] {
+  const seen = new Set<string>();
+  const created = new Set(
+    graph.tasks.flatMap((t) => t.writes.filter((w) => w.action === "create").map((w) => w.path)),
+  );
+  return graph.tasks.flatMap((task) =>
+    task.writes.flatMap((w) => {
+      if (seen.has(w.path)) return [];
+      seen.add(w.path);
+      return task.origin === "planned" &&
+        w.action === "modify" &&
+        w.content === undefined &&
+        !created.has(w.path) &&
+        removed(w.path)
+        ? [{ taskId: task.id, path: w.path, action: "create" as const }]
+        : [];
+    }),
+  );
+}
+
+/** The action a planned write has before `released` converts it. */
+export function releasedFrom(released: ReleasedWrite): "create" | "modify" {
+  return released.action === "create" ? "modify" : "create";
+}
+
+/** `graph` with each of `released` converted; the one rule acceptance replays (#2514, #2517). */
+export function applyReleasedCreates(graph: Graph, released: readonly ReleasedWrite[]): Graph {
+  const turned = (taskId: string, path: string, action: string) =>
+    released.find((r) => r.taskId === taskId && r.path === path && releasedFrom(r) === action);
+  return {
+    ...graph,
+    tasks: graph.tasks.map((task) =>
+      task.writes.some((w) => turned(task.id, w.path, w.action))
+        ? {
+            ...task,
+            writes: task.writes.map((w) => {
+              const r = turned(task.id, w.path, w.action);
+              return r ? { ...w, action: r.action ?? ("modify" as const) } : w;
+            }),
+          }
+        : task,
+    ),
+  };
+}

@@ -24,6 +24,7 @@ import {
   testCount,
 } from "../src/core/verification/output-counts.js";
 import { ENTRY_POINTS, projectEntryPoints } from "../src/core/verification/entry-points.js";
+import { EXAMPLE_BUILD } from "../src/core/verification/example-build.js";
 import { edgeTaxonomy, NUMERIC_LIMITS } from "../src/core/verification/edge-inputs.js";
 import { FILE_FORMATTERS, formatWrittenChecks } from "../src/core/workflows/format-written.js";
 import { detectGates, formatCommandLine, GATE_TOOLCHAINS } from "../src/core/workflows/gates.js";
@@ -34,7 +35,11 @@ import { PROPERTY_LIBRARIES, propertyTestKind } from "../src/core/workflows/qual
 import { checkBuiltinRules } from "../src/core/workflows/quality/rules.js";
 import { INLINE_HARNESS, inlineRowFile } from "../src/core/workflows/acceptance-rows-inline.js";
 import { TEST_GATES, testGateFlags } from "../src/core/workflows/test-gates.js";
+import { DIAGNOSTIC_FORMATS, diagnostics } from "../src/core/verification/task-end-check.js";
+import { colour } from "./helpers/coloured-runner-output.js";
 import { declaredTestClasses, TEST_CLASSES } from "../src/core/workflows/test-classes.js";
+import { ROW_FILE_SHAPES, rowFilePlan, rowFileRefusal } from "../src/core/workflows/row-file.js";
+import { placeRows, ROW_INDENT } from "../src/core/tools/place-rows.js";
 import { writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { TreeSitterBackend } from "../src/core/intelligence/backends/tree-sitter.js";
 import { CALL_SYNTAX, callContext, functionsIn } from "../src/core/intelligence/call-context.js";
@@ -54,6 +59,7 @@ import type { Check } from "../src/core/workflows/types.js";
 import { rowOf } from "../src/core/intelligence/language-records.js";
 import { DEPENDENCY_DIRS, DEPENDENCY_PREPARE, linkDependencies, WORKTREE_PATH_LIMITS } from "../src/core/workflows/dependency-dirs.js";
 import { sourceManifest } from "../src/core/verification/snapshot.js";
+import { implementerPitfalls, LANGUAGE_PITFALLS } from "../src/core/agents/profiles/language-pitfalls.js";
 
 // Language parity (#1717): every language-bound record has a row for every supported language,
 // and every row is exercised by the language's fixture project in `tests/fixtures/languages/`.
@@ -163,12 +169,26 @@ const RECORDS: Record<
         [],
         ofLanguage(language, files).map(([path]) => ({ path, action: "create" })),
         (command) => `/usr/bin/${command}`,
+        undefined,
+        undefined,
+        // The formatter's package is there: the golden is the same with or without R or pwsh (#2817).
+        { packages: () => true },
       ).map((c) => `${c.id}: ${formatCommandLine(c.executable, c.args)}`),
   },
   entryPoints: {
     record: ENTRY_POINTS,
     run: (_, { files }) =>
       projectEntryPoints(workspace(files)).map((e) => `${e.name}: ${e.launcher.join(" ")}`),
+  },
+  // How a documented example reuses the build the checks made (#2505): the toolchain's build-and-run
+  // command, the flags that skip its build, and the build directories linked into the copy.
+  exampleBuild: {
+    record: EXAMPLE_BUILD,
+    run: (language) => {
+      const row = EXAMPLE_BUILD[language];
+      if (isNoRow(row)) return [];
+      return [`${[row.program, ...row.subcommand, ...row.noBuild].join(" ")}; link ${row.link.join(", ")}`];
+    },
   },
   numericLimits: {
     record: NUMERIC_LIMITS,
@@ -219,6 +239,19 @@ const RECORDS: Record<
         return names.length ? [`${path}: ${names.join(", ")}`] : [];
       }),
   },
+  // The located diagnostics the task-end whole-unit check reads from the language's compiler
+  // output (#2616): the row's example, read plain and coloured, each `path: message`.
+  diagnosticFormats: {
+    record: DIAGNOSTIC_FORMATS,
+    run: (language) => {
+      const row = rowOf(DIAGNOSTIC_FORMATS, language);
+      if (!row) return [];
+      const plain = diagnostics(row.example).map((d) => `${d.path}: ${d.text}`);
+      const coloured = diagnostics(colour(row.example)).map((d) => `${d.path}: ${d.text}`);
+      return JSON.stringify(plain) === JSON.stringify(coloured) ? plain : [...plain, "coloured output reads differently"];
+    },
+    never: ["coloured output reads differently"],
+  },
   // The test classes a written-tests run selects by name (#2363): the row's example, a file whose
   // class is not named like it, and each test file of the fixture ("by its name" when it declares
   // no type that holds a test, so the run falls back to the file's name).
@@ -234,6 +267,30 @@ const RECORDS: Record<
           .filter(([path]) => isTestFile(path))
           .map(([path, text]) => classes(path, text)),
       ];
+    },
+  },
+  // The prescribed row file the host writes from the row's example shape and rows (#2528): the
+  // written file's lines, the shape's preamble and epilogue around one row per line.
+  rowFileShapes: {
+    record: ROW_FILE_SHAPES,
+    run: (language) => {
+      const row = rowOf(ROW_FILE_SHAPES, language);
+      if (!row) return [];
+      const { path, reference, rows } = row.example;
+      const { inputs, content } = rowFilePlan(path, rows, { source: "reference", text: reference });
+      return content === null ? ["declined", rowFileRefusal(path, inputs) ?? ""] : [path, ...content.split("\n")];
+    },
+    never: ["declined"],
+  },
+  // The indentation place_rows gives a row after a list's opening line when neither the request's
+  // rows nor the file show one (#2618): the placed line, quoted so its whitespace shows.
+  rowIndent: {
+    record: ROW_INDENT,
+    run: (language) => {
+      const ext = Object.entries(EXT_TO_LANGUAGE).find(([, l]) => l === language)?.[0] ?? `.${language}`;
+      const path = `tests/rows${ext}`;
+      const placed = placeRows({ path, line: 1, rows: [1] }, new Map([[path, ["row(1)"]]]), "rows = [\n]\n");
+      return "refusal" in placed ? [placed.refusal] : [JSON.stringify(placed.first)];
     },
   },
   // The comment and string syntax the case walk and the integrity guards read code by (#1846): the
@@ -417,6 +474,13 @@ const RECORDS: Record<
       return isNoRow(row) || !(row.manifest in files) ? [] : [`${row.manifest}: ${row.tool} over ${String(row.chars)} characters`];
     },
   },
+  // The implementer's pitfalls note for the fixture's files of the language, by its label: the
+  // same table the language reviewer reads (#2598).
+  languagePitfalls: {
+    record: LANGUAGE_PITFALLS,
+    run: (language, { files }) =>
+      implementerPitfalls(ofLanguage(language, files).map(([path]) => path)).map((note) => note.slice(0, note.indexOf(":"))),
+  },
   properties: {
     record: PROPERTY_LIBRARIES,
     run: (language, { files }) =>
@@ -468,10 +532,10 @@ describe("acceptance rows: every framework has the file and the inline mode (#17
   test.each(frameworks.map((framework) => [framework]))("%s", (framework) => {
     expect(INLINE_HARNESS[framework]).toBeTruthy();
     const pkg = framework === "go" ? "calc" : framework === "junit" ? "com.ex.calc" : "Calc.Tests";
-    const test = { bun: "tests/a.test.ts", pytest: "tests/test_a.py", go: "calc/a_test.go", junit: "src/test/java/com/ex/calc/ATest.java", rust: "tests/a.rs", xunit: "Calc.Tests/ATest.cs", rspec: "spec/a_spec.rb", phpunit: "tests/ATest.php", testthat: "tests/testthat/test-a.R", busted: "spec/a_spec.lua", minitest: "test/a_test.rb", pest: "tests/ATest.php", exunit: "test/a_test.exs", dart: "test/a_test.dart" }[framework];
+    const test = { bun: "tests/a.test.ts", pytest: "tests/test_a.py", go: "calc/a_test.go", junit: "src/test/java/com/ex/calc/ATest.java", rust: "tests/a.rs", xunit: "Calc.Tests/ATest.cs", rspec: "spec/a_spec.rb", phpunit: "tests/ATest.php", testthat: "tests/testthat/test-a.R", busted: "spec/a_spec.lua", minitest: "test/a_test.rb", pest: "tests/ATest.php", exunit: "test/a_test.exs", dart: "test/a_test.dart", kotlin: "src/test/kotlin/com/ex/calc/ATest.kt", scalatest: "src/test/scala/ASuite.scala", munit: "src/test/scala/ASuite.scala" }[framework];
     const file = inlineRowFile({ mode: "inline", framework, test, package: pkg }, [{ id: "AC-001:1", criterionId: "AC-001", input: 1, expected: 2, source: "1 | 2" }]);
     expect(file.tail).toContain(INLINE_HARNESS[framework]);
-    expect(file.tail).not.toMatch(/serde_json|import junit|org\.json|Newtonsoft/);
+    expect(file.tail).not.toMatch(/serde_json|import junit|org\.json|Newtonsoft|kotlinx\.serialization|circe|ujson/);
   });
 });
 

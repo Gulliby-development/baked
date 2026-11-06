@@ -7,6 +7,7 @@ import { getProvider } from "../src/core/llm/providers/index.js";
 import { NativeAgentExecutor } from "../src/core/workflows/agent-executor.js";
 import { WorkspaceLeases } from "../src/core/workflows/leases.js";
 import { type AgentProfile, ProfileSchema, type RunPolicy } from "../src/core/workflows/schemas.js";
+import type { WorkflowStore } from "../src/core/workflows/store.js";
 import type { ExecutionRequest, Task } from "../src/core/workflows/types.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -194,6 +195,49 @@ describe("apply_fix", () => {
     expect(readFileSync(join(root, "sibling.txt"), "utf8")).toBe("original");
     expect(JSON.stringify(seen)).toContain("error");
   });
+
+  // #2609: a file the task creates while its fixer runs (a parallel tool call) was put back as one
+  // the fixer created, an unlink with nothing in the journal. The task's own files are never put
+  // back, and every put-back is recorded with the attempt.
+  test("a task file created during the fixer run stays, and the put-back of others is recorded", async () => {
+    const policy: RunPolicy = {
+      ...fixturePolicy,
+      checks: [
+        {
+          id: "fmt",
+          executable: "bun",
+          args: ["-e", "process.exit(0)"],
+          cwd: ".",
+          timeoutMs: 10000,
+          required: true,
+          scope: "task",
+          envNames: [],
+          writes: [],
+          fix: {
+            executable: "bun",
+            args: ["-e", "await Bun.write('README.md', '# Value\\n'); await Bun.write('stray.txt', 'x')"],
+          },
+        },
+      ],
+    };
+    const { executor, request, root, store } = await setup(policy, ["fmt"], [
+      step({ name: "apply_fix", input: { checkId: "fmt" } }),
+      () => {
+        throw new Error("stop after the fix");
+      },
+    ]);
+    const task = request.task;
+    if (!task) throw new Error("task missing");
+    const writes = [...task.writes, { path: "README.md", action: "create" as const }];
+    await expect(executor.execute({ ...request, task: { ...task, writes } })).rejects.toThrow("stop after the fix");
+    expect(existsSync(join(root, "README.md"))).toBe(true);
+    expect(existsSync(join(root, "stray.txt"))).toBe(false);
+    const record = store.artifacts(request.runId).find((a) => a.logical_path.startsWith(`attempts/${request.attemptId}/put-back-`));
+    expect(JSON.parse(store.readArtifact(request.runId, record?.id ?? ""))).toMatchObject({
+      source: "apply_fix fmt",
+      files: [{ path: "stray.txt", action: "removed" }],
+    });
+  });
 });
 
 // Bench round 12, mdrefs: the planner named `cargo fmt` and clippy on every task of a
@@ -262,7 +306,13 @@ async function setup(
   policy: RunPolicy,
   checkIds: string[],
   script: Array<LanguageModelV3GenerateResult | (() => never)>,
-): Promise<{ executor: NativeAgentExecutor; request: ExecutionRequest; root: string; seen: unknown[] }> {
+): Promise<{
+  executor: NativeAgentExecutor;
+  request: ExecutionRequest;
+  root: string;
+  seen: unknown[];
+  store: WorkflowStore;
+}> {
   const fixture = workflowFixture({ policy });
   cleanups.push(fixture.dispose);
   writeFileSync(join(fixture.root, "value.txt"), "bad");
@@ -289,5 +339,5 @@ async function setup(
   const request: ExecutionRequest = {
     runId: run.runId, attemptId, profile, task, prompt: "Fix", signal: new AbortController().signal, maxSteps: 10,
   };
-  return { executor, request, root: fixture.root, seen };
+  return { executor, request, root: fixture.root, seen, store };
 }

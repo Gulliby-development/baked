@@ -14,7 +14,10 @@
     "tests/runtime.rs": "let dir = tempdir().unwrap();\nlet p = dir.path().join(\"a.txt\");\nlet want = format!(\"bad: {}\", p.display());\n"
   },
   "expected": {
+    "rowIndent": ["\"    row(1),\""],
+    "languagePitfalls": ["Rust"],
     "generatedValues": ["tests/gen.rs:1 repeat","tests/gen.rs:2 format"],
+    "exampleBuild": ["cargo run; link target"],
     "runtimePaths": ["tests/runtime.rs: dir, p"],
     "memberSyntax": [
       "Scanner calls Reader::is_encoding_token.: Reader::is_encoding_token",
@@ -88,7 +91,25 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/lib.rs: error[E0308]: mismatched types"],
     "testClasses": null,
-    "testDeclarations": ["tests/sum.rs: 2 tests"]
+    "testDeclarations": ["tests/sum.rs: 2 tests"],
+    "rowFileShapes": [
+      "tests/parse_rows.rs",
+      "use sseknit::parse;",
+      "",
+      "const ROWS: &[(&str, &[&str])] = &[",
+      "    (\"data: x\\ndata: y\\n\\n\", &[\"x\\ny\"]),",
+      "    (\": comment\\n\\nevent: tick\\ndata: 1\\n\\n\", &[\"1\"]),",
+      "];",
+      "",
+      "#[test]",
+      "fn rows() {",
+      "    for (input, events) in ROWS {",
+      "        assert_eq!(parse(input), *events);",
+      "    }",
+      "}",
+      ""
+    ]
   }
 }

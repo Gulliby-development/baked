@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fc from "fast-check";
 import { canonical } from "../src/core/specs/hash.js";
+import { callStallMs, cleanRunPace, STALL_FLOOR_MS, stallBasisMs } from "../src/core/workflows/clean-pace.js";
 import { growBudgetOnProgress } from "../src/core/workflows/budget.js";
 import { type CostForecast, costForecast, kindRatio } from "../src/core/workflows/cost-forecast.js";
 import { POOL_STEP, planCharge, planChargeTokens, poolExtensionDecision, poolForecast, timePoolExtensionDecision, tokenPool } from "../src/core/workflows/initiatives/token-pool.js";
@@ -573,6 +574,27 @@ describe("plan charge invariants (#2100)", () => {
       expect(planAfter).toBe(charge.planCommittedTokens - ended.chargeTokens + ended.usedTokens);
     }), { numRuns: 300 });
   });
+  test("#2534: at the expected point an unmeasured plan is held at its expected need, never below use nor above the high-end charge, and frees once", () => {
+    fc.assert(fc.property(seed, ({ finished, unplanned, ratio, runs }) => {
+      const limitCommitted = finished + unplanned + runs.reduce((n, r) => n + held(r), 0);
+      const high = planCharge("enforce", ratio, limitCommitted, runs)!;
+      const expected = planCharge("enforce", ratio, limitCommitted, runs, undefined, "expected")!;
+      expect(expected.point).toBe("expected");
+      for (const [i, run] of expected.runs.entries()) {
+        const atHigh = high.runs[i]!.chargeTokens;
+        expect(run.chargeTokens).toBe(planChargeTokens(run.usedTokens, run.plan, ratio, run.limitTokens, "expected"));
+        expect(run.chargeTokens).toBeGreaterThanOrEqual(run.usedTokens);
+        expect(run.chargeTokens).toBeLessThanOrEqual(atHigh);
+        // A measured ratio, or a plan without expected tasks, keeps the high end.
+        if (ratio !== null || run.plan.expected === undefined) expect(run.chargeTokens).toBe(atHigh);
+        else expect(run.chargeTokens).toBe(Math.max(run.usedTokens, run.plan.low, run.plan.expected));
+      }
+      expect(expected.releasedTokens).toBe(expected.runs.reduce((n, r) => n + held(r) - r.chargeTokens, 0));
+      expect(expected.limitCommittedTokens - expected.planCommittedTokens).toBe(expected.releasedTokens);
+      expect(expected.planCommittedTokens).toBeLessThanOrEqual(high.planCommittedTokens);
+      expect(expected.planCommittedTokens).toBeGreaterThanOrEqual(finished + runs.reduce((n, r) => n + r.usedTokens, 0));
+    }), { numRuns: 300 });
+  });
   test("in dollars (#2124) the charge is never below what a run spent and reserved, and holds the cap while the task-call rate is unmeasured", () => {
     const dollars = fc.record({
       taskRate: fc.option(fc.double({ min: 1e-8, max: 2e-5, noNaN: true }), { nil: null }),
@@ -804,6 +826,133 @@ describe("initiative token pool hold invariants (#2468)", () => {
   });
 });
 
+describe("run limit refusal invariants (#2590)", () => {
+  const seed = fc.record({
+    ceiling: fc.integer({ min: 1_000_000, max: 10_000_000 }),
+    extendFactor: fc.double({ min: 1, max: 3, noNaN: true }),
+    finishedShare: fc.double({ min: 0.3, max: 0.95, noNaN: true }),
+    /** Tokens each open writer had used at the last extension, and used since. */
+    writers: fc.array(fc.record({ atExtend: fc.integer({ min: 0, max: 800_000 }), since: fc.integer({ min: 0, max: 800_000 }) }), { minLength: 1, maxLength: 4 }),
+    /** The step the last writer asks for, as a share of the ceiling: mostly past the extended limit. */
+    requestShare: fc.double({ min: 0.3, max: 2.5, noNaN: true }),
+  });
+
+  // With nothing finished since the last auto-extend, an attempt fails for the run limit only when
+  // the limit could not grow: the hard ceiling has no room for the step, or no open attempt used a
+  // token since the extension. Parallel writers in flight are progress (R84 md-site, #2590).
+  test("an attempt fails for the run limit only when the limit could not grow", async () => {
+    const store = fixture.service.store;
+    await fc.assert(
+      fc.asyncProperty(seed, async (s) => {
+        const { runId } = await fixture.start();
+        store.transaction(() => store.transition(runId, "running"));
+        const hard = Math.ceil(s.ceiling * s.extendFactor);
+        const policy: RunPolicy = { ...fixturePolicy, clarification: "assume", maxAgentCalls: 1000, maxTotalTokens: s.ceiling, maxCostUsd: null, sizing: { maxRunTokens: s.ceiling, extendToTokens: hard } };
+        store.setPolicy(runId, policy);
+        store.transaction(() => {
+          store.syncTasks(runId, { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [task("T001"), task("T002")] });
+          store.taskStatus(runId, "T001", "implemented");
+        });
+        const stepId = store.beginStep(runId, "fixture");
+        const done = store.reserve(runId, stepId, null, 1, policy);
+        store.finishAttempt(runId, done, "completed", Math.floor(s.ceiling * s.finishedShare));
+        const writers = s.writers.map((w) => {
+          const id = store.reserve(runId, stepId, null, 1, policy);
+          store.recordAttemptUsage(runId, id, w.atExtend);
+          return id;
+        });
+        // The extension at T001's finish, with the writers open at their first usage.
+        const extended = growBudgetOnProgress(store, runId, policy, s.ceiling + 1);
+        for (const [i, id] of writers.entries()) {
+          const w = s.writers[i] as { atExtend: number; since: number };
+          store.recordAttemptUsage(runId, id, w.atExtend + w.since);
+        }
+        const limit = policy.maxTotalTokens;
+        const request = Math.max(1, Math.floor(s.ceiling * s.requestShare));
+        // The other writers each hold their 1-token reservation.
+        const projected = store.run(runId).token_usage + writers.length - 1 + request;
+        let refused = false;
+        try {
+          store.expandReservation(runId, writers.at(-1) as string, request, policy);
+        } catch (error) {
+          expect((error as { code?: string }).code).toBe("BUDGET_EXHAUSTED");
+          refused = true;
+        }
+        // Without an extension, T001's finish is still progress since the start of the run.
+        const progress = extended ? s.writers.reduce((sum, w) => sum + w.since, 0) : 1;
+        if (refused) expect(projected > hard || limit >= hard || progress === 0).toBe(true);
+        else expect(projected).toBeLessThanOrEqual(policy.maxTotalTokens);
+        expect(policy.maxTotalTokens).toBeLessThanOrEqual(Math.max(limit, hard));
+      }),
+      // Each shrink starts a run on the shared fixture: report the first counterexample as found.
+      { numRuns: RUNS, endOnFailure: true },
+    );
+  });
+
+  const planning = fc.record({
+    ceiling: fc.integer({ min: 2_000_000, max: 10_000_000 }),
+    limitShare: fc.double({ min: 0.2, max: 0.8, noNaN: true }),
+    plannedShare: fc.double({ min: 0.3, max: 0.9, noNaN: true }),
+    /** Tokens each open writer had used at the last planning growth, and used since. */
+    writers: fc.array(fc.record({ atGrowth: fc.integer({ min: 0, max: 800_000 }), since: fc.integer({ min: 0, max: 800_000 }) }), { minLength: 1, maxLength: 4 }),
+    /** The step the last writer asks for, as a share of the ceiling. */
+    requestShare: fc.double({ min: 0.05, max: 1.5, noNaN: true }),
+  });
+
+  // Before any task finishes, with no attempt completed since the last planning growth, an attempt
+  // fails for the run limit only when the limit could not grow: the ceiling has no room for the
+  // step, or fewer than two open attempts used a token since that growth. A first wave of parallel
+  // writers in flight is progress (#2607), and the budget never grows past the ceiling.
+  test("before a task finishes, an attempt fails for the run limit only when the limit could not grow", async () => {
+    const store = fixture.service.store;
+    await fc.assert(
+      fc.asyncProperty(planning, async (s) => {
+        const { runId } = await fixture.start();
+        store.transaction(() => store.transition(runId, "running"));
+        const start = Math.floor(s.ceiling * s.limitShare);
+        const policy: RunPolicy = { ...fixturePolicy, maxAgentCalls: 1000, maxTotalTokens: start, maxCostUsd: null, sizing: { maxRunTokens: s.ceiling } };
+        store.setPolicy(runId, policy);
+        store.transaction(() => {
+          store.syncTasks(runId, { schemaVersion: 1, featureId: "fixture", revision: 1, specHash: "a".repeat(64), planHash: "b".repeat(64), tasks: [task("T001"), task("T002")] });
+        });
+        const stepId = store.beginStep(runId, "fixture");
+        const plan = store.reserve(runId, stepId, MODEL, 1, policy);
+        store.finishAttempt(runId, plan, "completed", Math.floor(start * s.plannedShare));
+        const writers = s.writers.map((w) => {
+          const id = store.reserve(runId, stepId, null, 1, policy);
+          store.recordAttemptUsage(runId, id, w.atGrowth);
+          return id;
+        });
+        // The planning growth the completed planning attempt allows, with the writers open.
+        const grown = growBudgetOnProgress(store, runId, policy, start + 1);
+        for (const [i, id] of writers.entries()) {
+          const w = s.writers[i] as { atGrowth: number; since: number };
+          store.recordAttemptUsage(runId, id, w.atGrowth + w.since);
+        }
+        const limit = policy.maxTotalTokens;
+        const request = Math.max(1, Math.floor(s.ceiling * s.requestShare));
+        const projected = store.run(runId).token_usage + writers.length - 1 + request;
+        let refused = false;
+        try {
+          store.expandReservation(runId, writers.at(-1) as string, request, policy);
+        } catch (error) {
+          expect((error as { code?: string }).code).toBe("BUDGET_EXHAUSTED");
+          refused = true;
+        }
+        // Without a growth, the completed planning attempt is still progress since the start.
+        // In-flight tokens count only when more than one open writer spent them: one attempt
+        // alone still stops on its own budget (#1298).
+        const spending = s.writers.filter((w) => w.since > 0);
+        const progress = grown ? (spending.length > 1 ? spending.reduce((sum, w) => sum + w.since, 0) : 0) : 1;
+        if (refused) expect(projected > s.ceiling || limit >= s.ceiling || progress === 0).toBe(true);
+        else expect(projected).toBeLessThanOrEqual(policy.maxTotalTokens);
+        expect(policy.maxTotalTokens).toBeLessThanOrEqual(Math.max(limit, s.ceiling));
+      }),
+      { numRuns: RUNS, endOnFailure: true },
+    );
+  });
+});
+
 describe("token growth room invariants (#2294)", () => {
   const seed = fc.record({
     remainingTokens: fc.integer({ min: 0, max: 30_000_000 }),
@@ -917,5 +1066,54 @@ describe("calls pool invariants (#2345)", () => {
       if (raise !== null) expect(raise).toBeGreaterThan(inputs.limitCalls);
       if (inputs.pace === null) expect(calls.forecastCalls).toBeNull();
     }), { numRuns: 300 });
+  });
+});
+
+describe("clean pace stall invariants (#2424)", () => {
+  const callSeed = fc.record({
+    wait: fc.integer({ min: 0, max: 20 * 60_000 }),
+    basis: fc.oneof(
+      fc.constant({}),
+      fc.record({ limitMs: fc.integer({ min: STALL_FLOOR_MS, max: 10 * 60_000 }) }),
+      fc.record({
+        deadlineInputs: fc.record({
+          samples: fc.integer({ min: 0, max: 50 }),
+          p95Ms: fc.integer({ min: 1_000, max: 600_000 }),
+          expired: fc.option(fc.constant(true as const), { nil: undefined }),
+        }),
+        promptChars: fc.option(fc.integer({ min: 100, max: 500_000 }), { nil: undefined }),
+      }),
+    ),
+  });
+
+  test("a call's stall is within its wait, never inside the floor, and grows with the wait by at most as much", () => {
+    fc.assert(fc.property(callSeed, fc.integer({ min: 0, max: 600_000 }), ({ wait, basis }, more) => {
+      const call = { provider: "codex", firstByteMs: wait, durationMs: wait, silentMs: wait, ...basis };
+      const stall = callStallMs(call);
+      expect(stall).toBeGreaterThanOrEqual(0);
+      expect(stall).toBeLessThanOrEqual(Math.max(0, wait - STALL_FLOOR_MS));
+      expect(stallBasisMs(call)).toBeGreaterThanOrEqual(STALL_FLOOR_MS);
+      const longer = callStallMs(call, wait + more);
+      expect(longer).toBeGreaterThanOrEqual(stall);
+      expect(longer - stall).toBeLessThanOrEqual(more);
+    }), { numRuns: 300 });
+  });
+
+  test("a finished run's clean rate lies between its ordinary rate and its rate without the whole wait", () => {
+    fc.assert(fc.property(
+      fc.integer({ min: 60_000, max: 10_000_000 }),
+      fc.integer({ min: 1, max: 50_000_000 }),
+      fc.array(callSeed, { maxLength: 10 }),
+      (activeMs, tokens, seeds) => {
+        const silentMs = Math.min(activeMs - 1, seeds.reduce((sum, s) => sum + s.wait, 0));
+        const stallMs = Math.min(silentMs, seeds.reduce((sum, s) => sum + callStallMs({ ...s.basis, silentMs: s.wait }), 0));
+        const ordinary = cleanRunPace({ status: "completed", tokens, activeMs, stallMs: 0 });
+        const clean = cleanRunPace({ status: "completed", tokens, activeMs, stallMs });
+        const whole = cleanRunPace({ status: "completed", tokens, activeMs, stallMs: silentMs });
+        if (ordinary === null || clean === null || whole === null) return;
+        expect(clean).toBeGreaterThanOrEqual(ordinary);
+        expect(clean).toBeLessThanOrEqual(whole);
+      },
+    ), { numRuns: 300 });
   });
 });

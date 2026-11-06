@@ -369,8 +369,14 @@ export interface QualityConfig {
   chainProbe?: "off" | "on";
   /** Let the host correct a test that misquotes a criterion literal itself, when the replacement is exact and the task's checks pass on it: `on` or `off` (default, recorded in shadow). */
   misquoteFix?: "off" | "on";
+  /** Let the host put a prescribed test row a delivered file changed back from the request's text, when the file keeps it on one line in the request's notation and the checks pass on it: `on` or `off` (default, recorded in shadow). */
+  rowRestore?: "off" | "on";
+  /** Let the host write a test file whose only content is the rows the request prescribes, in the shape of the file in the task's base or its reference file, instead of a model session transcribing them, and give a session that still writes such a file place_rows, which inserts the request's rows as written: `on` or `off` (default, recorded in shadow). */
+  rowFileWrite?: "off" | "on";
   /** Let the host write a task the request gives verbatim (exact diffs, whole files, a README section) instead of starting an implementer, when every diff applies: `on` or `off` (default, recorded in shadow). */
   hostApply?: "off" | "on";
+  /** When one file of a task the host would apply or write from its rows declines, let the host write the task's other files and give a session only the declined ones: `on`, `shadow` (default: the host records the split and a session writes every file) or `off` (no record). */
+  hostApplyPartial?: "off" | "shadow" | "on";
   /** Before the test tasks, run extreme legal inputs a small call proposes against each planned source task's code; a failing one is corrected at once (edge-input probe): `on` or `off` (default). */
   edgeProbe?: "off" | "on";
   /** Keep a list of defect classes earlier runs corrected, by domain, in the BAKED data directory and show a run of the same domain its classes as examples (cross-run defect classes): `on` or `off` (default). */
@@ -385,8 +391,20 @@ export interface QualityConfig {
   rustFormatWritten?: "off" | "on";
   /** Route a test task's failure whose expected values are its criteria's literals to the finished sibling that wrote the code under test: `on` or `off` (default, recorded in shadow). */
   sourceDefectRoute?: "off" | "on";
+  /** Send a failing check's correction to the test's task when the test counts a long byte run of a prescribed row differently: `on` or `off` (default, recorded in shadow). */
+  rowRunRoute?: "off" | "on";
+  /** Answer a spec conflict about a test file whose rows the request prescribes with the row diff, keeping the request's rows, instead of a model settle: `on` or `off` (default, recorded in shadow). */
+  conflictRowReply?: "off" | "on";
+  /** Restore a prescribed row whose long byte run a test counts differently on resume of a run blocked at a task and before a task's session, kept when the writing task's checks pass: `on` (default) or `off` (recorded in shadow, the brief names the miscount). */
+  rowRunRestore?: "off" | "on";
+  /** Put back a session's edit after which a prescribed test row the file held no longer holds: `on` (default) or `off`. */
+  rowEditGuard?: "off" | "on";
+  /** Check a finding, a conflict's settlement, a decision or a task's description that restates a prescribed test row against the request's text, the request winning: `on` (default) or `off` (recorded in shadow). */
+  rowClaimCheck?: "off" | "on";
   /** Before the first task, let the host run a required check's fixer on files no task writes when the check fails before any change with only correctable findings, and keep the edit when the check then passes: `on` or `off` (default). */
   baselineFix?: "off" | "on";
+  /** Give each implementer step its languages' pitfalls note and the first error line of the run's other tasks' failing checks: `on` or `off` (default, recorded in shadow). */
+  languagePitfalls?: "off" | "on";
   /** Property-based tests from marked criteria: `preset` or absent follows the workflow preset. */
   propertyTests?: "preset" | "auto" | "off";
 }

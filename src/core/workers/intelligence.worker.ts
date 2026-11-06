@@ -656,8 +656,11 @@ ctx = createWorkerHandler(
   },
   async () => {
     if (router) {
-      router.dispose();
+      // Awaited: the worker exits right after this handler, and a server it has not seen exit
+      // is left behind (unreaped, or a ready one without its SIGKILL fallback).
+      const disposing = router.dispose();
       router = null;
+      await disposing;
     }
     if (repoMap) {
       await repoMap.close();

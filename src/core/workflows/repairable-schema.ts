@@ -16,6 +16,10 @@ export const RepairBlockSchema = z
     required: z.number().int().positive(),
     taskIds: z.array(z.string()).default([]),
     transitionId: z.string().optional(),
+    stranded: z
+      .object({ pass: z.enum(["review", "convergence"]), findingIds: z.array(z.string()) })
+      .strict()
+      .optional(),
   })
   .strict()
   .refine(

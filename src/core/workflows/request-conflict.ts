@@ -1,6 +1,9 @@
+import { type CriterionCase, prescribedRowsHeld } from "../verification/criteria-cases.js";
 import { citedCriteria } from "./conflict-rows.js";
 import { quoteInRequest } from "./derivation-audit.js";
+import type { RequestSections } from "./person-request.js";
 import type { Analysis, Spec } from "./schemas.js";
+import type { Task } from "./types.js";
 
 /**
  * A spec conflict between a criterion and the request, settled for the request on verified quotes
@@ -41,6 +44,13 @@ export interface CheckedSide {
   verified: boolean;
   /** `sides`: the report's `conflictSides`; `report`: read off its text (ids, quoted spans). */
   source: "sides" | "report";
+  /**
+   * A request side of a feature run (#2492): `request` when the person's words hold the quote,
+   * `framing` when only the host's own feature framing does (the scope fence, the boundary). A
+   * framing side is never verified and is not a request side of the conflict (`sidesSettle`).
+   * Absent outside an initiative and in records before #2492.
+   */
+  section?: "request" | "framing";
 }
 
 /** The re-audit's verdict on one cited criterion. */
@@ -69,6 +79,24 @@ export interface RequestConflictInput {
   reaudit: ReauditVerdict[] | null;
   /** A re-audit of this task's conflict ran before, on an earlier report. */
   reauditedBefore: boolean;
+  /**
+   * For a host row slice (#2476): the cited criteria's literals its test files lack and how many
+   * of them the rows of another slice of the same file own. Absent for any other task, and in
+   * records from before #2476.
+   */
+  slice?: SliceForeign;
+}
+
+/** What a row slice's report asks for that other slices' rows hold (#2476). */
+export interface SliceForeign {
+  /** The task sizing cut the slices from (`sizingSlice.taskId`). */
+  taskId: string;
+  /** The cited criteria's literals the slice's test files lack. */
+  missing: number;
+  /** Of those, the literals another slice owns by its rows, as `partitionCases` decides. */
+  foreign: number;
+  /** The slices that own them. */
+  holders: string[];
 }
 
 /** What `conflicts/request/<task>-<n>.json` records. */
@@ -77,13 +105,75 @@ export interface RequestConflictRecord extends RequestConflictInput {
   /** The task's how-manieth conflict report this decision was made on, from 1. */
   report: number;
   decision: RequestConflictDecision;
+  /**
+   * The slice-foreign rule settles this report (#2476): the `slice_foreign_conflict` reason
+   * records it as a would-stop, and in shadow the person is still asked.
+   */
+  sliceForeign?: true;
+}
+
+type SliceTask = Pick<Task, "id"> & Partial<Pick<Task, "sizingSlice">>;
+
+/**
+ * The slice-foreign inputs of a host row slice's spec conflict (#2476), or undefined when the
+ * task is not a host row slice with rows (planner-written slices, slices from before #2466). A
+ * literal is another slice's when the first slice of the file whose rows hold it
+ * (`prescribedRowsHeld`) is not this one: the holder test `partitionCases` gives row slices, so
+ * the walk and this decision agree on who owns a literal. A literal no row holds, or one this
+ * slice's own rows hold, stays this slice's. R79 verhop T004 (rows 1-7 of `tests/check.bats`)
+ * reported three conflicts about AC-003 and AC-005 literals of rows 8-15, the last one a person
+ * answered with "satisfied by the union of both slices".
+ */
+export function sliceForeignInput(
+  task: SliceTask,
+  tasks: readonly SliceTask[],
+  cases: readonly CriterionCase[],
+  held: (c: CriterionCase) => boolean,
+): SliceForeign | undefined {
+  const own = task.sizingSlice;
+  if (!own?.rows?.length) return undefined;
+  const slices = tasks
+    .filter((t) => t.sizingSlice?.taskId === own.taskId && t.sizingSlice.rows?.length)
+    .sort((a, b) => (a.sizingSlice?.index ?? 0) - (b.sizingSlice?.index ?? 0));
+  if (slices.length < 2 || !slices.some((t) => t.id === task.id)) return undefined;
+  const missing = cases.filter((c) => !held(c));
+  const holders = new Set<string>();
+  let foreign = 0;
+  for (const c of missing) {
+    const holder = slices.find((t) => prescribedRowsHeld(c, t.sizingSlice?.rows ?? []));
+    if (!holder || holder.id === task.id) continue;
+    foreign++;
+    holders.add(holder.id);
+  }
+  return { taskId: own.taskId, missing: missing.length, foreign, holders: [...holders].sort() };
+}
+
+/**
+ * Whether a report is slice-foreign (#2476): a host row slice's report that the request does not
+ * settle and whose every missing literal another slice of the same file owns. The host would
+ * record it under `conflicts/request/` and ask no one; until `slice_foreign_conflict` is promoted
+ * it records a would-stop and the person is still asked.
+ */
+export function sliceForeignDecision(
+  input: Pick<RequestConflictInput, "slice" | "foreignTests">,
+  decision: RequestConflictDecision,
+): boolean {
+  const slice = input.slice;
+  return (
+    decision !== "request" &&
+    input.foreignTests === 0 &&
+    !!slice &&
+    slice.missing > 0 &&
+    slice.foreign === slice.missing
+  );
 }
 
 export type RequestConflictRule = (input: RequestConflictInput) => RequestConflictDecision;
 
 /** Whether the checked sides set a verified criterion or requirement against a verified request. */
 export function sidesSettle(sides: readonly CheckedSide[]): boolean {
-  const request = sides.filter((s) => s.kind === "request");
+  // A quote of the host's own framing is not the request's side (#2492).
+  const request = sides.filter((s) => s.kind === "request" && s.section !== "framing");
   return (
     request.length > 0 &&
     request.every((s) => s.verified) &&
@@ -130,17 +220,35 @@ export function quotedSpans(report: string): string[] {
 }
 
 /**
+ * Where a request quote is found: in the person's words, only in the host's framing, or nowhere.
+ * A plain string is the person's words with no framing (a run outside an initiative).
+ */
+export function requestSection(
+  quote: string,
+  request: string | RequestSections,
+  criteria: readonly string[],
+): "request" | "framing" | null {
+  const { person, framing } =
+    typeof request === "string" ? { person: request, framing: "" } : request;
+  if (requestQuote(quote, person, criteria)) return "request";
+  return framing && requestQuote(quote, framing, criteria) ? "framing" : null;
+}
+
+/**
  * The sides of a conflict, checked against the spec and the request. Without `conflictSides` the
  * criteria the report cites by id and each span it quotes that the request holds (and no cited
  * criterion does) are its sides, so a report that quotes the request settles whatever words
- * surround the quote.
+ * surround the quote. The request is the person's words (`personRequest`, #2492): for a feature
+ * of an initiative a quote the host's framing holds and the original request does not is recorded
+ * as a `framing` side, never verified.
  */
 export function checkedSides(
   spec: Pick<Spec, "criteria" | "requirements">,
-  request: string,
+  request: string | RequestSections,
   report: string,
   reported: readonly ReportedSide[] | undefined,
 ): CheckedSide[] {
+  const feature = typeof request !== "string" && request.framing !== "";
   if (reported?.length) {
     const cited = reported.flatMap((side) =>
       side.kind === "criterion"
@@ -150,16 +258,27 @@ export function checkedSides(
     return reported.map((side) => {
       const ref = side.ref ?? null;
       let verified = false;
+      let section: CheckedSide["section"];
       if (side.kind === "criterion") {
         const criterion = spec.criteria.find((c) => c.id === ref);
         verified = !!criterion && quoteInRequest(side.quote, criterionText(criterion));
       } else if (side.kind === "requirement") {
         const requirement = spec.requirements.find((r) => r.id === ref);
         verified = !!requirement && quoteInRequest(side.quote, requirement.text);
-      } else if (side.kind === "request") verified = requestQuote(side.quote, request, cited);
+      } else if (side.kind === "request") {
+        const found = requestSection(side.quote, request, cited);
+        verified = found === "request";
+        if (feature && found) section = found;
+      }
       // A platform side is checked against the task's failing checks and probes (#2032).
       else if (side.kind === "test") verified = ref !== null;
-      return { kind: side.kind, ref, verified, source: "sides" as const };
+      return {
+        kind: side.kind,
+        ref,
+        verified,
+        source: "sides" as const,
+        ...(section ? { section } : {}),
+      };
     });
   }
   const criteria = citedCriteria(spec, report);
@@ -171,14 +290,19 @@ export function checkedSides(
       verified: true,
       source: "report" as const,
     })),
-    ...quotedSpans(report)
-      .filter((span) => requestQuote(span, request, texts))
-      .map(() => ({
-        kind: "request" as const,
-        ref: null,
-        verified: true,
-        source: "report" as const,
-      })),
+    ...quotedSpans(report).flatMap((span) => {
+      const found = requestSection(span, request, texts);
+      if (!found) return [];
+      return [
+        {
+          kind: "request" as const,
+          ref: null,
+          verified: found === "request",
+          source: "report" as const,
+          ...(feature ? { section: found } : {}),
+        },
+      ];
+    }),
   ];
 }
 
@@ -201,7 +325,10 @@ export function conflictCriteria(
 export const sideTests = (reported: readonly ReportedSide[] | undefined): string[] =>
   (reported ?? []).flatMap((s) => (s.kind === "test" && s.ref ? [s.ref] : []));
 
-/** The re-audit's verdicts on the cited criteria, each quote checked against the request again. */
+/**
+ * The re-audit's verdicts on the cited criteria, each quote checked against the request again:
+ * the person's words (`personRequest`, #2492), never the host's framing of a feature.
+ */
 export function reauditVerdicts(
   derivations: Analysis["derivations"],
   criterionIds: readonly string[],

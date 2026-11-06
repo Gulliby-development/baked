@@ -12,7 +12,10 @@
     "src/Runtime.svelte": "<script>\nconst dir = mkdtempSync(join(tmpdir(), \"rt-\"));\nconst file = join(dir, \"a.txt\");\nconst want = `bad: ${file}`;\n</script>\n"
   },
   "expected": {
+    "rowIndent": null,
+    "languagePitfalls": null,
     "generatedValues": ["src/Gen.svelte:2 repeat"],
+    "exampleBuild": null,
     "runtimePaths": ["src/Runtime.svelte: dir, file"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
@@ -74,7 +77,9 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["/p/src/App.svelte: Error: Type 'string' is not assignable to type 'number'. (ts)"],
     "testClasses": null,
-    "testDeclarations": null
+    "testDeclarations": null,
+    "rowFileShapes": null
   }
 }

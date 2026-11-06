@@ -367,3 +367,17 @@ export function suppliedLineNumbers(request: string, path: string, content: stri
   });
   return out;
 }
+
+/**
+ * Whether the request supplies a file whole (#2504): one fenced block attributed to the path that
+ * is not a listing, or its diffs. A created file it supplies keeps the request's bytes: the
+ * format-written check records the project's formatter on it and fixes nothing.
+ */
+export function suppliesWhole(request: string, path: string): boolean {
+  if (!request) return false;
+  const blocks = [...suppliedBlocks(request, [path]).values()].flat();
+  if (!blocks.length) return false;
+  if (blocks.every((b) => b.kind === "diff")) return true;
+  const [block] = blocks;
+  return blocks.length === 1 && block?.kind === "file" && !block.listing;
+}

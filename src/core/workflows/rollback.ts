@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { canonical, hashBytes } from "../specs/hash.js";
+import { workspacePath } from "../specs/validate.js";
 import { writeViaTemp } from "./atomic-write.js";
 import { effectFile, fileHash, intentRoot, runRootPath } from "./effects.js";
 import { WorkflowFault } from "./errors.js";
@@ -161,6 +162,62 @@ export function uncommittedEdits(
       (taskId === undefined || task.id === taskId)
     );
   });
+}
+
+/**
+ * The files a task's sessions changed that are still changed in `root`, each with the hash it had
+ * before the task's first edit of it: the paths of the task's uncommitted edits
+ * (`uncommittedEdits`: every journaled write, whatever tool made it, such as edit_file,
+ * multi_edit, place_rows, restore_file or a fixer) whose file in `root` no longer has that hash.
+ * A session's change is measured from the file the task started from, not from the root as the
+ * session found it, which already holds an earlier attempt's writes: a retry, a resume, or a
+ * batch worktree whose base carries the run root's files (#2585). `edits.root`, when given, keeps
+ * only the edits made in that intent root (`intentRoot`).
+ */
+export function taskEditsInPlace(
+  store: WorkflowStore,
+  runId: string,
+  taskId: string,
+  root: string,
+  edits?: { root: string },
+): Map<string, string | null> {
+  const original = new Map<string, string | null>();
+  for (const edit of uncommittedEdits(store, runId, taskId)) {
+    if (edits && intentRoot(edit.intent_json) !== edits.root) continue;
+    const path = pathOf(edit);
+    if (!original.has(path)) original.set(path, edit.before_hash);
+  }
+  for (const [path, hash] of original)
+    if (fileHash(workspacePath(root, path)) === hash) original.delete(path);
+  return original;
+}
+
+/**
+ * The states the task's own uncommitted writes of `path` gave the file in the roots other than
+ * `root`: the hash before and after each applied write (#2928). One task's attempts can run in two
+ * roots, the run root and a batch worker, best-of-N candidate or restarted worktree cut from the
+ * run root's content, so the file one root holds can be the task's own write made in the other.
+ * Every check of whether a file holds the task's own earlier write reads this, never a root filter
+ * of its own.
+ */
+export function taskWritesElsewhere(
+  store: WorkflowStore,
+  runId: string,
+  taskId: string,
+  path: string,
+  root: string,
+): Set<string | null> {
+  const hashes = new Set<string | null>();
+  for (const edit of uncommittedEdits(store, runId, taskId))
+    if (
+      pathOf(edit) === path &&
+      intentRoot(edit.intent_json) !== root &&
+      (edit.status === "applied" || edit.status === "reconciled")
+    ) {
+      hashes.add(edit.before_hash);
+      hashes.add(edit.after_hash);
+    }
+  return hashes;
 }
 
 /**

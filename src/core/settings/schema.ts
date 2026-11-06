@@ -65,6 +65,11 @@ export type SettingDefinition = SettingBase &
      * each with an optional `maxChars`; null means none. The whole source is one value.
      */
     | { type: "library-docs"; default: null }
+    /**
+     * A folder on the machine: absolute, starting with `~`, or relative to the project; null means
+     * unset. `placeholder` is an example value for the editors.
+     */
+    | { type: "path"; default: null; placeholder: string }
   );
 
 export type SettingType = SettingDefinition["type"];
@@ -145,7 +150,7 @@ export const SETTING_PAGES: readonly SettingPage[] = [
     id: "code-quality",
     title: "Code quality",
     description:
-      "Quality gates of workflow runs. New runs take these defaults and keep them until they finish.",
+      "Quality gates and worktrees of workflow runs. New runs take these defaults and keep them until they finish.",
     command: "/code-quality",
   },
   {
@@ -1066,8 +1071,56 @@ export const SETTINGS: readonly SettingDefinition[] = [
     type: "enum",
     default: "off",
     options: [
-      { value: "off", label: "off", help: "The rewrite gets only the cases review found." },
+      {
+        value: "off",
+        label: "off",
+        help: "A first rewrite gets only the cases review found; a second rewrite of the same code still probes once.",
+      },
       { value: "on", label: "on", help: "Probe the class once and add the failing inputs." },
+    ],
+  },
+  {
+    id: "quality.rowRestore",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Restore prescribed test rows",
+    help: "When a test file changes a row the request prescribes verbatim (a miscounted byte run, an omitted argument) and the file keeps that row on one line in the request's own notation, the host puts the request's row back in its place before the checks run and keeps the edit when the writing task's required checks pass, instead of a model session copying the row again.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "The file stays as written; the host only records which rows it would restore.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Restore the rows and keep the edit when the checks pass.",
+      },
+    ],
+  },
+  {
+    id: "quality.rowFileWrite",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Host-written prescribed row files",
+    help: "When a planned task only writes a test file whose rows the request prescribes verbatim, the host writes the file itself: the shape (imports, the row type, the harness call) from the file already in the task's base or the task's reference file, and one prescribed row per line in the shape's own row notation. No model session transcribes the rows; the task's checks decide the file, and a failing check opens the normal correction. Where the host cannot write the file (a language without a row shape yet, a shape it cannot read), the session gets place_rows: it writes the rest of the file and the host inserts the request's rows exactly as written.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "A session writes the file; the host only records whether it would write it, and whether the session would get place_rows.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Write the row file from its shape and start no session for it; otherwise give the session place_rows.",
+      },
     ],
   },
   {
@@ -1111,6 +1164,33 @@ export const SETTINGS: readonly SettingDefinition[] = [
         value: "on",
         label: "on",
         help: "Write the request's verbatim content and skip the implementer when every diff applies.",
+      },
+    ],
+  },
+  {
+    id: "quality.hostApplyPartial",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Partial host apply of a task",
+    help: "When one file of a task the host would write from the request (verbatim content under host apply, prescribed rows under the host-written row file) declines, the host writes the task's other files and a session gets only the declined files to write; the host-written files are the session's read hints.",
+    scopes: BOTH,
+    type: "enum",
+    default: "shadow",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "A session writes every file of the task, and nothing is recorded.",
+      },
+      {
+        value: "shadow",
+        label: "shadow",
+        help: "A session writes every file of the task; the host records which files it would write and which the session would get.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Write the files the host can and give the session only the declined ones.",
       },
     ],
   },
@@ -1257,6 +1337,28 @@ export const SETTINGS: readonly SettingDefinition[] = [
     ],
   },
   {
+    id: "quality.languagePitfalls",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Tell implementers their language's pitfalls and the run's traps",
+    help: "Each implementer step gets a short pitfalls note for the languages its task writes (the same table the language reviewer reads), and the first error line of every other task's failing checks in the run as a one-line rule, so a sibling task does not meet the same trap again.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "Implementers get neither; the host records what each step would have been told.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Put the pitfalls note and the run's traps into each implementer step's input.",
+      },
+    ],
+  },
+  {
     id: "quality.sourceDefectRoute",
     page: "code-quality",
     section: "Workflow runs",
@@ -1275,6 +1377,116 @@ export const SETTINGS: readonly SettingDefinition[] = [
         value: "on",
         label: "on",
         help: "Send the failure to the task that wrote the code under test at the first failing check.",
+      },
+    ],
+  },
+  {
+    id: "quality.rowRunRoute",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Send a miscounted test row to the test's task",
+    help: "When a test file spells a long byte run of a row the request prescribes with another count (303 bytes of 0x78 where the row gives 300), a failing check is the test's fault, not the source's. With this on, the correction goes to the task that writes the test only. The correction always says which line and byte differ.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "The findings keep their files and name the miscount; the host records where it would have sent them.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Send the failing check's correction to the test's task only.",
+      },
+    ],
+  },
+  {
+    id: "quality.conflictRowReply",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Answer a conflict about prescribed test rows with the row diff",
+    help: "When a task reports that a test file whose rows the request prescribes contradicts the program, the host compares the file with the request's rows. With this on, a file that does not keep a row as given gets a reply naming the row and the literal it lacks, and the request's rows win, instead of a model settle. Off records the reply it would send.",
+    scopes: BOTH,
+    type: "enum",
+    default: "off",
+    options: [
+      {
+        value: "off",
+        label: "off",
+        help: "The conflict takes the other settles; the host records the row diff it would reply with.",
+      },
+      {
+        value: "on",
+        label: "on",
+        help: "Reply with the row diff and keep the request's rows.",
+      },
+    ],
+  },
+  {
+    id: "quality.rowRunRestore",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Restore a miscounted test row on resume and before a task",
+    help: "When a test file spells a long byte run of a row the request prescribes with another count (303 bytes of 0x78 where the row gives 300), the host puts the row back as the request gives it when a run blocked at a task is resumed and before each task's session, and keeps the edit only when the writing task's required checks pass. The checks stage's restore of other changed rows stays under its own setting.",
+    scopes: BOTH,
+    type: "enum",
+    default: "on",
+    options: [
+      {
+        value: "on",
+        label: "on",
+        help: "Restore the miscounted row from the request, checked by the writing task's required checks.",
+      },
+      {
+        value: "off",
+        label: "off",
+        help: "Leave the file as written; the host records what it would restore and the task's brief names the miscount.",
+      },
+    ],
+  },
+  {
+    id: "quality.rowEditGuard",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Keep a test's prescribed rows through a task's edits",
+    help: "When a task's edit of a test file makes a row the request prescribes no longer hold (a changed input, a changed expected output), the host puts the edit back and tells the task the rows are fixed by the request, so the task changes the source instead of fitting the test to its output.",
+    scopes: BOTH,
+    type: "enum",
+    default: "on",
+    options: [
+      {
+        value: "on",
+        label: "on",
+        help: "Put back an edit that changes a prescribed row the file held.",
+      },
+      {
+        value: "off",
+        label: "off",
+        help: "Let the edit stand; the checks stage still compares the rows.",
+      },
+    ],
+  },
+  {
+    id: "quality.rowClaimCheck",
+    page: "code-quality",
+    section: "Workflow runs",
+    label: "Check a restated test row against the request's text",
+    help: "When a review finding, a conflict's settlement, a recorded decision or a task's description gives a test row the request prescribes another input length or expected value, the request's own text wins: the finding is refuted, the conflict is settled for the request's rows and the task is told the rows as the request gives them.",
+    scopes: BOTH,
+    type: "enum",
+    default: "on",
+    options: [
+      {
+        value: "on",
+        label: "on",
+        help: "The request's rows win over a restatement that contradicts them.",
+      },
+      {
+        value: "off",
+        label: "off",
+        help: "Record the contradiction only; the restatement stands.",
       },
     ],
   },
@@ -1306,6 +1518,17 @@ export const SETTINGS: readonly SettingDefinition[] = [
     scopes: BOTH,
     type: "library-docs",
     default: null,
+  },
+  {
+    id: "workflows.worktreeRoot",
+    page: "code-quality",
+    section: "Worktrees",
+    label: "Worktree folder",
+    help: "Where new worktree runs keep their worktrees: <folder>/<8 hex digits>/main, beside the project on its drive. Not set, they live in the project's .baked/worktrees. On Windows a short folder such as C:\\.bk keeps a task's checks under the path length a toolchain handles (dart test fails past about 90 characters). A run keeps the folder its worktree was created in.",
+    scopes: BOTH,
+    type: "path",
+    default: null,
+    placeholder: "C:\\.bk",
   },
   {
     id: "coordinator.workStyle",

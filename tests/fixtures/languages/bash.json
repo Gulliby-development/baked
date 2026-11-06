@@ -15,7 +15,10 @@
     "test/runtime.bats": "dir=$(mktemp -d)\nwant=\"bad: $dir\"\n"
   },
   "expected": {
+    "rowIndent": ["\"  row(1),\""],
+    "languagePitfalls": null,
     "generatedValues": ["test/gen.bats:1 format","test/gen.bats:1 interpolate","test/gen.bats:2 loop"],
+    "exampleBuild": null,
     "runtimePaths": ["test/runtime.bats: dir"],
     "memberSyntax": null,
     "suppressions": [
@@ -71,7 +74,9 @@
     "dependencyDirs": null,
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": null,
     "testClasses": null,
-    "testDeclarations": ["test/sum.bats: 2 tests"]
+    "testDeclarations": ["test/sum.bats: 2 tests"],
+    "rowFileShapes": null
   }
 }

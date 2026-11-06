@@ -5,12 +5,15 @@ import { callCostRate, costRate } from "../src/core/workflows/budget.js";
 import { chargeHold, refreshedGrowth } from "../src/core/workflows/initiatives/growth.js";
 import { costGrowthLimit, dollarShortfall, growthLimit, type ShareGateRecord, shareShortfall } from "../src/core/workflows/initiatives/service.js";
 import { forecastSamples } from "../src/core/workflows/stage-price.js";
+import { documentedSurfaceRate } from "../src/core/workflows/initiatives/documented-surface.js";
+import { estimateInitiative } from "../src/core/workflows/initiatives/estimate.js";
 import { adaptiveFirstByteMs } from "../src/core/llm/provider-health.js";
 import { planApprovalDecision } from "../src/core/workflows/auto-approval.js";
-import { CAPACITY_PROBE, exceedsTestCapacity, rowVolumePrice } from "../src/core/workflows/sizing.js";
-import { type CallRate, chainCosts, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayActiveTimes, replayPoolBounds, replayTestSplits, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
+import { CAPACITY_PROBE, exceedsTestCapacity, multiFileSplit, rowVolumePrice, type SizingReport } from "../src/core/workflows/sizing.js";
+import { type CallRate, chainCosts, corpusHistoryTrace, openTrace, type PlanPriceReplay, replayChainEscalation, replayEdgeRecord, replayInitiativeStarts, replayPlanApprovals, replayPlanPrices, replayActiveTimes, replayPoolBounds, replayRequestConflicts, replayRowSplits, replayTestSplits, replayTrace, type TestSplitRule } from "../src/core/workflows/trace.js";
+import { REQUEST_CONFLICT_KIND, REQUEST_CONFLICTS_DIR, type RequestConflictRecord, requestConflictDecision, sliceForeignDecision } from "../src/core/workflows/request-conflict.js";
 import { type EdgeRecord, edgeCrashDecision } from "../src/core/verification/edge-inputs.js";
-import { ROOT, traces } from "./helpers/replay-corpus.js";
+import { ROOT, traces, traces as corpusTraces } from "./helpers/replay-corpus.js";
 import { fixturePolicy } from "./helpers/workflow-fixture.js";
 
 // #1649, #1715: every recorded bench-round trace replays through the current host decisions: the
@@ -28,11 +31,19 @@ import { fixturePolicy } from "./helpers/workflow-fixture.js";
  * what the current code decides takes the default (`enforce`).
  */
 const RECORDED_PLAN_CHARGE = { stopModes: { "initiative-plan-charge": "shadow" as const } };
+/**
+ * The size pools the rounds before #2893 priced with: without the few-path share, which is on by
+ * default since. A test that pins a round's prices to show another rule (a forecast stop, a plan
+ * charge, the own-plan need, a dollar notice) replays it with them, so the sizing default does not
+ * move that rule's numbers; the range backtests (-pools, -ranges, -few-paths) take the default.
+ */
+const RECORDED_SIZE_POOLS = { fewPathPrice: false } as const;
 
 interface Accepted {
   newStops?: number;
   newGrowth?: number;
   newFirstByteStops?: number;
+  newStreamOutputStops?: number;
   newCostStops?: number;
   newTestSplits?: number;
   newRecoveries?: number;
@@ -43,6 +54,7 @@ interface Accepted {
   newConflictDecisions?: number;
   newApplyDecisions?: number;
   newMisquoteFixes?: number;
+  newRowRestores?: number;
   newIntegrityFindings?: number;
   newCaseRefusals?: number;
   newTestCapRefusals?: number;
@@ -65,6 +77,8 @@ interface Accepted {
   newUnselectedStops?: number;
   newWouldFinishes?: number;
   newRowBlockDrifts?: number;
+  newRowBlockMoves?: number;
+  newRowSplits?: number;
   newApprovalDeclines?: number;
   newAutoApprovals?: number;
   reason: string;
@@ -96,6 +110,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newStops: stops.length,
           newGrowth: growth.length,
           newFirstByteStops: run.newFirstByteStops,
+          newStreamOutputStops: run.newStreamOutputStops,
           newCostStops: run.newCostStops,
           newTestSplits: run.newTestSplits,
           newRecoveries: run.newRecoveries,
@@ -105,6 +120,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newConflictDecisions: run.newConflictDecisions,
           newApplyDecisions: run.newApplyDecisions,
           newMisquoteFixes: run.newMisquoteFixes,
+          newRowRestores: run.newRowRestores,
           newEdgeDecisions: run.newEdgeDecisions,
           newIntegrityFindings: run.newIntegrityFindings,
           newCaseRefusals: run.newCaseRefusals,
@@ -123,11 +139,14 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newUnselectedStops: run.newUnselectedStops,
           newWouldFinishes: run.newWouldFinishes,
           newRowBlockDrifts: run.newRowBlockDrifts,
+          newRowBlockMoves: run.newRowBlockMoves,
+          newRowSplits: run.newRowSplits,
         }).toEqual({
           run: run.runId,
           newStops: allowed?.newStops ?? 0,
           newGrowth: allowed?.newGrowth ?? 0,
           newFirstByteStops: allowed?.newFirstByteStops ?? 0,
+          newStreamOutputStops: allowed?.newStreamOutputStops ?? 0,
           newCostStops: allowed?.newCostStops ?? 0,
           newTestSplits: allowed?.newTestSplits ?? 0,
           newRecoveries: allowed?.newRecoveries ?? 0,
@@ -137,6 +156,7 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newConflictDecisions: allowed?.newConflictDecisions ?? 0,
           newApplyDecisions: allowed?.newApplyDecisions ?? 0,
           newMisquoteFixes: allowed?.newMisquoteFixes ?? 0,
+          newRowRestores: allowed?.newRowRestores ?? 0,
           newEdgeDecisions: allowed?.newEdgeDecisions ?? 0,
           newIntegrityFindings: allowed?.newIntegrityFindings ?? 0,
           newCaseRefusals: allowed?.newCaseRefusals ?? 0,
@@ -155,6 +175,8 @@ describe("bench-round traces replay without new forecast stops or growth (#1649)
           newUnselectedStops: allowed?.newUnselectedStops ?? 0,
           newWouldFinishes: allowed?.newWouldFinishes ?? 0,
           newRowBlockDrifts: allowed?.newRowBlockDrifts ?? 0,
+          newRowBlockMoves: allowed?.newRowBlockMoves ?? 0,
+          newRowSplits: allowed?.newRowSplits ?? 0,
         });
       }
       // Run states before R52 counted the host's own test splits in `hostSplitTasks`, which the
@@ -261,7 +283,7 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     // forecast well above main; with none at all the start stops as it did in R50.
     const own = replayInitiativeStarts(selwhy, { priceSamples: (store, runIds) => forecastSamples(store, runIds) })[0];
     expect(own?.starts.find((b) => b.featureId === "selector-core")?.forecastUsd).toBeGreaterThan(start!.forecastUsd! * 1.3);
-    const unmeasured = replayInitiativeStarts(selwhy, { ...bindingAtOnce, priceSamples: () => [] })[0];
+    const unmeasured = replayInitiativeStarts(selwhy, { ...bindingAtOnce, ...RECORDED_SIZE_POOLS, priceSamples: () => [] })[0];
     const stopped = unmeasured?.starts.find((b) => b.featureId === "selector-core");
     expect(stopped?.replayed).toBe("park");
     expect(stopped!.forecastUsd!).toBeGreaterThan(stopped!.ceilingUsd!);
@@ -280,6 +302,21 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
     const ratios = replay!.starts.filter((b) => b.forecastUsd !== null).map((b) => b.forecastUsd! / replay!.finalUsd!);
     expect(Math.max(...ratios)).toBeLessThan(1.6);
     expect(replay?.newStartStops).toBe(0);
+  }, 120000);
+
+  test("#2753: a replay of the first start alone gives the first start a full replay gives", () => {
+    // The pools and ranges backtests read `starts[0]` only. The later starts are still rewound
+    // through, so the first start is priced on the same rewound trace, at either half-life.
+    for (const [trace, options] of [
+      ["R52/srcwhere", {}],
+      ["R62/stepvet", { recencyHalfLife: 2 }],
+    ] as const) {
+      const path = join(ROOT, `${trace}.sqlite.gz`);
+      const full = replayInitiativeStarts(path, options);
+      const first = replayInitiativeStarts(path, { ...options, firstStartOnly: true });
+      expect(full[0]?.starts.length).toBeGreaterThan(1);
+      expect(first.map((r) => r.starts)).toEqual(full.map((r) => r.starts.slice(0, 1)));
+    }
   }, 120000);
 
   test("#1890: R59 wheeltags prices its waiting features at its own stage mix, and pick-command could grow past where it stopped", () => {
@@ -472,6 +509,34 @@ describe("initiative starts replay on rewound traces (#1707)", () => {
       starts.find((b) => b.featureId === "selector-core")?.forecastUsd,
     );
   }, 120000);
+
+  // From round 81 the bench keeps a new app under a short folder (`R85/csp` for cellspan), and the
+  // corpus names its trace after the app: no such store mapped, so R95 gapmeet's estimate read
+  // none of R83 to R92's apps (#2894). A trace that recorded its folder (cellspan's instruction
+  // files, binlayer's check executables) maps by it, one that recorded none (bytemerge's `bym`) by
+  // its app name; R83 cxa and R84 psx are no app it holds.
+  test("a store the bench kept under a short folder replays from its corpus trace (#2894)", () => {
+    const trace = corpusHistoryTrace(ROOT);
+    const mapped = (store: string) => {
+      const path = trace(store);
+      return path ? relative(ROOT, path).replaceAll("\\", "/") : null;
+    };
+    expect(mapped("C:/Project/baked-bench/R85/csp")).toBe("R85/cellspan.sqlite.gz");
+    expect(mapped("C:\\Project\\baked-bench\\R86\\bnl\\.baked\\workflows.sqlite")).toBe("R86/binlayer.sqlite.gz");
+    expect(mapped("C:/Project/baked-bench/R83/bym")).toBe("R83/bytemerge.sqlite.gz");
+    expect(mapped("C:/Project/baked-bench/R92/uwv")).toBe("R92/undoweave.sqlite.gz");
+    expect(mapped("C:/Project/baked-bench/R83/cxa")).toBeNull();
+    // A full app name is its own project, not the update round of it.
+    expect(mapped("C:/Project/baked-bench/R89/namesound")).toBeNull();
+    const [replay] = replayInitiativeStarts(join(ROOT, "R95", "gapmeet.sqlite.gz"), { firstStartOnly: true });
+    const held = ["R83/bym", "R84/ssk", "R85/csp", "R85/tbl", "R86/bnl", "R86/evg", "R88/pkr", "R88/pws", "R92/uwv"];
+    expect(replay!.missingHistory.filter((p) => held.some((s) => p.endsWith(s)))).toEqual([]);
+    // 22 of its 32 stores were missing on a corpus through R95. What stays missing is only a store no
+    // corpus trace holds (R81, R82, R83 cxa, R84 psx, and rounds whose traces have not landed), so
+    // the count falls as rounds' traces land and never counts a store the corpus holds.
+    expect(replay!.missingHistory.length).toBeLessThan(22);
+    for (const store of replay!.missingHistory) expect(mapped(store)).toBeNull();
+  });
 });
 
 describe("plan approvals price their tasks at what earlier runs' tasks paid (#1792)", () => {
@@ -637,6 +702,72 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
     }
   }, 120000);
 
+  test("#2458: R78 deltaglue cli T007 ended unfinished four times; the trace predates the split record, R79 chunks T003 once", () => {
+    // `repeats/tasks/T007.json` holds four unfinished ends (#2437) and no `row-splits/` record:
+    // the task is a boundary without a decision, which a re-exported round with the record decides.
+    const deltaglue = openTrace(join(ROOT, "R78/deltaglue.sqlite.gz"));
+    try {
+      expect(replayRowSplits(deltaglue.store, "4ee1c56f-52c4-4996-b90b-225ed96b111e")).toEqual([{ taskId: "T007", ends: 4, recorded: null, replayed: null, slices: null }]);
+    } finally {
+      deltaglue.dispose();
+    }
+    // One unfinished end is no candidate.
+    const chunks = openTrace(join(ROOT, "R79/deltaglue.sqlite.gz"));
+    try {
+      expect(replayRowSplits(chunks.store, "a0c95ebb-9a5e-4007-9280-4826c1121e64")).toEqual([]);
+    } finally {
+      chunks.dispose();
+    }
+  }, 120000);
+  test("a multi-file task splits as before unless all its files are docs or text: the README and LICENSE tasks no longer split (#2649)", () => {
+    // Every recorded non-test, non-supplied task of two or more files, decided again by
+    // `multiFileSplit` on its recorded estimate and the paths of the plan sizing priced.
+    const changed: string[] = [];
+    const kept: string[] = [];
+    for (const path of corpusTraces(ROOT)) {
+      const { store, dispose } = openTrace(path);
+      try {
+        const reports = store.connection
+          .query("SELECT run_id AS runId, id, logical_path AS report, created_at AS at FROM artifacts WHERE logical_path LIKE 'sizing/plan-%' ORDER BY created_at, id")
+          .all() as { runId: string; id: string; report: string; at: number }[];
+        for (const { runId, id, report: name, at } of reports) {
+          const report = JSON.parse(store.readArtifact(runId, id)) as Partial<SizingReport>;
+          const plan = store.connection
+            .query("SELECT id FROM artifacts WHERE run_id=? AND logical_path='tasks.json' AND created_at<=? ORDER BY created_at DESC, id DESC LIMIT 1")
+            .get(runId, at) as { id: string } | null;
+          if (!plan || !report.tasks || typeof report.maxAttemptTokens !== "number") continue;
+          const graph = JSON.parse(store.readArtifact(runId, plan.id)) as { tasks: { id: string; writes: { path: string; action: string }[] }[] };
+          for (const task of report.tasks) {
+            if (task.kind === "test" || task.basis === "supplied" || task.files < 2) continue;
+            const paths = graph.tasks.find((t) => t.id === task.taskId)?.writes.filter((w) => w.action !== "delete").map((w) => w.path) ?? [];
+            if (paths.length !== task.files) continue;
+            const replayed = multiFileSplit(task.estimate, paths, report.maxAttemptTokens);
+            const label = `${relative(ROOT, path).replaceAll("\\", "/")} ${runId.slice(0, 8)} ${name} ${task.taskId}`;
+            if (replayed?.split !== task.oversized) changed.push(`${label} ${paths.join(",")}`);
+            else if (task.oversized) kept.push(label);
+          }
+        }
+      } finally {
+        dispose();
+      }
+    }
+    // Only README and LICENSE tasks change, from split to whole (seven documentation features). callmend's files then cost 268,807;
+    // verhop's 614,482 over three tasks; manlens's 262,605.
+    expect(changed).toEqual([
+      "R61/manlens.sqlite.gz 25d4802d sizing/plan-0.json T001 README.md,LICENSE",
+      "R74/callmend.sqlite.gz 1770c254 sizing/plan-0.json T001 README.md,LICENSE",
+      "R75/latcell.sqlite.gz f4a5066f sizing/plan-0.json T001 README.md,LICENSE",
+      "R75/maskback.sqlite.gz 13bb147b sizing/plan-0.json T001 README.md,LICENSE",
+      "R77/trailspin.sqlite.gz ae89f897 sizing/plan-0.json T001 README.md,LICENSE",
+      "R79/verhop.sqlite.gz f0a2962f sizing/plan-0.json T001 README.md,LICENSE",
+      "R83/pnmforge.sqlite.gz 1820f92d sizing/plan-0.json T001 README.md,LICENSE",
+    ]);
+    // R68 ewvet's three code files and the R50 md-site skeleton (4 code files and a README, expected
+    // 478k, whose parts spent 1.23M) still split.
+    expect(kept).toContain("R68/ewvet.sqlite.gz 82293901 sizing/plan-0.json T001");
+    expect(kept).toContain("R50/md-site.sqlite.gz 2a841b03 sizing/plan-0.json T001");
+  }, 300000);
+
   test("R62 stepvet: tagexpr's active time is sized at the initiative's own pace and covers what it used (#2336)", () => {
     // tagexpr was sized at the history's 135k tokens per minute to 2,100,000 ms, stopped there
     // (#1958) and finished at 2,457,115 ms after a raise; the initiative's finished runs had run at 71k.
@@ -648,12 +779,17 @@ describe("test task splits replay on recorded sizing reports (#1789)", () => {
       const [plan] = replayActiveTimes(store, runId);
       expect(plan).toMatchObject({ report: "sizing/plan-0.json", recorded: { basis: "history", after: 2_100_000 }, replayed: { basis: "initiative", tokensPerMinute: 71_173 } });
       expect(plan?.replayed.after).toBeGreaterThan(store.run(runId).active_ms);
-      // #2414, shadow: the clean pace is replayed beside the deciding one from the five finished
-      // runs' first-response waits (5,746,801 ms, from their calls before `silentMs` was recorded).
-      // Without them the runs pass the history's pace, so it would keep 135k and the 2,100,000 ms
-      // cap: first-response latency is no stall, which the default switch (R78) must tell apart.
-      expect(plan?.clean).toMatchObject({ basis: "history", tokensPerMinute: 135_149, silentMs: 5_746_801, after: 2_100_000 });
-      expect(plan?.clean?.rates).toHaveLength(5);
+      // #2414, shadow: the clean pace is replayed beside the deciding one from the finished runs'
+      // first-response waits (from their calls' `firstByteMs`, before `silentMs` was recorded).
+      // With the whole wait left out (6.84M ms on Codex, which buffers its answer) five runs passed
+      // the history's 135k and the shadow kept it and the 2,100,000 ms cap, undoing #2336. Only the
+      // stall part is left out now (#2424): 19,279 ms past the calls' deadline bases, so the seven
+      // clean rates keep the initiative's own pace and none of them beats the history's.
+      expect(plan?.clean).toMatchObject({ basis: "initiative", tokensPerMinute: 71_173, silentMs: 6_840_104, stallMs: 19_279 });
+      expect(plan?.clean?.rates).toHaveLength(7);
+      expect(plan?.clean?.after).toBe(plan?.replayed.after);
+      expect(plan?.clean?.after).toBeGreaterThan(store.run(runId).active_ms);
+      expect(plan?.clean?.rates.filter((rate) => rate > 135_149)).toEqual([]);
     } finally {
       dispose();
     }
@@ -692,6 +828,16 @@ describe("finding chains replay on recorded findings (#1981)", () => {
         // F4-2 has no repro of its own, so its battery holds the cases before it.
         ["F4-2", "T012", ["F2", "F3", "F4-2"], "rewrite", ["F2", "F3", "F4"]],
         ["F5", null, ["F2", "F3", "F4", "F5"], "rewrite", ["F2", "F3", "F4", "F5"]],
+      ]);
+      // The rewrite count (#2568): T012 (F4-2) is the second rewrite of findDelimitedInline, which
+      // probes and carries the reviewer's design, and F5 after T011 and T012 is the convergence ask.
+      expect(replay.steps.map((s) => [s.findingId, s.rewrites, s.repeat])).toEqual([
+        ["F1", 0, "none"],
+        ["F2", 0, "none"],
+        ["F3", 0, "none"],
+        ["F4", 1, "probe"],
+        ["F4-2", 1, "probe"],
+        ["F5", 2, "ask"],
       ]);
       // A battery holds only findings with a repro, so each link of the chain carries its case.
       expect(store.findings(runId).map((f) => f.id)).toEqual(["F1", "F2", "F3", "F4", "F4-2", "F5"]);
@@ -808,24 +954,26 @@ describe("own-plan feature need replays on recorded initiatives (#2043)", () => 
   // A feature whose run has a sized plan is priced at its plan's expected tokens (times the
   // measured plan-to-actual ratio) when that is above its class need. R65 uritpl ran without plan
   // ahead: at its syntax start the encode run's plan (expected 2.10M) raises encode's low end from
-  // its class value (1.38M), and nothing else moves. The high end at every start is what it was
-  // before the rule (R65 must not rise), and no start parks. R66 nodepluck, the round the issue
+  // its class value (1.38M), and nothing else moves. The expected tokens at every start are what
+  // they were before the rule (R65 must not rise), and no start parks. The high ends are the
+  // measured ratio bound's where it is above a size pool's upper quartile (#2950): before that,
+  // 30.8M at base's start and 24.3M at cli's, for 22.7M used. R66 nodepluck, the round the issue
   // measured, has no trace in the corpus; its scenario test replays its numbers.
-  test("R65 uritpl: the high end at every start is unchanged, encode's low end follows its plan", () => {
-    const [replay] = replayInitiativeStarts(join(ROOT, "R65/uritpl.sqlite.gz"));
+  test("R65 uritpl: the expected tokens at every start are unchanged, encode's low end follows its plan", () => {
+    const [replay] = replayInitiativeStarts(join(ROOT, "R65/uritpl.sqlite.gz"), RECORDED_SIZE_POOLS);
     expect(replay?.newStartStops).toBe(0);
-    expect(replay?.starts.map((s) => [s.featureId, s.tokens?.high])).toEqual([
-      ["base", 30_764_134],
-      ["values", 31_330_378],
-      ["encode", 31_330_378],
-      ["syntax", 29_687_632],
-      ["expansion", 27_316_895],
-      ["problem", 23_100_637],
-      ["cmd-read", 22_809_650],
-      ["lint", 22_680_087],
-      ["cmd-expand", 23_849_366],
-      ["cli", 24_343_314],
-      ["docs", 22_864_328],
+    expect(replay?.starts.map((s) => [s.featureId, s.tokens?.expected, s.tokens?.high])).toEqual([
+      ["base", 22_094_012, 34_056_377],
+      ["values", 22_094_012, 34_056_377],
+      ["encode", 22_094_012, 34_056_377],
+      ["syntax", 21_549_220, 33_117_709],
+      ["expansion", 20_299_613, 30_503_448],
+      ["problem", 17_765_109, 23_967_803],
+      ["cmd-read", 17_811_005, 23_967_803],
+      ["lint", 17_471_910, 22_680_087],
+      ["cmd-expand", 20_175_997, 25_722_980],
+      ["cli", 21_134_265, 25_569_382],
+      ["docs", 22_659_106, 22_864_328],
     ]);
     const syntax = replay?.starts.find((s) => s.featureId === "syntax");
     // Before #2043: low 14,743,241, encode 1,381,658-3,513,129.
@@ -870,6 +1018,7 @@ describe("the plan charge replays on recorded initiatives (#2100, #2056)", () =>
     const advice: { feature: string; mode: string | undefined; remaining: number; advice: ReturnType<typeof shareShortfall> }[] = [];
     const [replay] = replayInitiativeStarts(join(ROOT, "R71", "xmlvet.sqlite.gz"), {
       budgetAtStart: true,
+      ...RECORDED_SIZE_POOLS,
       gate: (view, feature) => {
         const verdict = shareShortfall(view, feature);
         if (verdict) advice.push({ feature: feature.id, mode: view.budget.planCharge?.mode, remaining: view.budget.remaining.tokens, advice: verdict });
@@ -900,6 +1049,18 @@ describe("the plan charge replays on recorded initiatives (#2100, #2056)", () =>
         expect(other.newStartStops).toBe(0);
         expect(other.starts.every((s) => s.planCharge === null || s.planCharge.replayed === "pass")).toBe(true);
       }
+  }, 900000);
+  test("#2534: at the expected point (planChargeExpected on) R71 xmlvet's canonical starts: the corpus's one true park is lost, so on stays opt-in", () => {
+    // scanner's plan, 4.26M-11.75M against its 8.0M limit and unmeasured, is held at its expected
+    // need instead of its high end; it went on to use 12.10M, and the pool ran short 65 minutes
+    // after canonical's start. Every other replayed start of the corpus keeps its verdict.
+    const [replay] = replayInitiativeStarts(join(ROOT, "R71", "xmlvet.sqlite.gz"), { budgetAtStart: true, planChargeExpected: "on" });
+    const canonical = replay?.starts.find((s) => s.featureId === "canonical");
+    expect(canonical?.replayed).toBe("pass");
+    expect(canonical?.planCharge).toMatchObject({ limitCommittedTokens: 20_579_789, planCommittedTokens: 16_255_323, featureId: "canonical", replayed: "pass" });
+    const scanner = canonical?.planCharge?.runs.find((r) => r.featureId === "scanner");
+    expect(scanner?.chargeTokens).toBeLessThan(8_000_000);
+    expect(replay?.newStartStops).toBe(0);
   }, 900000);
   test("#2253: R60 wheeltags parks no start with the charge, names held at its expected need; R71 xmlvet's canonical still parks", () => {
     // names' plan sized its run at 10.3M-14.1M against its 8.0M limit, unmeasured (ratio null);
@@ -1010,7 +1171,7 @@ describe("the dollar notice replays at the measured ratio (#2186)", () => {
   test("R66 nodepluck: the measured ratio's forecast is nearer the final $28.45, and no notice warns under the $37.50 ceiling", () => {
     const syntax = Date.UTC(2026, 9, 24, 14, 26, 59, 558);
     const lint = Date.UTC(2026, 9, 24, 14, 39, 39, 627);
-    const [replay] = replayInitiativeStarts(join(ROOT, "R66", "nodepluck.sqlite.gz"), { budgetAtStart: true, moments: [syntax, lint] });
+    const [replay] = replayInitiativeStarts(join(ROOT, "R66", "nodepluck.sqlite.gz"), { budgetAtStart: true, moments: [syntax, lint], ...RECORDED_SIZE_POOLS });
     expect(replay?.finalUsd).toBeCloseTo(28.45, 2);
     const at = (t: number) => replay?.starts.find((s) => s.at === t);
     // At syntax the blend weighs the measured 1.55x a third (1.18x, $23.41), at lint 1.45x two thirds.
@@ -1021,4 +1182,76 @@ describe("the dollar notice replays at the measured ratio (#2186)", () => {
     expect(replay?.starts.filter((s) => s.forecastNotice !== null)).toEqual([]);
     expect(replay?.newStartStops).toBe(0);
   }, 600000);
+});
+
+describe("the documented surface backtests on R83's documentation features (#2569)", () => {
+  // A feature that documents the program is priced by the commands the request lists, plus one
+  // README correction round, with `sizing.documentedSurface` (shadow by default). R83 has no trace
+  // in the corpus, and the corpus traces carry no request text, so no recorded estimate moves; this
+  // row replays R83's numbers: bytemerge `documentation` (README and LICENSE of a 15-command
+  // program) priced in the small class at 380,968-883,972 and used 2,252,251; pnmforge `docs`
+  // (counted at 15 commands too) used 1.56M against 1.13M expected.
+  const stages = [{ id: "implement", type: "tasks", models: [] }];
+  const small = (runId: string, tokens: number) => ({ runId, workflowId: "sdd", size: "small" as const, tokens, taskCount: 3 });
+  const estimate = (mode?: "on" | "shadow") =>
+    estimateInitiative({
+      features: [
+        { id: "decoding", title: "decoding", workflowId: "sdd", size: "small", stages },
+        { id: "documentation", title: "documentation", workflowId: "sdd", size: "small", stages, documentedCommands: 15 },
+      ],
+      history: [],
+      samples: [small("statistics", 380_968), small("decoding", 883_972)],
+      maxTotalTokens: 30_000_000,
+      ...(mode ? { documentedSurface: { rate: documentedSurfaceRate([]), mode } } : {}),
+    });
+  const docs = (mode?: "on" | "shadow") => estimate(mode).features.find((f) => f.featureId === "documentation")?.tokens;
+  const inside = (r: { low: number; high: number } | undefined, actual: number) => r !== undefined && r.low <= actual && actual <= r.high;
+
+  test("today both actuals are above the high end; on, both land inside the range; shadow moves nothing", () => {
+    for (const actual of [2_252_251, 1_560_000]) {
+      expect(actual).toBeGreaterThan(docs()?.high ?? 0);
+      expect(inside(docs("on"), actual)).toBe(true);
+    }
+    expect(docs("shadow")).toEqual(docs());
+    // The miss shrinks from 2.5 times the high end to inside it, and the low end stays under the cheaper run.
+    expect(docs("on")).toEqual({ low: 1_560_000, high: 2_253_000 });
+  });
+});
+
+describe("a row slice's conflict about another slice's literals replays on R79 verhop T004 (#2476)", () => {
+  // R79 verhop T004 wrote rows 1-7 of `tests/check.bats` (T007 rows 8-15) and reported three
+  // spec conflicts about AC-003 and AC-005; each was decided `none` (the request side unverified)
+  // and the third became the clarification a person answered with "AC-003 and AC-005 are satisfied
+  // by the union of both slices". Its first case walk refused 11 cases (AC-003 8, AC-005 3), the
+  // literals the answer puts in T007's rows.
+  test("the recorded reports replay unchanged; with the slice inputs each is slice-foreign, and in shadow still asks", () => {
+    const path = join(ROOT, "R79", "verhop.sqlite.gz");
+    const runId = "38314c6b-e9f4-4f01-8567-bc45b12133c7";
+    const { store, dispose } = openTrace(path);
+    try {
+      const own = replayRequestConflicts(store, runId).filter((b) => b.taskId === "T004");
+      // Records from before #2476 hold no slice inputs: nothing changes on replay.
+      expect(own.map((b) => [b.report, b.recorded, b.replayed, b.sliceForeign])).toEqual(
+        [1, 2, 3].map((report) => [report, "none", "none", { recorded: false, replayed: false }]),
+      );
+      const walk = store.artifacts(runId).find((a) => a.logical_path === "case-walk/tasks/T004.json");
+      const refused = (JSON.parse(store.readArtifact(runId, walk?.id ?? "")) as { refused: number[] }).refused.length;
+      expect(refused).toBe(11);
+      const records = store
+        .artifacts(runId)
+        .filter((a) => a.kind === REQUEST_CONFLICT_KIND && a.logical_path.startsWith(`${REQUEST_CONFLICTS_DIR}T004-`))
+        .map((a) => JSON.parse(store.readArtifact(runId, a.id)) as RequestConflictRecord);
+      expect(records).toHaveLength(3);
+      for (const record of records) {
+        const input = { ...record, slice: { taskId: "T004", missing: refused, foreign: refused, holders: ["T007"] } };
+        // The request does not settle them, so the enforced path still asks a person in shadow.
+        expect(requestConflictDecision({ ...input, reaudit: record.reaudit })).toBe("none");
+        expect(sliceForeignDecision(input, record.decision)).toBe(true);
+        // One literal of T004's own rows still missing keeps the report with the slice.
+        expect(sliceForeignDecision({ ...input, slice: { ...input.slice, foreign: refused - 1 } }, record.decision)).toBe(false);
+      }
+    } finally {
+      dispose();
+    }
+  });
 });

@@ -15,7 +15,10 @@
     "spec/runtime_spec.rb": "Dir.mktmpdir do |dir|\n  want = \"bad: #{dir}\"\nend\n"
   },
   "expected": {
+    "rowIndent": ["\"  row(1),\""],
+    "languagePitfalls": ["Ruby"],
     "generatedValues": ["spec/gen_spec.rb:1 repeat","spec/gen_spec.rb:2 pack","spec/gen_spec.rb:3 interpolate","spec/gen_spec.rb:4 loop"],
+    "exampleBuild": null,
     "runtimePaths": ["spec/runtime_spec.rb: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
@@ -85,7 +88,25 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["lib/calc.rb: syntax error, unexpected end-of-input"],
     "testClasses": null,
-    "testDeclarations": ["test/sum_test.rb: 2 tests, per class 2"]
+    "testDeclarations": ["test/sum_test.rb: 2 tests, per class 2"],
+    "rowFileShapes": [
+      "test/split_rows_test.rb",
+      "require \"minitest/autorun\"",
+      "require_relative \"../lib/split\"",
+      "",
+      "class SplitRowsTest < Minitest::Test",
+      "  ROWS = [",
+      "    [\"a,b\", [\"a\", \"b\"]],",
+      "    [\"a\\tb,c\", [\"a\\tb\", \"c\"]]",
+      "  ].freeze",
+      "",
+      "  def test_rows",
+      "    ROWS.each { |input, out| assert_equal out, Split.split(input) }",
+      "  end",
+      "end",
+      ""
+    ]
   }
 }

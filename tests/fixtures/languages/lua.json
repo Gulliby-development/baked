@@ -15,7 +15,10 @@
     "spec/runtime_spec.lua": "local dir = os.tmpname()\nlocal want = string.format(\"bad: %s\", dir)\n"
   },
   "expected": {
+    "rowIndent": null,
+    "languagePitfalls": ["Lua"],
     "generatedValues": ["spec/gen_spec.lua:1 repeat","spec/gen_spec.lua:2 format"],
+    "exampleBuild": null,
     "runtimePaths": ["spec/runtime_spec.lua: dir"],
     "memberSyntax": [
       "Scanner delegates to Reader.IsEncodingToken.: Reader.IsEncodingToken",
@@ -84,7 +87,26 @@
     ],
     "dependencyPrepare": null,
     "worktreePathLimits": null,
+    "diagnosticFormats": ["src/calc.lua: (W211) unused variable 'x'"],
     "testClasses": null,
-    "testDeclarations": ["spec/sum_spec.lua: 2 tests"]
+    "testDeclarations": ["spec/sum_spec.lua: 2 tests"],
+    "rowFileShapes": [
+      "spec/split_rows_spec.lua",
+      "local split = require(\"split\")",
+      "",
+      "local rows = {",
+      "\t{ \"a,b\", { \"a\", \"b\" } },",
+      "\t{ \"a,,b\", { \"a\", \"\", \"b\" } },",
+      "}",
+      "",
+      "describe(\"split\", function()",
+      "\tfor _, row in ipairs(rows) do",
+      "\t\tit(row[1], function()",
+      "\t\t\tassert.are.same(row[2], split(row[1]))",
+      "\t\tend)",
+      "\tend",
+      "end)",
+      ""
+    ]
   }
 }

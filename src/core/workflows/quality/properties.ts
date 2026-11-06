@@ -411,15 +411,29 @@ export interface PropertiesResult {
   criteria: PropertyCriterion[];
 }
 
-/** Each marked criterion with the test files of its tasks; `read` returns a file's content or null. */
+/**
+ * Each marked criterion with the test files of its tasks; `read` returns a file's content or null.
+ * `supplied` holds the planned files the request gives verbatim (a whole file or an exact diff). A
+ * criterion is `waived` when its tasks' test files are all supplied, or when the request supplies
+ * every file the plan writes (an exact patch): no correction can add a property test without
+ * departing from the request's text. R95 youngkit-update supplied a seven-file patch; AC-001 and
+ * AC-004 were covered by source tasks only, and their findings had no writable target (#2886).
+ */
 export function checkPropertyTests(
   mode: PropertyTestsMode,
   criteria: { id: string; property?: string | undefined }[],
   tasks: { criterionIds: string[]; writes: { path: string; action: string }[] }[],
   read: (path: string) => string | null,
   libraries?: Record<string, boolean>,
+  supplied: ReadonlySet<string> = new Set(),
 ): PropertiesResult {
   const out: PropertyCriterion[] = [];
+  const planned = [
+    ...new Set(
+      tasks.flatMap((t) => t.writes.filter((w) => w.action !== "delete").map((w) => w.path)),
+    ),
+  ];
+  const exactPatch = planned.length > 0 && planned.every((path) => supplied.has(path));
   for (const criterion of criteria) {
     if (!criterion.property) continue;
     const writes = tasks
@@ -441,9 +455,10 @@ export function checkPropertyTests(
       (files.length ? files : writes).map(propertyLanguage).filter((l): l is string => !!l),
     );
     const available = !libraries || [...languages].some((language) => libraries[language]);
+    const fixed = exactPatch || (files.length > 0 && files.every((file) => supplied.has(file)));
     const status = tests.some((t) => t.property)
       ? "found"
-      : shim || available
+      : (shim || available) && !fixed
         ? "missing"
         : "waived";
     out.push({
@@ -455,11 +470,17 @@ export function checkPropertyTests(
         ? {
             note: `${shim.file} imports the property library behind a fallback that runs without it`,
           }
-        : status === "waived"
+        : status === "waived" && fixed
           ? {
-              note: `no property library is installed for ${[...languages].join(", ") || "the tests' language"} and no seeded property test was recognized`,
+              note: exactPatch
+                ? "the request supplies every file the plan writes verbatim, and a property test would depart from it"
+                : `the request supplies ${files.join(", ")} verbatim, and a property test would depart from it`,
             }
-          : {}),
+          : status === "waived"
+            ? {
+                note: `no property library is installed for ${[...languages].join(", ") || "the tests' language"} and no seeded property test was recognized`,
+              }
+            : {}),
     });
   }
   return { schemaVersion: 1, mode, ...(libraries ? { libraries } : {}), criteria: out };

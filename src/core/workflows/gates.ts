@@ -25,6 +25,7 @@ import { WorkflowFault } from "./errors.js";
 import { dotnetFiles } from "./language.js";
 import { PESTER_RUN } from "./pester.js";
 import { ProcessScope } from "./process-scope.js";
+import { PS_FORMAT_CHECK, PS_FORMAT_FIX } from "./ps-format.js";
 import { lintrRun, STYLER_CHECK, STYLER_FIX, testthatRun } from "./r-tools.js";
 import { redactSecrets } from "./redaction.js";
 import { CheckSchema, SafeId } from "./schemas.js";
@@ -572,8 +573,23 @@ const PESTER_DIRS = ["tests", "Tests", "test", "Test"];
  * finding is one sorted `path:line:column: Severity Rule: message` line, since the rules run in
  * parallel and the default table cuts paths to file names.
  */
-export const PSSA_LINT =
-  "Invoke-ScriptAnalyzer -Path . -Recurse -Severity ParseError,Error,Warning -EnableExit | Sort-Object ScriptPath, Line, Column, RuleName | ForEach-Object { '{0}:{1}:{2}: {3} {4}: {5}' -f $_.ScriptPath, $_.Line, $_.Column, $_.Severity, $_.RuleName, $_.Message }";
+export const PSSA_LINT = pssaLint();
+
+/**
+ * The analyzer's lint with the project's root settings file stated, when it has one (#2591).
+ * PSScriptAnalyzer looks for `PSScriptAnalyzerSettings.psd1` only in the folder of each `-Path`
+ * and does not walk upward, so the fixer on `src/Foo.ps1` used the default rules while the lint on
+ * `.` used the root file; naming the file in both keeps the pair on one rule set.
+ */
+export function pssaLint(settings?: string): string {
+  const head = ["Invoke-ScriptAnalyzer", ...settingsArgs(settings)].join(" ");
+  return `${head} -Path . -Recurse -Severity ParseError,Error,Warning -EnableExit | Sort-Object ScriptPath, Line, Column, RuleName | ForEach-Object { '{0}:{1}:{2}: {3} {4}: {5}' -f $_.ScriptPath, $_.Line, $_.Column, $_.Severity, $_.RuleName, $_.Message }`;
+}
+
+/** `-Settings ./<file>` for a root analyzer settings file, relative to the check's cwd (#2591). */
+function settingsArgs(settings?: string): string[] {
+  return settings ? ["-Settings", `./${settings}`] : [];
+}
 
 /**
  * Pester tests and PSScriptAnalyzer for a PowerShell project (#1498): Pester when the project has
@@ -581,7 +597,8 @@ export const PSSA_LINT =
  * `PSScriptAnalyzerSettings.psd1`, and offered without one (not preselected) when it has a module
  * manifest or a script at its root, since the default rules may already fail on its code. The
  * analyzer reads one file at a time, so it covers each task's scripts, and its fixer
- * (`Invoke-ScriptAnalyzer -Fix -Path <file>`) takes the task's file.
+ * (`Invoke-ScriptAnalyzer -Fix -Path <file>`) takes the task's file; both name the root settings
+ * file with `-Settings` when there is one (#2591).
  */
 function pwshGates(workspace: string): GateSuggestion[] {
   const names = (dir: string): string[] => {
@@ -609,11 +626,27 @@ function pwshGates(workspace: string): GateSuggestion[] {
   if (settings || scripts || testDir !== undefined)
     out.push({
       check: {
-        ...gate("psscriptanalyzer", exe, [...PWSH, PSSA_LINT], 300000),
-        fix: { executable: exe, args: [...PWSH, "Invoke-ScriptAnalyzer", "-Fix", "-Path"] },
+        ...gate("psscriptanalyzer", exe, [...PWSH, pssaLint(settings)], 300000),
+        fix: {
+          executable: exe,
+          args: [...PWSH, "Invoke-ScriptAnalyzer", ...settingsArgs(settings), "-Fix", "-Path"],
+        },
       },
       source: settings ?? scripts ?? `${testDir || "."}/*.Tests.ps1`,
       reason: `${exe} -Command Invoke-ScriptAnalyzer -Recurse (fixer: Invoke-ScriptAnalyzer -Fix)`,
+      preselected: settings !== undefined,
+    });
+  // Layout through Invoke-Formatter, which ships with PSScriptAnalyzer (#2595): preselected with
+  // the settings file whose formatting rules it applies, offered without one (the CodeFormatting
+  // preset may already fail on the project's code).
+  if (settings || scripts || testDir !== undefined)
+    out.push({
+      check: {
+        ...gate("psformat", exe, [...PWSH, PS_FORMAT_CHECK], 300000),
+        fix: { executable: exe, args: [...PWSH, PS_FORMAT_FIX] },
+      },
+      source: settings ?? scripts ?? `${testDir || "."}/*.Tests.ps1`,
+      reason: `${exe} -Command Invoke-Formatter on each script (fixer: the same, written back)`,
       preselected: settings !== undefined,
     });
   return out;
@@ -625,6 +658,8 @@ function pwshGates(workspace: string): GateSuggestion[] {
  * lintr is preselected with a `.lintr` config and offered without one, since its default linters
  * may already fail on the code. styler is offered, not preselected, with the fixer
  * `styler::style_file` on the task's file; the format-written check holds new files to it.
+ * styler owns indentation: where it is installed lintr's `indentation_linter` lints are left out,
+ * since the two disagree on a multi-line `if` condition and no text passes both (#2948).
  */
 function rGates(workspace: string): GateSuggestion[] {
   const pkg = has(workspace, "DESCRIPTION");
@@ -724,11 +759,13 @@ function cargoGates(workspace: string): GateSuggestion[] {
   return [
     {
       check: {
-        ...gate("cargo-fmt", "cargo", ["fmt", "--check"], 120000),
+        // rustfmt reads neither NO_COLOR nor CARGO_TERM_COLOR and colours its diff under a colour
+        // TERM (R90 windowfit, #2830); `--color=never` is its own switch.
+        ...gate("cargo-fmt", "cargo", ["fmt", "--check", "--", "--color=never"], 120000),
         fix: { executable: "cargo", args: ["fmt"] },
       },
       source: "Cargo.toml",
-      reason: "cargo fmt --check (fixer: cargo fmt)",
+      reason: "cargo fmt --check -- --color=never (fixer: cargo fmt)",
       preselected: true,
     },
     {
@@ -1766,7 +1803,12 @@ export async function executeGate(
               : "error"
             : result.exitCode === null
               ? "failed"
-              : exitStatus(parsed, result.exitCode, result.output),
+              : exitStatus(
+                  parsed,
+                  result.exitCode,
+                  result.output,
+                  parsed.cwd === "." ? workspace : workspacePath(workspace, parsed.cwd),
+                ),
       exitCode: result.exitCode,
       durationMs: result.durationMs,
       outputTail: outputTail(output),

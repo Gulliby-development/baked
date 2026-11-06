@@ -1,0 +1,630 @@
+import { hashBytes } from "../specs/hash.js";
+import { respelled, runLengthCompare, runSpans } from "../verification/byte-runs.js";
+import {
+  CONTINUES,
+  measureFileRows,
+  measureRows,
+  type RowBlockDrift,
+  type RowMeasure,
+  rowBlockDecision,
+  rowBlockDrifts,
+  rowHead,
+  rowNotation,
+  rowPlaces,
+} from "./row-block-drift.js";
+import type { TaskGraph } from "./schemas.js";
+import { suppliedRows } from "./sizing.js";
+import type { Task } from "./types.js";
+
+/**
+ * The host's own restore of a prescribed row a delivered test file changed (#2522). The host holds
+ * every row the request prescribes (`suppliedRows`), and `rowBlockDrifts` knows which file line
+ * takes the place of a row it does not hold, yet a drifting row went to a model session to copy
+ * again. Bench round 82: transcribing prescribed row files was 5.1M of the two initiatives' 18.1M
+ * tokens and correcting their copies another 3.0M; tinyflate deflate T007 (2.43M) never got
+ * `tests/deflate_match_test.c`'s long hex runs right (303 bytes of `78` for the row's 300, 238 of
+ * `71` for 259), and slotprompt core T009 and T010 (0.57M) put back omitted arguments of Dart rows.
+ *
+ * At each checks stage, before the checks run, every prescribed row of a test file the plan writes
+ * that drifts (`rowBlockDecision`) or that no file row holds while one takes its place (a changed
+ * row, `FileRowMeasure.replaces`) is a site, at the file line in its place (`rowPlaces`: the
+ * changed row, or the file row matched to a row the token comparison finds short, #2521). The host restores a site's line from the request's
+ * text when (`rowRestoreDecision`): a file line takes the row's place; that file row is the one
+ * line (nothing continues its strings); the line starts with the row's own head (`{`, `row(`,
+ * `Arguments.of(`), so the request's notation is the file's; and, with the line replaced by the
+ * row as the request gives it (the file line's indentation and trailing `,` or `;` kept), the file
+ * holds the row and no other row drifts that did not before. A file with rows spread over lines
+ * (a bats `@test` per row, a formatter's wrapped row) or written in another notation than the
+ * request's records the site and is not restored.
+ *
+ * Every comparison with a site records `row-restores/<path>.json` (kind `row-restore`, counts and
+ * flags only). With the policy field `rowRestore` absent the decision is shadow (`would_restore`):
+ * recorded, the file stays as written and `row_block_drift` records its would-stop as before. With
+ * `rowRestore: "on"` the host writes the restored lines as a journaled edit and runs the writing
+ * task's required checks on it; when one fails the edit is put back (`put_back`).
+ */
+export const ROW_RESTORE_KIND = "row-restore";
+export const ROW_RESTORE_DIR = "row-restores/";
+
+/** One prescribed row the file does not keep as given: flags only, as the trace keeps them. */
+export interface RowRestoreSite {
+  /** The row's place in the request's block(s) for the file, from 1. */
+  row: number;
+  /** The file line that takes the row's place, from 1; null when none does. */
+  line: number | null;
+  /** That file row is the one line: no line after it continues its strings. */
+  oneLine: boolean;
+  /** The line starts with the row's own head, so the request spells the row as the file does. */
+  sameHead: boolean;
+  /** With the line restored the file holds the row, and no other row drifts that did not. */
+  held: boolean;
+  /**
+   * The row's long byte runs the line counts differently, respelled with the row's counts in the
+   * line's own notation (`respelledRunLine`), hold the row, and no other row drifts that did not
+   * (#2551). Read only by the restore of miscounted runs (`rowRunRestores`); absent elsewhere.
+   */
+  respelled?: boolean;
+}
+
+export interface RowRestoreRecord {
+  schemaVersion: 1;
+  path: string;
+  /** The planned and corrective tasks that write the file. */
+  tasks: string[];
+  /** `shadow`: recorded only; `on`: the host restores the rows the decision names. */
+  mode: "shadow" | "on";
+  sites: RowRestoreSite[];
+  /** The rows (from 1) the decision restores, or would restore in shadow. */
+  restore: number[];
+  /**
+   * `would_restore`: shadow, rows to restore; `restored`: on, written and the checks pass;
+   * `put_back`: on, a required check failed on the edit; `declined`: no row the host can restore.
+   */
+  verdict: "would_restore" | "restored" | "put_back" | "declined";
+  /** The writing task's required checks on the edit; null when the host did not edit. */
+  checks: "passed" | "failed" | "none" | null;
+  /**
+   * Where the comparison ran when not at the checks stage (#2543): `resume`, a resume of a run
+   * blocked `invalid_output` (recorded under `row-restores/resume/`, never written); `drive`,
+   * before the task-graph stage drives its tasks; `task`, at the start of a task's session;
+   * `task-end`, at a row-file task's end, before its own checks (#2529). Absent at the checks
+   * stage (and in records before it).
+   */
+  at?: "resume" | "drive" | "task" | "task-end";
+  /**
+   * The tasks blocked when the run was resumed (`at: "resume"`); the task (`at: "task"` and
+   * `at: "task-end"`).
+   */
+  blocked?: string[];
+  /** The best-of-N candidate whose worktree the task-end restore ran on (#2529). */
+  candidate?: number;
+  /** The hash of the file the sites were read from (#2543): the same file records nothing new. */
+  file?: string;
+}
+
+/** The rows the host restores: each with a one-line file row in the row's notation that then holds. */
+export type RowRestoreRule = (sites: readonly RowRestoreSite[]) => number[];
+export function rowRestoreDecision(sites: readonly RowRestoreSite[]): number[] {
+  return sites.flatMap((s) =>
+    s.line !== null && ((s.oneLine && s.sameHead && s.held) || s.respelled === true) ? [s.row] : [],
+  );
+}
+
+/** A whole-line restore: the line is the row as the request gives it. */
+const wholeLine = (s: RowRestoreSite) => s.line !== null && s.oneLine && s.sameHead && s.held;
+
+const QUOTED = /"((?:\\.|[^"\\])*)"/g;
+
+/**
+ * The file line `text` with each double-quoted literal replaced by the prescribed `row`'s literal
+ * in the same place, the rest of the line (its call, its separators, its unquoted values) kept
+ * (#2558): R82's `failed += row(ARGS("deflate", ...), "7878…", 0, "…\n", "");` for the request's
+ * `run "deflate" ... stdin="7878…" => 0 "…\n" ""`. Null when the two do not quote the same number
+ * of literals, or nothing changes.
+ */
+export function relitLine(text: string, row: string): string | null {
+  const want = [...row.matchAll(QUOTED)].map((m) => m[1] ?? "");
+  const have = [...text.matchAll(QUOTED)];
+  if (!want.length || want.length !== have.length) return null;
+  let out = "";
+  let at = 0;
+  for (const [i, m] of have.entries()) {
+    out += `${text.slice(at, m.index)}"${want[i]}"`;
+    at = (m.index ?? 0) + m[0].length;
+  }
+  out += text.slice(at);
+  return out === text ? null : out;
+}
+
+/** A session's edit of a prescribed-row test file that breaks a row the file held (#2558). */
+export interface RowEditBreak {
+  path: string;
+  /** The rows (from 1) held before the edit and not after. */
+  rows: number[];
+  /** The rows as the request gives them, cut, for the answer. */
+  texts: string[];
+}
+
+/**
+ * Whether an edit of `path` from `before` to `after` breaks a prescribed row the file held: a row
+ * of the request's block for the file (`suppliedRows`) that held before (`rowBlockDecision` of
+ * `measureRows`, the one comparison) and drifts after. A file the request prescribes no rows for,
+ * a new file, or rows that did not hold before are no break, so a task writing its rows is free.
+ * Nor is a row only a line in the request's own notation held (`rowNotation`, #2583): R84
+ * wrapsmith's `place_rows` wrote `run "cols" … => 0 "…" ""` rows into a Pester file, and every
+ * edit that rewrote one as an executable `Row` call was put back, so the run could not recover.
+ * R82 tinyflate 82f19908 rev 51: after the host restored rows 7 and 8, T007's implementer edited
+ * them to 306/259, then 312/283 bytes, and changed their expected outputs to its encoder's.
+ */
+export function rowEditBreaks(
+  request: string,
+  path: string,
+  before: string | null,
+  after: string | null,
+): RowEditBreak | null {
+  if (before === null || after === null) return null;
+  const plainPath = path.trim().replace(/^(?:\.\/)+/, "");
+  const block = suppliedRows(request, [plainPath]).get(plainPath);
+  if (!block) return null;
+  const beforeRows = measureFileRows(block.lines, before);
+  // A dropped copy of a row the request gives twice (#2704) is recorded, not guarded: no `copy`.
+  const guarded = (measures: RowMeasure[]) =>
+    rowBlockDecision(measures.map(({ copy: _, ...measure }) => measure));
+  const driftedBefore = new Set(guarded(measureRows(block.lines, before, beforeRows)));
+  // A row held only by a line in the request's notation (#2583: `run "cols" … => 0 "…" ""` that
+  // place_rows wrote into a Pester file) is no executable row: translating it is no break.
+  const places = rowPlaces(beforeRows);
+  const lines = before.split(/\r?\n/);
+  const notation = (n: number) => {
+    const at = places.get(n);
+    return at !== undefined && rowNotation(lines[at - 1] ?? "");
+  };
+  const rows = guarded(measureRows(block.lines, after)).filter(
+    (n) => !driftedBefore.has(n) && !notation(n),
+  );
+  if (!rows.length) return null;
+  const cut = (line: string) => (line.length > 160 ? `${line.slice(0, 157)}...` : line);
+  return { path: plainPath, rows, texts: rows.map((n) => cut(block.lines[n - 1] ?? "")) };
+}
+
+/**
+ * Whether a task asks for prescribed rows to change place (#2955): its title or description (a
+ * corrective's carries its finding) names an order, a move, a swap, a split or another list.
+ */
+const MOVE_ASK =
+  /\b(?:re-?order\w*|out of order|(?:wrong|another|other|request'?s?|their|row) order|order of (?:the )?rows|mov(?:e|es|ed|ing)|swap\w*|split\w*|(?:wrong|another|other|second|first) list)\b/i;
+export function asksForMove(task: Pick<Task, "title" | "description"> | null | undefined): boolean {
+  return task ? MOVE_ASK.test(`${task.title}\n${task.description}`) : false;
+}
+
+/**
+ * The answer to an edit `rowEditBreaks` put back. `move` (the task asks for a move, `asksForMove`,
+ * #2955) adds the one-call move: the guard judges each call alone, so the literal advice alone left
+ * R102 tailcut's corrective with no route to the order it had to restore. A row still a line of
+ * the file elsewhere after the edit is held there, so the guard never breaks it: a put-back move is
+ * always a deletion, and only the task's words tell it from a session dropping a row.
+ */
+export function rowEditBreakText(broken: RowEditBreak, move = false): string {
+  const which = broken.rows.map((n, i) => `row ${n} (${broken.texts[i]})`).join("; ");
+  const text = `Edit put back: it changed the request's prescribed ${broken.rows.length === 1 ? "row" : "rows"} of ${broken.path} that the file held: ${which}. The request fixes these rows, their inputs and expected outputs exactly; keep the test's literals as they are and change the source so it produces the expected output.`;
+  if (!move) return text;
+  return `${text} If the task is to move prescribed rows (another order, or another list of the file), that is allowed when one call leaves every prescribed row in the file: each call is judged alone, so a deletion alone is put back. Use place_rows with move: true, rows [first, last] and the line they go after, or a single multi_edit that removes the rows and inserts them at their new place.`;
+}
+
+/**
+ * The file line `text` with each long byte run of the prescribed `row` it counts differently
+ * spelled again with the row's count, in the line's own notation (`respelled`: a hex string or a
+ * byte list written out again, a repeat's count rewritten), the rest of the line kept (#2551).
+ * Null when the line has no such run or one cannot be rewritten exactly.
+ */
+export function respelledRunLine(text: string, row: string): string | null {
+  let out = text;
+  for (const span of runSpans(row)) {
+    for (const drift of runLengthCompare(out, span.spelling)?.drifts ?? []) {
+      const fixed = respelled(drift.spelling, span.spelling);
+      const at = out.indexOf(drift.spelling);
+      if (fixed === null || at < 0 || out.indexOf(drift.spelling, at + 1) >= 0) return null;
+      out = `${out.slice(0, at)}${fixed}${out.slice(at + drift.spelling.length)}`;
+    }
+  }
+  return out === text ? null : out;
+}
+
+/**
+ * A row line's top-level argument count (`{ "a", "b" }` 2, `row(x, [y, z])` 2) and the index just
+ * past the bracket that closes the row, or null when the row's bracket does not close on the line.
+ * Strings are skipped with their escapes. Besides a bracketed head (`{`, `row(`, `Arguments.of(`)
+ * it reads three forms (#2553): a struct literal after a bare name (Rust `Row { input: "a", events:
+ * &[] }`, its fields), an attribute row (Rust rstest `#[case("a", 0)]`, the inner call's arguments,
+ * the row ending past its `]`) and a command row (PowerShell `Row @('a') -Code 0`, its words).
+ */
+export function rowSpan(line: string): { count: number; end: number } | null {
+  const head = rowHead(line);
+  const at = line.indexOf(head);
+  if (head === "#[") {
+    const call = /^#\[[A-Za-z_]\w*\(/.exec(line.slice(at))?.[0];
+    if (!call) return bracketSpan(line, at + 1);
+    const inner = bracketSpan(line, at + call.length - 1);
+    return inner && line[inner.end] === "]" ? { count: inner.count, end: inner.end + 1 } : null;
+  }
+  if (/[([{]$/.test(head)) return bracketSpan(line, at + head.length - 1);
+  if (!/^[A-Za-z_][\w.:-]*$/.test(head)) return null;
+  const rest = line.slice(at + head.length);
+  const gap = /^\s+/.exec(rest)?.[0].length ?? 0;
+  if (!gap) return null;
+  const from = at + head.length + gap;
+  if (line[from] === "{") return bracketSpan(line, from);
+  return commandSpan(line, from);
+}
+
+/** The arguments of the bracket that opens at `open` and the index just past its close. */
+function bracketSpan(line: string, open: number): { count: number; end: number } | null {
+  let depth = 0;
+  let count = 0;
+  let content = false;
+  for (let i = open; i < line.length; i++) {
+    const ch = line[i] ?? "";
+    if (ch === '"' || ch === "'" || ch === "`") {
+      let j = i + 1;
+      while (j < line.length && line[j] !== ch) j += line[j] === "\\" ? 2 : 1;
+      if (j >= line.length) return null;
+      i = j;
+      if (depth === 1) content = true;
+      continue;
+    }
+    if ("([{".includes(ch)) {
+      depth++;
+      if (depth > 1) content = true;
+      continue;
+    }
+    if (")]}".includes(ch)) {
+      depth--;
+      if (depth === 0) return { count: count + (content ? 1 : 0), end: i + 1 };
+      continue;
+    }
+    if (depth === 1 && ch === ",") {
+      // A trailing comma before the close adds no argument.
+      if (content) count++;
+      content = false;
+    } else if (depth === 1 && ch.trim()) content = true;
+  }
+  return null;
+}
+
+/**
+ * The words of a command row from `from` (`@('cols', '3') -Code 0 -Out "a`n"`: 5) and the index
+ * just past the last one; a trailing `,` or `;` is the row's separator, not a word. A double-quoted
+ * word escapes with a backtick (PowerShell), a single-quoted one has no escape. Null when a string
+ * or bracket does not close on the line, or a closing bracket has no opening one.
+ */
+function commandSpan(line: string, from: number): { count: number; end: number } | null {
+  let count = 0;
+  let end = from;
+  let depth = 0;
+  let word = false;
+  for (let i = from; i < line.length; i++) {
+    const ch = line[i] ?? "";
+    if (depth === 0 && /\s/.test(ch)) {
+      word = false;
+      continue;
+    }
+    if (depth === 0 && (ch === ";" || ch === ",") && !line.slice(i + 1).trim()) break;
+    if (!word && depth === 0) {
+      word = true;
+      count++;
+    }
+    if (ch === '"' || ch === "'") {
+      let j = i + 1;
+      while (j < line.length && line[j] !== ch) j += ch === '"' && line[j] === "`" ? 2 : 1;
+      if (j >= line.length) return null;
+      i = j;
+    } else if ("([{".includes(ch)) depth++;
+    else if (")]}".includes(ch) && --depth < 0) return null;
+    if (depth === 0) end = i + 1;
+  }
+  return depth === 0 && count ? { count, end } : null;
+}
+
+/** The text after a row line's closing bracket (`,`, `;`, or `));` closing the list too). */
+export function rowTail(line: string): string | null {
+  const end = rowSpan(line)?.end;
+  return end === undefined ? null : line.slice(end).trim();
+}
+
+/**
+ * The prescribed `row` in place of the file line `text`: its indentation and separator kept, and
+ * the brackets that close the list on the row's line (a Java `Stream.of(` or a gtest `Values(`
+ * call's last row, `Arguments.of(...));`, #2553) when the prescribed row is one closed row.
+ */
+export function restoredLine(text: string, row: string): string {
+  const eol = text.endsWith("\r") ? "\r" : "";
+  const body = eol ? text.slice(0, -1) : text;
+  const indent = /^\s*/.exec(body)?.[0] ?? "";
+  const closers = rowTail(body) ?? "";
+  const own = row.trim();
+  if (/^[)\]}]+[,;]?$/.test(closers) && rowSpan(own)?.end === own.length)
+    return `${indent}${own}${closers}${eol}`;
+  const separator = /([,;])\s*$/.exec(body)?.[1] ?? "";
+  const tail = separator && !row.trimEnd().endsWith(separator) ? separator : "";
+  return `${indent}${row.trim()}${tail}${eol}`;
+}
+
+const withLines = (lines: readonly string[], edits: ReadonlyMap<number, string>) =>
+  lines.map((text, i) => edits.get(i + 1) ?? text).join("\n");
+
+/**
+ * The sites of a delivered file against its prescribed `rows`, the rows the decision restores and
+ * the file with them restored (the file as it is when none).
+ */
+export function rowRestorePlan(
+  rows: readonly string[],
+  file: string,
+  decide: RowRestoreRule = rowRestoreDecision,
+): { sites: RowRestoreSite[]; restore: number[]; after: string } {
+  const fileRows = measureFileRows(rows, file);
+  const drifting = new Set(rowBlockDecision(measureRows(rows, file, fileRows)));
+  // The file line in each row's place: the changed row that replaces it, or the file row matched
+  // to it that the token comparison found short (#2521: arguments dropped, a status changed).
+  const places = rowPlaces(fileRows);
+  const lines = file.split("\n");
+  const candidates = rows.flatMap((_, index) => {
+    const row = index + 1;
+    const line = places.get(row) ?? null;
+    const replaced = fileRows.some((r) => r.replaces === row);
+    return drifting.has(row) || replaced ? [{ row, line }] : [];
+  });
+  const restoring = new Map<number, string>();
+  const sites = candidates.map(({ row, line }): RowRestoreSite => {
+    const prescribed = rows[row - 1] ?? "";
+    const text = line === null ? undefined : lines[line - 1];
+    if (line === null || text === undefined)
+      return { row, line: null, oneLine: false, sameHead: false, held: false };
+    const oneLine = !CONTINUES.test(lines[line] ?? "");
+    const head = rowHead(text);
+    // The request's notation is restored only over a line in that notation, never over code
+    // that shares its head (#2583: a Pester helper named `run`).
+    const sameHead =
+      head !== "" &&
+      head === rowHead(prescribed) &&
+      (!rowNotation(prescribed) || rowNotation(text));
+    const restored = restoredLine(text, prescribed);
+    const after = withLines(lines, new Map([[line, restored]]));
+    const afterRows = measureFileRows(rows, after);
+    const still = rowBlockDecision(measureRows(rows, after, afterRows));
+    const held =
+      !still.includes(row) &&
+      still.every((n) => drifting.has(n)) &&
+      afterRows.some((r) => r.line === line && r.matches.includes(row));
+    restoring.set(row, restored);
+    return { row, line, oneLine, sameHead, held };
+  });
+  const restore = decide(sites);
+  const edits = new Map(
+    sites.flatMap((s) =>
+      restore.includes(s.row) && s.line !== null ? [[s.line, restoring.get(s.row) ?? ""]] : [],
+    ) as [number, string][],
+  );
+  return { sites, restore, after: edits.size ? withLines(lines, edits) : file };
+}
+
+/**
+ * For each test file the graph writes, the request prescribes rows for and the file does not keep
+ * as given, its record and the file before and after the restore (read through `read`; a file
+ * that is not there has no site).
+ */
+export function rowRestores(
+  request: string,
+  graph: Pick<TaskGraph, "tasks">,
+  read: (path: string) => string | null,
+  mode: RowRestoreRecord["mode"] = "shadow",
+  decide: RowRestoreRule = rowRestoreDecision,
+): { record: RowRestoreRecord; before: string; after: string }[] {
+  const compared = rowBlockDrifts(request, graph, read).filter((c) => c.record.delivered);
+  if (!compared.length) return [];
+  const blocks = suppliedRows(
+    request,
+    compared.map((c) => c.record.path),
+  );
+  return compared.flatMap(({ record: { path, tasks } }) => {
+    const block = blocks.get(path);
+    const before = read(path);
+    if (!block || before === null) return [];
+    const { sites, restore, after } = rowRestorePlan(block.lines, before, decide);
+    if (!sites.length) return [];
+    const verdict = !restore.length ? "declined" : mode === "on" ? "restored" : "would_restore";
+    return [
+      {
+        record: { schemaVersion: 1, path, tasks, mode, sites, restore, verdict, checks: null },
+        before,
+        after,
+      },
+    ];
+  });
+}
+
+/** Where the resume records its comparison of the miscounted rows (`rowRunRestores`, #2543). */
+export const ROW_RESTORE_RESUME_DIR = `${ROW_RESTORE_DIR}resume/`;
+
+/**
+ * The rows of the delivered test files whose long byte runs the file counts differently (#2515,
+ * `RowMeasure.runs`), outside the checks stage (#2543): on resume of a run blocked
+ * `invalid_output` and at the start of a task's session. R82 tinyflate deflate 82f19908 blocked at
+ * T007 on `tests/deflate_match_test.c` (303 bytes of `78` for the row's 300, 238 of `71` for 259);
+ * resumed after #2515 and #2522 it blocked again within a minute, because both run only at the
+ * checks stage, which a run blocked at a task never reaches. The sites are `rowRestorePlan`'s for
+ * those rows only (the restore of #2522, its decision unchanged), so the replay of the record
+ * reads them as the checks stage's. `paths` limits the files (all the graph writes when absent).
+ * Each result carries the run drifts its file has, restored or not, for the brief.
+ */
+export function rowRunRestores(
+  request: string,
+  graph: Pick<TaskGraph, "tasks">,
+  read: (path: string) => string | null,
+  mode: RowRestoreRecord["mode"],
+  paths?: readonly string[],
+): { record: RowRestoreRecord; before: string; after: string; drifts: RowBlockDrift[] }[] {
+  const plain = (path: string) => path.trim().replace(/^(?:\.\/)+/, "");
+  const wanted = paths?.map(plain);
+  // Only the wanted files are read and compared: this runs before every task's session.
+  const scoped = wanted
+    ? {
+        tasks: graph.tasks.map((t) => ({
+          ...t,
+          writes: t.writes.filter((w) => wanted.includes(plain(w.path))),
+        })),
+      }
+    : graph;
+  const compared = rowBlockDrifts(request, scoped, read).filter((c) => c.record.delivered);
+  const runs = compared.flatMap((c) => {
+    const drifts = c.drifts.filter((d) => d.runs.length);
+    return drifts.length ? [{ path: c.record.path, tasks: c.record.tasks, drifts }] : [];
+  });
+  if (!runs.length) return [];
+  const blocks = suppliedRows(
+    request,
+    runs.map((r) => r.path),
+  );
+  return runs.flatMap(({ path, tasks, drifts }) => {
+    const block = blocks.get(path);
+    const before = read(path);
+    if (!block || before === null) return [];
+    const rows = new Set(drifts.map((d) => d.row));
+    const lines = before.split("\n");
+    const drifting = new Set(rowBlockDecision(measureRows(block.lines, before)));
+    // A line that is not the row in the request's notation (R82: `failed += row(ARGS(...), ...)`
+    // for the request's `run "deflate" ... stdin=... => ...`) keeps its notation and gets the
+    // row's counts only (#2551).
+    const respellings = new Map<number, string>();
+    const sites = rowRestorePlan(block.lines, before, () => [])
+      .sites.filter((s) => rows.has(s.row))
+      .map((site): RowRestoreSite => {
+        if (site.line === null || wholeLine(site)) return site;
+        const line = site.line;
+        const text = lines[line - 1] ?? "";
+        const row = block.lines[site.row - 1] ?? "";
+        const holds = (fixed: string | null) => {
+          if (fixed === null) return false;
+          const still = rowBlockDecision(
+            measureRows(block.lines, withLines(lines, new Map([[line, fixed]]))),
+          );
+          return !still.includes(site.row) && still.every((n) => drifting.has(n));
+        };
+        // The run's count first; when the session also changed another literal of the row (R82
+        // rev 51: the expected output fitted to the code's), each literal back from the request
+        // by position (#2558).
+        const respelt = respelledRunLine(text, row);
+        const fixed = holds(respelt) ? respelt : relitLine(respelt ?? text, row);
+        const held = fixed !== null && holds(fixed);
+        if (held) respellings.set(site.row, fixed);
+        return { ...site, respelled: held };
+      });
+    const restore = rowRestoreDecision(sites);
+    const edits = new Map(
+      sites.flatMap((s) =>
+        s.line !== null && restore.includes(s.row)
+          ? [
+              [
+                s.line,
+                wholeLine(s)
+                  ? restoredLine(lines[s.line - 1] ?? "", block.lines[s.row - 1] ?? "")
+                  : (respellings.get(s.row) ?? ""),
+              ] as [number, string],
+            ]
+          : [],
+      ),
+    );
+    const after = edits.size ? withLines(lines, edits) : before;
+    const verdict = !restore.length ? "declined" : mode === "on" ? "restored" : "would_restore";
+    return [
+      {
+        record: {
+          schemaVersion: 1,
+          path,
+          tasks,
+          mode,
+          sites,
+          restore,
+          verdict,
+          checks: null,
+          file: hashBytes(before),
+        },
+        before,
+        after,
+        drifts,
+      },
+    ];
+  });
+}
+
+/**
+ * The prescribed rows (from 1) of a file's block that `task` owns: every row, or only its slice's
+ * when the host cut the file into row slices (`sizingSlice.rows`, `rowSlices` in `sizing.ts`). A
+ * slice that does not carry its rows owns none, so nothing is restored for it before the checks
+ * stage, when the file is whole.
+ */
+export function ownedRows(task: Pick<Task, "sizingSlice">, lines: readonly string[]): Set<number> {
+  const slice = task.sizingSlice;
+  if (!slice) return new Set(lines.map((_, i) => i + 1));
+  const own = slice.rows?.map((row) => row.trim()) ?? [];
+  return new Set(lines.flatMap((line, i) => (own.includes(line.trim()) ? [i + 1] : [])));
+}
+
+/**
+ * The restore at a row-file task's end (#2529), before its own required checks run on the file:
+ * #2522 restores only at the checks stage, after every task ran, so a task whose task-scope rows
+ * check failed on a changed row went back to its session to copy the row again (R82 tinyflate
+ * deflate named row 8 drifting at T005 while the task kept going). The sites are
+ * `rowRestorePlan`'s for the files `task` writes and the rows it owns (`ownedRows`: a row slice
+ * restores only its own rows), the decision unchanged, so the replay reads the record as the
+ * checks stage's. Each result carries the file's hash for the record.
+ */
+export function taskRowRestores(
+  request: string,
+  task: Task,
+  read: (path: string) => string | null,
+  mode: RowRestoreRecord["mode"],
+): { record: RowRestoreRecord; before: string; after: string }[] {
+  const compared = rowBlockDrifts(request, { tasks: [task] }, read).filter(
+    (c) => c.record.delivered,
+  );
+  if (!compared.length) return [];
+  const blocks = suppliedRows(
+    request,
+    compared.map((c) => c.record.path),
+  );
+  return compared.flatMap(({ record: { path, tasks } }) => {
+    const block = blocks.get(path);
+    const before = read(path);
+    if (!block || before === null) return [];
+    const own = ownedRows(task, block.lines);
+    const plan = rowRestorePlan(block.lines, before, (sites) =>
+      rowRestoreDecision(sites.filter((s) => own.has(s.row))),
+    );
+    const sites = plan.sites.filter((s) => own.has(s.row));
+    if (!sites.length) return [];
+    const verdict = !plan.restore.length
+      ? "declined"
+      : mode === "on"
+        ? "restored"
+        : "would_restore";
+    return [
+      {
+        record: {
+          schemaVersion: 1,
+          path,
+          tasks,
+          mode,
+          sites,
+          restore: plan.restore,
+          verdict,
+          checks: null,
+          at: "task-end",
+          blocked: [task.id],
+          file: hashBytes(before),
+        },
+        before,
+        after: plan.after,
+      },
+    ];
+  });
+}

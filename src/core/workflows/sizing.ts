@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { changedLines, diffSections } from "../intelligence/call-context.js";
 import { isManifestFile, isTestFile } from "../intelligence/language-traits.js";
+import { hashBytes } from "../specs/hash.js";
 import { isTestOf } from "../verification/convergence.js";
 import {
   type CaseContext,
@@ -14,6 +15,8 @@ import { type Fence, fences } from "../verification/doc-examples.js";
 import { hostRowPaths, literalRows, rowsAsDataOn } from "./acceptance-rows.js";
 import { MAX_EXTENDED_MS } from "./budget.js";
 import { DEFAULT_STAGE_RANGES, historyStorePaths, rangeOf, type TokenRange } from "./estimate.js";
+import { framedFeatureRows } from "./feature-rows.js";
+import { historySnapshot } from "./history-snapshot.js";
 import { type HostEdit, plannerGraph, recordGraphEdits } from "./host-edits.js";
 import { MIN_DURATION_SAMPLES } from "./initiatives/duration.js";
 import { extendToOf, type RunPolicy, SpecSchema, type TaskGraph } from "./schemas.js";
@@ -170,6 +173,121 @@ function taskAction(task: Pick<Task, "writes">): SizingSample["action"] {
   return actions.size === 1 ? ([...actions][0] as WriteAction) : "mixed";
 }
 
+/** The rows of one run that its sizing samples are computed from (`samplesFrom`). */
+interface RunSampleRows {
+  id: string;
+  source: SizingSample["source"];
+  current: boolean;
+  policy: string | null;
+  content: string | null;
+  tasks: { id: string; definition_json: string; status: string }[];
+  byModel: { stage: string; model: string; tokens: number | null }[];
+}
+
+/**
+ * A run's samples by the hash of the rows they are computed from. Parsing the spec and pricing its
+ * cases (`pricedCaseCount`) is most of an estimate's cost, and the same finished runs are read
+ * again by every estimate: an initiative view, its estimate and each rewound start of the replay
+ * corpus (R71 xmlvet spent 30 s in it, #2766). A row that changes changes the key.
+ */
+const RUN_SAMPLES = new Map<string, SizingSample[]>();
+const RUN_SAMPLES_MAX = 2048;
+
+function runSamples(rows: RunSampleRows): SizingSample[] {
+  const key = hashBytes(JSON.stringify(rows));
+  let samples = RUN_SAMPLES.get(key);
+  if (!samples) {
+    samples = computeRunSamples(rows);
+    if (RUN_SAMPLES.size >= RUN_SAMPLES_MAX) {
+      const oldest = RUN_SAMPLES.keys().next().value;
+      if (oldest !== undefined) RUN_SAMPLES.delete(oldest);
+    }
+    RUN_SAMPLES.set(key, samples);
+  }
+  // Callers get their own objects: a cached sample is never shared with a caller that changes it.
+  return samples.map((sample) => ({ ...sample }));
+}
+
+function computeRunSamples({
+  id,
+  source,
+  current,
+  policy,
+  content,
+  tasks: taskRows,
+  byModel,
+}: RunSampleRows): SizingSample[] {
+  let spec: SpecText | null = null;
+  let checks: CaseContext["checks"] = [];
+  try {
+    if (policy) checks = (JSON.parse(policy) as Partial<Pick<RunPolicy, "checks">>).checks ?? [];
+  } catch {
+    // A run without a readable policy prices every quoted literal, as before #1762.
+  }
+  try {
+    if (content) spec = SpecSchema.safeParse(JSON.parse(content)).data ?? null;
+  } catch {
+    // Older stores and synthetic history may have no spec artifacts. Keep their file rates.
+  }
+  const tasks = taskRows.map((row) => ({
+    id: row.id,
+    status: row.status,
+    ...(JSON.parse(row.definition_json) as Pick<Task, "writes" | "origin"> &
+      Partial<Pick<Task, "criterionIds" | "description" | "dependsOn" | "sizingSlice">>),
+  }));
+  const samples: SizingSample[] = [];
+  const spent = new Map<string, number>();
+  const modelOf = new Map<string, { model: string; tokens: number }>();
+  for (const row of byModel) {
+    const tokens = row.tokens ?? 0;
+    spent.set(row.stage, (spent.get(row.stage) ?? 0) + tokens);
+    const top = modelOf.get(row.stage);
+    if (!top || tokens > top.tokens) modelOf.set(row.stage, { model: row.model, tokens });
+  }
+  const planned = tasks.filter((task) => task.origin === "planned");
+  const totals = new Map(planned.map((task) => [task.id, spent.get(`task-${task.id}`) ?? 0]));
+  for (const correction of tasks.filter(
+    (task) => task.origin !== "planned" && ["implemented", "verified"].includes(task.status),
+  )) {
+    const files = writtenFiles(correction);
+    const base = planned.find((task) => files.every((path) => writtenFiles(task).includes(path)));
+    if (base)
+      totals.set(base.id, (totals.get(base.id) ?? 0) + (spent.get(`task-${correction.id}`) ?? 0));
+  }
+  for (const task of planned) {
+    if (!["implemented", "verified"].includes(task.status)) continue;
+    const files = writtenFiles(task).length;
+    const tokens = totals.get(task.id) ?? 0;
+    if (files > 0 && tokens > 0)
+      samples.push({
+        runId: id,
+        taskId: task.id,
+        ...(current ? { current: true } : {}),
+        kind: taskKind(task),
+        action: taskAction(task),
+        source,
+        files,
+        tokens,
+        model: modelOf.get(`task-${task.id}`)?.model ?? null,
+        criteria: task.criterionIds?.length ?? 0,
+        ...(spec && task.criterionIds
+          ? {
+              cases: pricedCaseCount(
+                spec,
+                { ...task, criterionIds: task.criterionIds },
+                {
+                  checks,
+                  tasks: planned.map((t) => ({ ...t, criterionIds: t.criterionIds ?? [] })),
+                  includeBroad: true,
+                },
+              ),
+            }
+          : {}),
+      });
+  }
+  return samples;
+}
+
 /**
  * Finished tasks of a workflow store, read-only. A corrective task is not a sample of its own: its
  * tokens join the planned task of the same run that writes the same files, because getting that
@@ -178,6 +296,18 @@ function taskAction(task: Pick<Task, "writes">): SizingSample["action"] {
 export function samplesFrom(
   databasePath: string,
   source: SizingSample["source"] = "project",
+  currentRunId?: string,
+): SizingSample[] {
+  // Another project's store is read once per history snapshot (`withHistorySnapshot`).
+  if (source === "shared" && !currentRunId)
+    return historySnapshot(`samples:${databasePath}`, () => samplesNow(databasePath, source)).map(
+      (sample) => ({ ...sample }),
+    );
+  return samplesNow(databasePath, source, currentRunId);
+}
+function samplesNow(
+  databasePath: string,
+  source: SizingSample["source"],
   currentRunId?: string,
 ): SizingSample[] {
   if (!existsSync(databasePath)) return [];
@@ -189,25 +319,23 @@ export function samplesFrom(
       : db.query<{ id: string }, []>("SELECT id FROM runs WHERE status='completed'").all();
     const samples: SizingSample[] = [];
     for (const { id } of runs) {
-      let spec: SpecText | null = null;
-      let checks: CaseContext["checks"] = [];
+      let policy: string | null = null;
       try {
-        const policy = db
-          .query<{ policy_json: string }, [string]>("SELECT policy_json FROM runs WHERE id=?")
-          .get(id);
-        if (policy)
-          checks =
-            (JSON.parse(policy.policy_json) as Partial<Pick<RunPolicy, "checks">>).checks ?? [];
+        policy =
+          db
+            .query<{ policy_json: string }, [string]>("SELECT policy_json FROM runs WHERE id=?")
+            .get(id)?.policy_json ?? null;
       } catch {
         // A run without a readable policy prices every quoted literal, as before #1762.
       }
+      let content: string | null = null;
       try {
         const artifact = db
           .query<{ inline_content: string | null; blob_path: string | null }, [string]>(
             "SELECT inline_content, blob_path FROM artifacts WHERE run_id=? AND logical_path='spec.json' ORDER BY revision DESC LIMIT 1",
           )
           .get(id);
-        const content =
+        content =
           artifact?.inline_content ??
           (artifact?.blob_path
             ? readFileSync(
@@ -215,7 +343,6 @@ export function samplesFrom(
                 "utf8",
               )
             : null);
-        if (content) spec = SpecSchema.safeParse(JSON.parse(content)).data ?? null;
       } catch {
         // Older stores and synthetic history may have no spec artifacts. Keep their file rates.
       }
@@ -225,13 +352,7 @@ export function samplesFrom(
             ? "SELECT id, definition_json, status FROM tasks WHERE run_id=?"
             : "SELECT id, definition_json, status FROM tasks WHERE run_id=? AND status='verified'",
         )
-        .all(id)
-        .map((row) => ({
-          id: row.id,
-          status: row.status,
-          ...(JSON.parse(row.definition_json) as Pick<Task, "writes" | "origin"> &
-            Partial<Pick<Task, "criterionIds" | "description" | "dependsOn" | "sizingSlice">>),
-        }));
+        .all(id);
       const byModel = db
         .query<{ stage: string; model: string; tokens: number | null }, [string]>(
           `SELECT s.stage_id AS stage, a.model_id AS model, SUM(COALESCE(a.used_tokens,0)) AS tokens
@@ -240,60 +361,16 @@ export function samplesFrom(
            GROUP BY s.stage_id, a.model_id`,
         )
         .all(id);
-      const spent = new Map<string, number>();
-      const modelOf = new Map<string, { model: string; tokens: number }>();
-      for (const row of byModel) {
-        const tokens = row.tokens ?? 0;
-        spent.set(row.stage, (spent.get(row.stage) ?? 0) + tokens);
-        const top = modelOf.get(row.stage);
-        if (!top || tokens > top.tokens) modelOf.set(row.stage, { model: row.model, tokens });
-      }
-      const planned = tasks.filter((task) => task.origin === "planned");
-      const totals = new Map(planned.map((task) => [task.id, spent.get(`task-${task.id}`) ?? 0]));
-      for (const correction of tasks.filter(
-        (task) => task.origin !== "planned" && ["implemented", "verified"].includes(task.status),
-      )) {
-        const files = writtenFiles(correction);
-        const base = planned.find((task) =>
-          files.every((path) => writtenFiles(task).includes(path)),
-        );
-        if (base)
-          totals.set(
-            base.id,
-            (totals.get(base.id) ?? 0) + (spent.get(`task-${correction.id}`) ?? 0),
-          );
-      }
-      for (const task of planned) {
-        if (!["implemented", "verified"].includes(task.status)) continue;
-        const files = writtenFiles(task).length;
-        const tokens = totals.get(task.id) ?? 0;
-        if (files > 0 && tokens > 0)
-          samples.push({
-            runId: id,
-            taskId: task.id,
-            ...(currentRunId ? { current: true } : {}),
-            kind: taskKind(task),
-            action: taskAction(task),
-            source,
-            files,
-            tokens,
-            model: modelOf.get(`task-${task.id}`)?.model ?? null,
-            criteria: task.criterionIds?.length ?? 0,
-            ...(spec && task.criterionIds
-              ? {
-                  cases: pricedCaseCount(
-                    spec,
-                    { ...task, criterionIds: task.criterionIds },
-                    {
-                      checks,
-                      tasks: planned.map((t) => ({ ...t, criterionIds: t.criterionIds ?? [] })),
-                      includeBroad: true,
-                    },
-                  ),
-                }
-              : {}),
-          });
-      }
+      const rows: RunSampleRows = {
+        id,
+        source,
+        current: !!currentRunId,
+        policy,
+        content,
+        tasks,
+        byModel,
+      };
+      samples.push(...runSamples(rows));
     }
     return samples;
   } catch {
@@ -681,6 +758,10 @@ export function suppliedBlocks(
     const { path } = attributed;
     const region = markdownRegion(path, block.lines, block.prose);
     const whole = WHOLE_FILE.test(pathClauses(block.prose, path));
+    // A rows block (`cli in cli_test.go (15 rows)`) is the notation `suppliedRows` reads, not an
+    // excerpt of a file the prose before it names; only prose that says it is the file's whole
+    // content keeps it a supplied file (#2909).
+    if (!whole && rowsBlock(block.lines)) continue;
     const file: SuppliedBlock = {
       kind: "file",
       lines: block.lines.length,
@@ -705,6 +786,23 @@ export function suppliedBlocks(
 }
 
 const lastLine = (prose: string): string => prose.trim().split("\n").at(-1) ?? "";
+
+/**
+ * Whether a fenced block is a rows block (#2909): its first line names a test file and, outside
+ * the names, says it holds rows (`cli in cli_test.go (15 rows)`, `// Rows in t/a.test.ts (3 rows)`).
+ * A file comment whose path only spells `rows` (`// tests/rows.test.ts`) stays a file's text. A
+ * block the prose calls the whole file ("Replace `x.test.ts` with the complete contents:") stays
+ * a supplied file, priced as one (#2455).
+ * R96 cellref: the prose before `cli`'s rows block named `reads_test.go`, the task's only path, so
+ * the block became that file's excerpt and the host did not write its 28 rows (436k tokens).
+ */
+function rowsBlock(lines: readonly string[]): boolean {
+  const header = (lines.find((line) => line.trim()) ?? "").trim();
+  const names = [...header.matchAll(/[\w./-]+\.\w+/g)].map((m) => m[0]);
+  if (!names.some((name) => fileKind(requestPath(name.replace(/[.,;:]+$/, ""))) === "test"))
+    return false;
+  return ROWS_HEADER.test(names.reduce((text, name) => text.replace(name, " "), header));
+}
 
 /**
  * Prose that introduces a fenced block as a line of the change, not as the file (#2366): "Old
@@ -763,6 +861,23 @@ export interface SuppliedRows {
   chars: number;
   /** Those lines, trimmed, in the block's order: the text a row slice owns (#2466). */
   lines: string[];
+  /**
+   * The indentation the request writes its rows with, past the header's (#2618): the leading
+   * whitespace the row lines share, a tab or the smallest space run; absent when they have none.
+   * `place_rows` indents placed rows by it unless told otherwise.
+   */
+  indent?: string;
+}
+
+/** The whitespace every line of `rows` starts with past `header`'s: a tab, or the smallest space run. */
+function rowLayout(header: string, rows: readonly string[]): string | undefined {
+  const base = /^[ \t]*/.exec(header)?.[0] ?? "";
+  const leads = rows.map((line) => /^[ \t]*/.exec(line)?.[0] ?? "");
+  if (!leads.every((lead) => lead.startsWith(base) && lead.length > base.length)) return undefined;
+  const own = leads.map((lead) => lead.slice(base.length));
+  if (own.every((lead) => lead.startsWith("\t"))) return "\t";
+  const spaces = Math.min(...own.map((lead) => /^ */.exec(lead)?.[0].length ?? 0));
+  return spaces ? " ".repeat(spaces) : undefined;
 }
 
 /** A first line that says the block holds rows: `ProblemsTests in tests/p.test.ts (63 rows, ...)`. */
@@ -781,6 +896,26 @@ const ROWS_HEADER = /\brows?\b/i;
  * found 2 cases in the criterion that cited "the 63 prescribed rows", and T007 was priced 341k to
  * 863k and kept whole. It cost 6.89M tokens over 7 attempts and never finished.
  */
+/**
+ * Every test file a row block of the request names in its header, whether this plan writes it or
+ * not: an initiative's later feature cites an earlier feature's row files by name (R95 windowgate
+ * AC-008: `InputRowsTest`, `LimitsRowsTest`, `ReadsRowsTest`), and such a name is no row's text
+ * (#2889). Which rows a task owns is still `suppliedRows`' answer, for the plan's own paths.
+ */
+export function rowBlockFiles(request: string): string[] {
+  const out = new Set<string>();
+  for (const block of fences(request)) {
+    if (block.diff) continue;
+    const header = (block.lines.find((line) => line.trim()) ?? "").trim();
+    if (!ROWS_HEADER.test(header)) continue;
+    for (const m of header.matchAll(/[\w./-]+\.\w+/g)) {
+      const path = requestPath(m[0].replace(/[.,;:]+$/, ""));
+      if (fileKind(path) === "test") out.add(path);
+    }
+  }
+  return [...out];
+}
+
 export function suppliedRows(request: string, paths: readonly string[]): Map<string, SuppliedRows> {
   const wanted = new Set(paths.map(requestPath).filter((path) => fileKind(path) === "test"));
   const out = new Map<string, SuppliedRows>();
@@ -800,14 +935,45 @@ export function suppliedRows(request: string, paths: readonly string[]): Map<str
     const lines = block.lines.slice(first + 1).filter((line) => line.trim());
     if (!lines.length) continue;
     const before = out.get(path);
+    const indent = before ? before.indent : rowLayout(block.lines[first] ?? "", lines);
     out.set(path, {
       header: before?.header ?? header,
       rows: (before?.rows ?? 0) + lines.length,
       chars: (before?.chars ?? 0) + lines.reduce((sum, line) => sum + [...line].length, 0),
       lines: [...(before?.lines ?? []), ...lines.map((line) => line.trim())],
+      ...(indent ? { indent } : {}),
     });
   }
-  return out;
+  return featureOwnedRows(request, out);
+}
+
+/**
+ * A feature run's own rows of each shared row file (#2898): the rows its prompt states under
+ * `FEATURE_ROWS_HEADING`, in the block's order; a file it delivers no rows of is left out. Every
+ * other request, and a file the framing does not name, keeps the whole block.
+ */
+function featureOwnedRows(
+  request: string,
+  blocks: Map<string, SuppliedRows>,
+): Map<string, SuppliedRows> {
+  const owned = framedFeatureRows(request);
+  if (!owned) return blocks;
+  for (const [path, block] of blocks) {
+    const rows = owned.get(path);
+    if (!rows) continue;
+    const lines = block.lines.filter((_, i) => rows.has(i + 1));
+    if (!lines.length) {
+      blocks.delete(path);
+      continue;
+    }
+    blocks.set(path, {
+      ...block,
+      rows: lines.length,
+      chars: lines.reduce((sum, line) => sum + [...line].length, 0),
+      lines,
+    });
+  }
+  return blocks;
 }
 
 /**
@@ -1105,6 +1271,12 @@ export interface TaskSize {
   sliceCount?: number;
   /** A rows task (`rows` and `rowTest`), with its criteria that have no rows (#1930). */
   rowsTask?: TestTaskRows;
+  /**
+   * A task that is not a test task and writes several files: both split answers, by the expected
+   * price and by the sum of high ends, and which rule decided (`multiFileSplit`, #2649). Absent in
+   * reports written before it.
+   */
+  multiFile?: MultiFileSplit;
 }
 
 /** What sizing knows of a rows task: the criteria a planner could move to a test task of their own. */
@@ -1177,6 +1349,11 @@ export interface SizingReport {
     extendToTokens: number | null;
     warning: string;
   };
+  /**
+   * Tasks the host writes from their prescribed rows under `rowFileWrite: "on"` (#2633), priced at
+   * nothing and absent from `tasks`. Absent when there are none, and in reports before it.
+   */
+  hostRows?: string[];
 }
 
 /** Tokens the final review and convergence are priced at, on top of the tasks. */
@@ -1385,6 +1562,76 @@ export function exceedsTestCapacity(
 }
 
 /**
+ * Text files that are not code although `fileKind` prices them as code for want of a docs
+ * extension: a license, a notice, a changelog, a plain `.txt` that is no manifest.
+ */
+const TEXT_FILE =
+  /(^|\/)(licen[cs]e|copying|notice|authors|contributors|changelog|changes|history|readme)(\.txt)?$/i;
+
+/** Whether a file is documentation or other non-code text (#2649). */
+export const isDocsOrText = (path: string): boolean =>
+  fileKind(path) === "docs" ||
+  TEXT_FILE.test(path) ||
+  (/\.txt$/i.test(path) && fileKind(path) === "code");
+
+/**
+ * Whether a task that is not a test task needs more than one attempt and goes back to the planner
+ * split (#2649). One file is never split: a single file is as small as a task gets. A task whose
+ * files are all documentation or non-code text (`isDocsOrText`) splits when the expected price of
+ * their sum (the sum of the per-file midpoints) is above one attempt's cap, not the sum of their
+ * high ends: each file's high end is the 90th percentile of its kind, and a sum of 90th
+ * percentiles is far above the 90th percentile of a sum. Bench round 88 pokerank and pathwarden
+ * priced a README and LICENSE task at 899,706 tokens against 600,000 and split it, a planner call
+ * of 46k-91k tokens and one more session each, for a task that cost 175k-330k.
+ *
+ * Any other task of several files (code, a manifest, a test file, or a mix of them with docs) keeps
+ * the high-end rule: the wide code tasks it split in bench rounds 49-54 (md-site and expenses-py
+ * skeletons of four or five files, expected 478k) went on to spend 1.0M-1.5M across their parts,
+ * and splitting a task that writes a test file moves the test into a task priced by its cases.
+ *
+ * Both answers are returned, so the sizing report records the high-end rule beside the one that
+ * decided and a replay can compare them.
+ */
+export function multiFileSplit(
+  estimate: TokenRange,
+  paths: readonly string[],
+  cap: number,
+): MultiFileSplit | null {
+  if (paths.length <= 1) return null;
+  const expected = Math.round(expectedPrice(estimate));
+  const byHigh = estimate.high > cap;
+  const byExpected = expected > cap;
+  const rule = paths.every(isDocsOrText) ? "expected" : "high";
+  return {
+    rule,
+    expected,
+    high: Math.round(estimate.high),
+    byHigh,
+    byExpected,
+    split: rule === "high" ? byHigh : byExpected,
+  };
+}
+
+/**
+ * The split decision of a task that writes several files and is not a test task (`multiFileSplit`),
+ * as the sizing report records it.
+ */
+export interface MultiFileSplit {
+  /** `expected` for a task of documentation and text files only, `high` for any other. */
+  rule: "expected" | "high";
+  /** The expected price of the files' sum, the midpoint of the task's range. */
+  expected: number;
+  /** The sum of the files' high ends. */
+  high: number;
+  /** The rule before #2649: the sum of high ends above the cap. */
+  byHigh: boolean;
+  /** The expected price above the cap. */
+  byExpected: boolean;
+  /** The answer of the rule that decided. */
+  split: boolean;
+}
+
+/**
  * The price of a set of tasks: the sum of their midpoints plus the root of the summed squares of
  * their half-ranges. One task is priced at its upper bound; many independent ones well below the
  * sum of their upper bounds (seven priced runs of round 01 cost 0.36-0.77x the summed highs).
@@ -1442,6 +1689,12 @@ export function sizePlan(input: {
    * and with `sizing.rowVolume` the rows it prescribes for test files (`suppliedRows`, #2455).
    */
   request?: string | null;
+  /**
+   * Tasks the host writes from their prescribed rows with no session under `rowFileWrite: "on"`
+   * (`hostRowFileTasks`, #2633): priced at nothing, as a task whose writes carry their content, so
+   * neither their rows' price nor a row split reaches the plan's total or its verdict.
+   */
+  hostRows?: readonly string[];
 }): SizingReport {
   const rates = perFileRates(input.samples, input.model ?? null);
   const tests = testTaskRates(input.samples, input.model ?? null);
@@ -1460,9 +1713,10 @@ export function sizePlan(input: {
     ? suppliedRows(input.request, input.graph.tasks.flatMap(writtenFiles))
     : null;
   const rowMode = input.policy.sizing?.rowVolume ? "on" : "shadow";
+  const hostRows = new Set(input.hostRows ?? []);
   const tasks = input.graph.tasks
     .filter((task) => !input.taskIds || input.taskIds.has(task.id))
-    .filter((task) => writtenFiles(task).length > 0)
+    .filter((task) => writtenFiles(task).length > 0 && !hostRows.has(task.id))
     .map((task): TaskSize => {
       const kind = taskKind(task);
       const cases =
@@ -1505,6 +1759,10 @@ export function sizePlan(input: {
           : byText;
       // A whole task whose rows need more than one attempt is split into row slices by the host.
       const byRows = rowVolume?.mode === "on" && rowVolume.slices > 1;
+      const multiFile =
+        kind !== "test" && !fromRequest
+          ? multiFileSplit(estimate, writtenFiles(task), maxAttemptTokens)
+          : null;
       return {
         taskId: task.id,
         kind,
@@ -1522,7 +1780,8 @@ export function sizePlan(input: {
                 !(task.sizingSlice && task.criterionIds.length === 1) &&
                 // A slice holds the same text, so the text's price never splits a task.
                 exceedsTestCapacity(cases, limit, byCases, maxAttemptTokens, true, rowsTask)
-              : files > 1 && estimate.high > maxAttemptTokens,
+              : multiFile?.split === true,
+        ...(multiFile ? { multiFile } : {}),
         basis: fromRequest ? "supplied" : historyBasis(task, rates, tests, cases),
         ...(fromRequest ? { suppliedLines: fromRequest.lines } : {}),
         ...(textChars ? { exactTextChars: textChars } : {}),
@@ -1531,6 +1790,10 @@ export function sizePlan(input: {
         ...(rowsTask ? { rowsTask } : {}),
       };
     });
+  // The host-written row files left unpriced, recorded so the report says why (#2633).
+  const hosted = input.graph.tasks
+    .filter((task) => hostRows.has(task.id) && (!input.taskIds || input.taskIds.has(task.id)))
+    .map((task) => task.id);
   const verification = verificationTokens();
   const taskTokens = taskTotal(tasks.map((task) => task.estimate));
   const priced = taskTokens.price + verification;
@@ -1562,7 +1825,7 @@ export function sizePlan(input: {
                   (limit?.cases ?? 0) > 0 &&
                   (task.cases ?? 0) > CAPACITY_PROBE * (limit?.cases ?? 0)
                 ? `${task.taskId} covers ${task.cases} cases, above ${CAPACITY_PROBE} times the observed capacity of ${limit?.cases}`
-                : `${task.taskId} writes ${task.files} files and needs about ${Math.round(task.kind === "test" ? expectedPrice(task.estimate) : task.estimate.high)} tokens, above one attempt's ${maxAttemptTokens}`,
+                : `${task.taskId} writes ${task.files} files and needs about ${Math.round(task.kind === "test" || task.multiFile?.rule === "expected" ? expectedPrice(task.estimate) : task.estimate.high)} tokens, above one attempt's ${maxAttemptTokens}`,
       );
   }
   if (runTokens + repairReserve > budgetBefore && maxRunTokens !== null) {
@@ -1646,6 +1909,7 @@ export function sizePlan(input: {
     decision,
     reasons,
     ...(overCeiling ? { overCeiling } : {}),
+    ...(hosted.length ? { hostRows: hosted } : {}),
   };
 }
 
@@ -1797,6 +2061,13 @@ export const ROWS_TASK_NOTE =
   "A rows task (rows and rowTest) is never sliced and stays whole whatever its price; its continuations finish it. If sizing names one as too large, keep only its rows criteria in it and move its other criteria into a test task of their own, writing another test file, that depends on it.";
 
 /**
+ * How sizing treats a test file the host writes from its prescribed rows, told to the planner under
+ * `rowFileWrite: "on"` (#2633), as the note says a task whose writes carry their content is free.
+ */
+export const ROW_FILE_NOTE =
+  "A test task whose only files are test files whose rows the request prescribes in a fenced block headed by the file's path is written by the host from those rows, with no session, and costs nothing when the host writes rows of its language.";
+
+/**
  * How sizing treats a test file whose rows the request prescribes, told to the planner under
  * `sizing.rowVolume` before it plans and in a split note (#2455), so it plans the file as one task
  * the host can slice by rows.
@@ -1818,7 +2089,7 @@ export function plannerSizing(
   const k = (kind: FileKind) => `${Math.round(highest(rates, kind) / 1000)}k`;
   return {
     maxCodeFilesPerTask,
-    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own. A code file costs about ${k("code")} tokens, a documentation file about ${k("docs")}, a project manifest or solution file about ${k("manifest")}. ${tests.all && tests.hasCases ? `Finished test tasks cost a median ${Math.round(tests.all.perTask.low / 1000)}k and 90th percentile ${Math.round(tests.all.perTask.high / 1000)}k tokens per task; case counts select broad buckets, not a per-case historical rate.` : `Without history, allow ${DEFAULT_PER_CASE.low}-${DEFAULT_PER_CASE.high} tokens per literal case, at least the file allowance.`} Keep each code task to at most ${maxCodeFilesPerTask} files. A task whose writes all carry their content is written by the host and costs nothing, whatever its file count. Give independent tasks disjoint writes and no dependency between them; a test task depends on the code tasks whose criteria it covers. ${limit?.cases ? `Keep a test task whole up to ${CAPACITY_PROBE * limit.cases} literal cases (${CAPACITY_PROBE} times ${limit.cases}, the largest finished task handled): slices of one file cost more in total than the whole file. Split it only above that; the host itself splits a test task without rows whose price is above one attempt.` : "Keep a file with five or fewer literal cases in one task. Without observed case capacity, split a larger test file only when its default expected price exceeds the cap."} Split into sequential slices of whole criteria: create it first, then modify it, each slice depending on the previous. Preserve earlier slices and test only the assigned criteria. If one criterion alone exceeds the capacity, write and check its cases in batches inside the same attempt.${rowsAsDataOn(policy) ? ` ${ROWS_TASK_NOTE}` : ""}${policy.sizing?.rowVolume ? ` ${ROW_VOLUME_NOTE}` : ""}`,
+    note: `Give every task that writes code the policy's typecheck check, so its errors show in that task. Put tests in tasks of their own. A code file costs about ${k("code")} tokens, a documentation file about ${k("docs")}, a project manifest or solution file about ${k("manifest")}. ${tests.all && tests.hasCases ? `Finished test tasks cost a median ${Math.round(tests.all.perTask.low / 1000)}k and 90th percentile ${Math.round(tests.all.perTask.high / 1000)}k tokens per task; case counts select broad buckets, not a per-case historical rate.` : `Without history, allow ${DEFAULT_PER_CASE.low}-${DEFAULT_PER_CASE.high} tokens per literal case, at least the file allowance.`} Keep each code task to at most ${maxCodeFilesPerTask} files. A task whose writes all carry their content is written by the host and costs nothing, whatever its file count. Give independent tasks disjoint writes and no dependency between them; a test task depends on the code tasks whose criteria it covers. ${limit?.cases ? `Keep a test task whole up to ${CAPACITY_PROBE * limit.cases} literal cases (${CAPACITY_PROBE} times ${limit.cases}, the largest finished task handled): slices of one file cost more in total than the whole file. Split it only above that; the host itself splits a test task without rows whose price is above one attempt.` : "Keep a file with five or fewer literal cases in one task. Without observed case capacity, split a larger test file only when its default expected price exceeds the cap."} Split into sequential slices of whole criteria: create it first, then modify it, each slice depending on the previous. Preserve earlier slices and test only the assigned criteria. If one criterion alone exceeds the capacity, write and check its cases in batches inside the same attempt.${rowsAsDataOn(policy) ? ` ${ROWS_TASK_NOTE}` : ""}${policy.sizing?.rowVolume ? ` ${ROW_VOLUME_NOTE}` : ""}${policy.rowFileWrite === "on" ? ` ${ROW_FILE_NOTE}` : ""}`,
   };
 }
 
@@ -1921,7 +2192,13 @@ export function splitTestTasks(
   const origins = new Map<string, string>();
   const tasks = graph.tasks.flatMap((task) => {
     if (!oversized.has(task.id) || task.sizingSlice || task.rows?.length) return [task];
-    const byRows = report.tasks.find((t) => t.taskId === task.id)?.rowVolume;
+    // Decided once, before any cut (#2594): a task whose files the request supplies is split on
+    // its supplied lines alone, by file, never into row or criterion slices. Each slice of a
+    // supplied new file carried the whole diff; host apply wrote it at part 1 and declined the
+    // rest, and each declined part opened a session that found the work done.
+    const sized = report.tasks.find((t) => t.taskId === task.id);
+    const suppliedTask = sized?.basis === "supplied";
+    const byRows = suppliedTask ? undefined : sized?.rowVolume;
     if (byRows?.mode === "on" && byRows.slices > 1) {
       const lines = request
         ? suppliedRows(request, [byRows.path]).get(requestPath(byRows.path))?.lines
@@ -1934,7 +2211,6 @@ export function splitTestTasks(
       for (const part of split) origins.set(part.id, task.id);
       return split;
     }
-    const suppliedTask = report.tasks.some((t) => t.taskId === task.id && t.basis === "supplied");
     const files = task.writes.filter((write) => write.action !== "delete");
     const deletes = task.writes.filter((write) => write.action === "delete");
     const criteria = partCriteria(

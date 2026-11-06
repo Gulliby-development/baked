@@ -2,12 +2,15 @@ import { type LanguageRecord, none, rowOf } from "../intelligence/language-recor
 import { detectLanguageFromPath } from "../intelligence/types.js";
 import {
   type CaseContext,
+  casePrescribed,
   criterionCases,
   missingCases,
+  type PrescribedRows,
   writtenTestPaths,
 } from "../verification/criteria-cases.js";
+import { rowTupleHeld } from "./row-block-drift.js";
 import type { Analysis, Spec, TaskGraph } from "./schemas.js";
-import { exactTextSections, suppliedBlocks } from "./sizing.js";
+import { exactTextSections, rowBlockFiles, suppliedBlocks, suppliedRows } from "./sizing.js";
 import type { Task } from "./types.js";
 
 /**
@@ -54,25 +57,46 @@ export function suppliedTestFiles(
   return out;
 }
 
-/** One blocking finding per criterion whose literals a task's supplied test files do not hold. */
+/**
+ * The content of every file the plan writes that the request supplies verbatim (one fenced block,
+ * not a listing): what `citedKind` reads for a helper a criterion names in a code span (#2646).
+ */
+export function suppliedFileContents(request: string, graph: Pick<TaskGraph, "tasks">): string[] {
+  const paths = [...new Set(graph.tasks.flatMap((t) => t.writes.map((w) => w.path)))];
+  return [...suppliedBlocks(request, paths).values()].flatMap((blocks) => {
+    const [block] = blocks;
+    return blocks.length === 1 && block?.kind === "file" && !block.listing ? [block.content] : [];
+  });
+}
+
+/**
+ * One blocking finding per criterion whose literals a task's supplied test files do not hold.
+ * Under `citedCases: "skip"` (#2531) a literal that describes rows instead of quoting one
+ * (`CriterionCase.cited`) is left out, as the walk no longer demands it.
+ */
 export function suppliedContentFindings(
   spec: Spec,
   graph: Pick<TaskGraph, "tasks">,
   request: string,
-  context: Pick<CaseContext, "checks">,
+  context: Pick<CaseContext, "checks" | "citedCases">,
 ): Analysis["findings"] {
   const supplied = suppliedTestFiles(request, graph);
   const missing = new Map<string, { task: string; paths: string[]; literals: string[] }[]>();
   for (const task of graph.tasks) {
     const files = supplied.get(task.id);
     if (!files) continue;
-    const cases = criterionCases(spec, task, { checks: context.checks, tasks: graph.tasks });
+    const cases = criterionCases(spec, task, {
+      checks: context.checks,
+      tasks: graph.tasks,
+      suppliedFiles: suppliedFileContents(request, graph),
+    });
     const open = missingCases(
       cases,
       files.map((f) => f.content),
     ).filter(
       // A sibling that carries the criterion and writes its own test file may test the case.
       (c) =>
+        !(context.citedCases === "skip" && c.cited) &&
         !graph.tasks.some(
           (other) =>
             other.id !== task.id &&
@@ -117,6 +141,167 @@ export function suppliedContentFindings(
   });
 }
 
+/**
+ * The rows the request prescribes for each test file the plan writes (#2501), read only by
+ * `suppliedRows` (the one reader of row blocks): what the case walk reads for a file another task
+ * has not written yet, and for a literal no prescribed row holds.
+ */
+export function prescribedRowFiles(
+  request: string,
+  graph: Pick<TaskGraph, "tasks">,
+): PrescribedRows {
+  const paths = [...new Set(graph.tasks.flatMap((t) => writtenTestPaths(t)))];
+  return new Map([...suppliedRows(request, paths)].map(([path, block]) => [path, block.lines]));
+}
+
+export const NOT_PRESCRIBED_PREFIX = "NOT-PRESCRIBED-";
+
+/** Each case of each task with where the request's prescribed rows put it (`casePrescribed`). */
+function prescribedCases(
+  spec: Spec,
+  graph: Pick<TaskGraph, "tasks">,
+  request: string,
+  context: Pick<CaseContext, "checks">,
+  perRow = false,
+) {
+  const rows = prescribedRowFiles(request, graph);
+  if (!rows.size) return [];
+  const suppliedFiles = suppliedFileContents(request, graph);
+  const rowFiles = rowBlockFiles(request);
+  return graph.tasks.flatMap((task) => {
+    const paths = writtenTestPaths(task);
+    // The rows give `citedKind` their counts: a criterion's "`12` rows" is no row's text (#2524).
+    const cases = criterionCases(spec, task, {
+      checks: context.checks,
+      tasks: graph.tasks,
+      prescribedRows: rows,
+      suppliedFiles,
+      rowFiles,
+    });
+    return cases.map((c) => ({
+      task,
+      paths,
+      c,
+      prescribed: casePrescribed(c, paths, rows),
+      ...(perRow ? { perRow: casePrescribed(c, paths, rows, rowTupleHeld) } : {}),
+    }));
+  });
+}
+
+/**
+ * The per-row reader's answer to a `NOT-PRESCRIBED-` note (#2544, shadow): `held` when one row
+ * holds each of its literals, `none` when no row holds any, `partial` otherwise.
+ */
+export type PerRowVerdict = "held" | "none" | "partial";
+
+/**
+ * The prescribed rows read row by row (#2544, shadow; `casePrescribed` with `rowTupleHeld`), beside
+ * the joined reader `notPrescribedFindings` decides on. `notPrescribed`: the cases it does not
+ * note because the rows hold them only spread over several rows, which no single row holds
+ * (recorded `case_not_prescribed` with `kind: "per-row"`). `noted`: for each criterion it notes,
+ * whether one row holds its literals after all, such as a row the criterion restates as a tuple
+ * (recorded as `perRow` on its `kind: "literal"` record). Nothing is noted or refused on either
+ * until a bench round compares both answers.
+ */
+export function perRowReading(
+  spec: Spec,
+  graph: Pick<TaskGraph, "tasks">,
+  request: string,
+  context: Pick<CaseContext, "checks">,
+): {
+  notPrescribed: { taskId: string; criterionId: string; literal: string }[];
+  noted: Map<string, PerRowVerdict>;
+} {
+  const notPrescribed: { taskId: string; criterionId: string; literal: string }[] = [];
+  const counts = new Map<string, { held: number; all: number }>();
+  for (const { task, c, prescribed, perRow } of prescribedCases(
+    spec,
+    graph,
+    request,
+    context,
+    true,
+  )) {
+    if (perRow === "none" && prescribed !== "none")
+      notPrescribed.push({ taskId: task.id, criterionId: c.criterionId, literal: c.literal });
+    if (prescribed !== "none") continue;
+    const count = counts.get(c.criterionId) ?? { held: 0, all: 0 };
+    count.all++;
+    if (perRow !== "none") count.held++;
+    counts.set(c.criterionId, count);
+  }
+  const noted = new Map<string, PerRowVerdict>();
+  for (const [id, { held, all }] of counts)
+    noted.set(id, held === all ? "held" : held === 0 ? "none" : "partial");
+  return { notPrescribed, noted };
+}
+
+/** The cases only the joined rows hold (`perRowReading`'s `notPrescribed`). */
+export function perRowNotPrescribed(
+  spec: Spec,
+  graph: Pick<TaskGraph, "tasks">,
+  request: string,
+  context: Pick<CaseContext, "checks">,
+): { taskId: string; criterionId: string; literal: string }[] {
+  return perRowReading(spec, graph, request, context).notPrescribed;
+}
+
+/**
+ * One note per criterion that cites a literal no prescribed row of the feature holds, for a task
+ * that writes only prescribed row files (#2501): the task-end walk no longer demands it (the task
+ * cannot add a row to a file the request fixes row for row), so the spec author is told at
+ * analysis instead. R81 ratdec exact-cli AC-004 cited `["eval","--as","frac","7/3"]`, a row no
+ * block of the brief holds. A note while `case_not_prescribed` is in shadow; its promotion makes
+ * it blocking. A literal that describes rows instead of quoting one (`CriterionCase.cited`: a row
+ * count, a test file's name, a `LINE:COL: MESSAGE` envelope, a `U+0000` description) is never
+ * noted (#2524): R82 slotprompt filters had 4 notes, all of that kind.
+ */
+export function notPrescribedFindings(
+  spec: Spec,
+  graph: Pick<TaskGraph, "tasks">,
+  request: string,
+  context: Pick<CaseContext, "checks">,
+): Analysis["findings"] {
+  const missing = new Map<string, { task: string; paths: string[]; literals: string[] }[]>();
+  for (const { task, paths, c, prescribed } of prescribedCases(spec, graph, request, context)) {
+    // `cited`, a count, a name, a placeholder or a described character, is no example to remove.
+    if (prescribed !== "none") continue;
+    const entries = missing.get(c.criterionId) ?? [];
+    let entry = entries.find((e) => e.task === task.id);
+    if (!entry) {
+      entry = { task: task.id, paths, literals: [] };
+      entries.push(entry);
+    }
+    if (!entry.literals.includes(c.literal)) entry.literals.push(c.literal);
+    missing.set(c.criterionId, entries);
+  }
+  return [...missing].flatMap(([criterionId, entries]) => {
+    if (!spec.criteria.some((c) => c.id === criterionId)) return [];
+    const listed = entries
+      .map(
+        (e) =>
+          `${e.literals.map((l) => JSON.stringify(l)).join(", ")} (task ${e.task} writes only ${e.paths.join(", ")})`,
+      )
+      .join("; ");
+    return [
+      {
+        id: `${NOT_PRESCRIBED_PREFIX}${criterionId}`,
+        kind: "inconsistency" as const,
+        refs: ["spec.json", criterionId],
+        description:
+          `Prescribed rows: ${criterionId} cites ${listed}, but the request prescribes the rows of those test files and none of its rows contains ${entries.length === 1 && entries[0]?.literals.length === 1 ? "that literal" : "those literals"}. The case walk does not demand it (case_not_prescribed). Remove the example from ${criterionId} or quote a row the request prescribes.`.slice(
+            0,
+            16000,
+          ),
+        blocking: false,
+      },
+    ];
+  });
+}
+
+export function isNotPrescribedFinding(finding: { id: string }): boolean {
+  return finding.id.startsWith(NOT_PRESCRIBED_PREFIX);
+}
+
 /** A report that says the content of a file is fixed: "verbatim", "exactly this content", "byte for byte". */
 const EXACT_CONTENT =
   /\bverbatim\b|\bexact(?:ly)?\s+(?:this\s+|the\s+)?(?:content|contents|file|text)\b|\bbyte[- ]for[- ]byte\b|\bas (?:supplied|given) in the request\b/i;
@@ -135,7 +320,7 @@ export function suppliedConflictCriteria(
   graph: Pick<TaskGraph, "tasks">,
   request: string,
   report: { text: string; paths: readonly string[] },
-  context: Pick<CaseContext, "checks">,
+  context: Pick<CaseContext, "checks" | "citedCases">,
 ): string[] {
   const files = suppliedTestFiles(request, graph).get(task.id);
   if (!files) return [];

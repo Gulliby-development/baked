@@ -262,7 +262,10 @@ export async function prepareStart(
     chainRewrite: policyChainRewrite,
     chainProbe: policyChainProbe,
     misquoteFix: policyMisquoteFix,
+    rowRestore: policyRowRestore,
+    rowFileWrite: policyRowFileWrite,
     hostApply: policyHostApply,
+    hostApplyPartial: policyHostApplyPartial,
     edgeProbe: policyEdgeProbe,
     defectClasses: policyDefectClasses,
     conflictFinish: policyConflictFinish,
@@ -270,7 +273,13 @@ export async function prepareStart(
     correctiveDefer: policyCorrectiveDefer,
     rustFormatWritten: policyRustFormatWritten,
     sourceDefectRoute: policySourceDefectRoute,
+    rowRunRoute: policyRowRunRoute,
+    conflictRowReply: policyConflictRowReply,
+    rowRunRestore: policyRowRunRestore,
+    rowEditGuard: policyRowEditGuard,
+    rowClaimCheck: policyRowClaimCheck,
     baselineFix: policyBaselineFix,
+    languagePitfalls: policyLanguagePitfalls,
     propertyTests: policyPropertyTests,
     allowOverlappingWrites,
     editDiagnostics: _editDiagnostics,
@@ -317,7 +326,11 @@ export async function prepareStart(
   const chainRewrite = policyChainRewrite ?? config.quality?.chainRewrite ?? "off";
   const chainProbe = policyChainProbe ?? config.quality?.chainProbe ?? "off";
   const misquoteFix = policyMisquoteFix ?? config.quality?.misquoteFix ?? "off";
+  const rowRestore = policyRowRestore ?? config.quality?.rowRestore ?? "off";
+  const rowFileWrite = policyRowFileWrite ?? config.quality?.rowFileWrite ?? "off";
   const hostApply = policyHostApply ?? config.quality?.hostApply ?? "off";
+  // Shadow by default (#2937): only `off` and `on` are kept, so stored policies keep their hash.
+  const hostApplyPartial = policyHostApplyPartial ?? config.quality?.hostApplyPartial ?? "shadow";
   const edgeProbe = policyEdgeProbe ?? config.quality?.edgeProbe ?? "off";
   const defectClasses = policyDefectClasses ?? config.quality?.defectClasses ?? "off";
   const conflictFinish = policyConflictFinish ?? config.quality?.conflictFinish ?? "off";
@@ -325,7 +338,16 @@ export async function prepareStart(
   const correctiveDefer = policyCorrectiveDefer ?? config.quality?.correctiveDefer ?? "off";
   const rustFormatWritten = policyRustFormatWritten ?? config.quality?.rustFormatWritten ?? "off";
   const sourceDefectRoute = policySourceDefectRoute ?? config.quality?.sourceDefectRoute ?? "off";
+  const rowRunRoute = policyRowRunRoute ?? config.quality?.rowRunRoute ?? "off";
+  const conflictRowReply = policyConflictRowReply ?? config.quality?.conflictRowReply ?? "off";
+  // On by default (#2543): only `off` is kept, so stored policies keep their hash.
+  const rowRunRestore = policyRowRunRestore ?? config.quality?.rowRunRestore ?? "on";
+  // On by default (#2558): only `off` is kept, so stored policies keep their hash.
+  const rowEditGuard = policyRowEditGuard ?? config.quality?.rowEditGuard ?? "on";
+  // On by default (#2561): only `off` is kept, so stored policies keep their hash.
+  const rowClaimCheck = policyRowClaimCheck ?? config.quality?.rowClaimCheck ?? "on";
   const baselineFix = policyBaselineFix ?? config.quality?.baselineFix ?? "off";
+  const languagePitfalls = policyLanguagePitfalls ?? config.quality?.languagePitfalls ?? "off";
   const propertyTests =
     request.propertyTests ??
     policyPropertyTests ??
@@ -381,7 +403,10 @@ export async function prepareStart(
     ...(chainRewrite === "on" ? { chainRewrite } : {}),
     ...(chainProbe === "on" ? { chainProbe } : {}),
     ...(misquoteFix === "on" ? { misquoteFix } : {}),
+    ...(rowRestore === "on" ? { rowRestore } : {}),
+    ...(rowFileWrite === "on" ? { rowFileWrite } : {}),
     ...(hostApply === "on" ? { hostApply } : {}),
+    ...(hostApplyPartial !== "shadow" ? { hostApplyPartial } : {}),
     ...(edgeProbe === "on" ? { edgeProbe } : {}),
     ...(defectClasses === "on" ? { defectClasses } : {}),
     ...(conflictFinish === "on" ? { conflictFinish } : {}),
@@ -389,7 +414,13 @@ export async function prepareStart(
     ...(correctiveDefer === "on" ? { correctiveDefer } : {}),
     ...(rustFormatWritten === "on" ? { rustFormatWritten } : {}),
     ...(sourceDefectRoute === "on" ? { sourceDefectRoute } : {}),
+    ...(rowRunRoute === "on" ? { rowRunRoute } : {}),
+    ...(conflictRowReply === "on" ? { conflictRowReply } : {}),
+    ...(rowRunRestore === "off" ? { rowRunRestore } : {}),
+    ...(rowEditGuard === "off" ? { rowEditGuard } : {}),
+    ...(rowClaimCheck === "off" ? { rowClaimCheck } : {}),
     ...(baselineFix === "on" ? { baselineFix } : {}),
+    ...(languagePitfalls === "on" ? { languagePitfalls } : {}),
     ...(propertyTests !== presetPropertyTests(preset) ? { propertyTests } : {}),
     ...(request.maxConcurrentWriters !== undefined
       ? { maxConcurrentWriters: request.maxConcurrentWriters }

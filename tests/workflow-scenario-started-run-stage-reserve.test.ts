@@ -118,7 +118,11 @@ async function lastTaskEnd(mode: "shadow" | "on" | undefined, tolerance: number)
   spend(100_000);
   const perToken = store.costUsage(runId).spentUsd / 100_000;
   spend(Math.round(1.29 / perToken) - 100_000);
-  for (const id of ["T001", "T002"]) store.transaction(() => store.taskStatus(runId, id, "implemented"));
+  // Hot module cap-growth (#2630): while a task is still open the cost forecast covers the run, so
+  // there is no stage reserve yet.
+  store.transaction(() => store.taskStatus(runId, "T001", "implemented"));
+  expect(stageReserve(store, runId, JSON.parse(store.run(runId).policy_json) as RunPolicy)).toBeNull();
+  store.transaction(() => store.taskStatus(runId, "T002", "implemented"));
   const started = JSON.parse(store.run(runId).policy_json) as RunPolicy;
   const chased: RunPolicy = { ...started, maxCostUsd: 1.3, costTolerance: "off", sizing: { ...started.sizing, maxRunCostUsd: 1.3 } };
   store.setPolicy(runId, chased);

@@ -325,13 +325,25 @@ export class InitiativeStore {
       [revision, digest, Date.now(), id],
     );
   }
-  request(id: string, planRevision: number, digest: string): string {
+  /** `extra` joins the `request.created` payload, such as the split's budget preview (#2502). */
+  request(
+    id: string,
+    planRevision: number,
+    digest: string,
+    extra: Record<string, unknown> = {},
+  ): string {
     const requestId = newId();
     this.db.run(
       "INSERT INTO initiative_requests (initiative_id,id,kind,status,plan_revision,digest,created_at) VALUES (?,?,'split_approval','pending',?,?,?)",
       [id, requestId, planRevision, digest, Date.now()],
     );
-    this.emit(id, "request.created", { requestId, kind: "split_approval", planRevision, digest });
+    this.emit(id, "request.created", {
+      ...extra,
+      requestId,
+      kind: "split_approval",
+      planRevision,
+      digest,
+    });
     return requestId;
   }
   requests(id: string): InitiativeRequestRow[] {
