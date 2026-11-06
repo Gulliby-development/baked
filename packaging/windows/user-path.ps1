@@ -29,17 +29,19 @@ try {
     if ($kind -ne [Microsoft.Win32.RegistryValueKind]::String) {
         $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
     }
-    $parts = @($current -split ";" | Where-Object { $_.Trim() -ne "" })
+    # Every part, empty ones too, so a round trip leaves the rest of the value byte for byte.
+    $parts = if ($current -eq "") { @() } else { @($current -split ";") }
     $target = Normalize $Dir
-    $others = @($parts | Where-Object { (Normalize $_) -ine $target })
+    $others = @($parts | Where-Object { $_.Trim() -eq "" -or (Normalize $_) -ine $target })
     if ($Action -eq "add") {
         if ($others.Count -ne $parts.Count) { exit 0 }
-        $next = @($parts) + $Dir
+        # A value that ends in ";" keeps that ending, so removing the dir restores it exactly.
+        $next = if ($current -eq "") { $Dir } elseif ($current.EndsWith(";")) { "$current$Dir;" } else { "$current;$Dir" }
     } else {
         if ($others.Count -eq $parts.Count) { exit 0 }
-        $next = $others
+        $next = $others -join ";"
     }
-    $key.SetValue("Path", ($next -join ";"), $kind)
+    $key.SetValue("Path", $next, $kind)
 } finally {
     $key.Close()
 }
