@@ -4,6 +4,7 @@ import type { ToolResult } from "../../types";
 import { getCwd } from "../cwd.js";
 import { logBackgroundError } from "../diagnostics/errors.js";
 import { IS_WIN, killTree, spawnShell } from "../platform/index.js";
+import { trackProcess } from "../process-tracker.js";
 import { isForbidden } from "../security/forbidden.js";
 import {
   chatSandbox,
@@ -52,15 +53,18 @@ function startShell(
     ? { executable: process.env.COMSPEC ?? "cmd.exe", args: ["/d", "/s", "/c", command] }
     : { executable: "sh", args: ["-c", command] };
   const launch = request ? sandboxLaunch(shell.executable, shell.args, request, cwd) : null;
-  if (launch && launch.applied.backend !== "none") {
-    const proc = spawn(launch.executable, launch.args, {
-      cwd,
-      env: sandboxEnv(buildSafeEnv(), launch),
-      ...SAFE_SPAWN_OPTS,
-    });
-    return { proc, launch };
-  }
-  return { proc: spawnShell(command, { cwd, env: buildSafeEnv(), ...SAFE_SPAWN_OPTS }), launch };
+  const proc =
+    launch && launch.applied.backend !== "none"
+      ? spawn(launch.executable, launch.args, {
+          cwd,
+          env: sandboxEnv(buildSafeEnv(), launch),
+          ...SAFE_SPAWN_OPTS,
+        })
+      : spawnShell(command, { cwd, env: buildSafeEnv(), ...SAFE_SPAWN_OPTS });
+  // Tracked, so quitting kills the command's whole tree: on Windows the TUI left cmd.exe and
+  // its child running after it exited (#2826).
+  trackProcess(proc);
+  return { proc, launch };
 }
 
 /** The one-time note of a chat command that ran without the sandbox it asked for. */

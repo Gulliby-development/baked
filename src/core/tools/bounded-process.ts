@@ -1,4 +1,5 @@
 import { bunShellArgs, IS_WIN, killTree } from "../platform/index.js";
+import { trackBunProcess } from "../process-tracker.js";
 import { plainOutputEnv } from "../verification/plain-output.js";
 
 export interface BoundedResult {
@@ -33,6 +34,7 @@ export async function runBoundedShell(
     ...(IS_WIN ? {} : { detached: true }),
     env: plainOutputEnv({ ...(options.env ?? process.env) }),
   });
+  trackBunProcess(proc);
   const collected = Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),

@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { loadConfig, loadProjectConfig, mergeConfigs } from "../config/index.js";
 import { startApiServer } from "../core/api/server.js";
 import { getCwd } from "../core/cwd.js";
+import { killAllTracked } from "../core/process-tracker.js";
 import { scaffoldProjectQuietly } from "../core/projects/scaffold.js";
 import { scriptedExecutorFromEnv } from "../core/workflows/scripted-executor.js";
 import { NativeWorkflowService } from "../core/workflows/service.js";
@@ -104,11 +105,16 @@ export async function runServeCli(argv: string[]): Promise<number> {
   await new Promise<void>((done) => {
     const stop = (): void => {
       // A second signal while active runs wind down exits at once, like `baked workflow`.
-      if (++interrupts > 1) process.exit(130);
+      if (++interrupts > 1) {
+        killAllTracked();
+        process.exit(130);
+      }
       done();
     };
     for (const signal of signals) process.on(signal, stop);
   });
   await server.stop();
+  // Commands a chat started keep running past the server otherwise (#2826).
+  killAllTracked();
   return 0;
 }
