@@ -1935,6 +1935,22 @@ export const FEATURES: readonly Feature[] = [
     desktop: ["project/runs: Waiting for a free slot in the run header"],
   },
   {
+    id: "reroute-shadowed-routes",
+    group: "Workflow runs",
+    title:
+      "A reroute warns about configured routes it left on another model and names the stage routes that move them",
+    tui: ["/workflow: reroute warnings in the run overview"],
+    cli: [
+      "baked workflow reroute: warning lines",
+      "baked workflow initiative reroute: warning lines",
+    ],
+    api: [
+      "/v1/workflow/runs/:id: routing.warnings",
+      "/v1/initiatives/:id/reroute: runs[].warnings",
+    ],
+    desktop: ["project/runs: routing warnings in the Model panel"],
+  },
+  {
     id: "initiative-upstream-amendments",
     group: "Initiatives",
     title:

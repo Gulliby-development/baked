@@ -138,6 +138,7 @@ import {
   type RerouteRequest,
   type RouteChange,
   rerouteRecord,
+  rerouteShadowWarnings,
   routeChanges,
   strictRoutingConfig,
 } from "./routing.js";
@@ -2686,7 +2687,9 @@ export class NativeWorkflowService implements WorkflowService {
     const changes = routeChanges(before, after);
     if (!changes.length && after.runModel === before.runModel) return null;
     assertCostCapPriced(PolicySchema.parse(JSON.parse(row.policy_json)), after);
-    const warnings: string[] = [];
+    const gates = loadGateLibrary(this.workspace, policy).gates;
+    // Configured routes that still name another model, with the stage routes that move them (#2960).
+    const warnings: string[] = rerouteShadowWarnings(after, definition, policy, gates, profiles);
     // A strict run checks independence on the configuration its start used (#2230).
     const independence = independentReviewMode(
       before.strict ? strictRoutingConfig(this.config) : this.config,
@@ -2696,7 +2699,7 @@ export class NativeWorkflowService implements WorkflowService {
         after,
         definition,
         policy,
-        loadGateLibrary(this.workspace, policy).gates,
+        gates,
         profiles,
         // A reroute names its models, so `provider` only warns about a shared vendor.
         independence === "provider" ? "provider" : "model",
