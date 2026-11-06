@@ -781,6 +781,52 @@ describe("a block's header comment names its file, whatever the prose names (#24
   }, 60000);
 });
 
+// #2909, bench round 96 cellref (Go) cli T002: the prose line before `cli`'s rows block named
+// `reads_test.go` (a note about its wrapper), the task's only path, so `suppliedBlocks` took the
+// rows block of `cli_test.go` for an excerpt of `reads_test.go`. `prescribedRows` drops a path with
+// a supplied block, the host declined ("may be an excerpt"), and a session wrote the 28 rows
+// (436k tokens in 15 attempts) while the ten other row files were host-written at 0 tokens.
+describe("a rows block after prose that names the task's only path (#2909)", () => {
+  const fence = "```";
+  const shape = ROW_FILE_SHAPES.go;
+  if (isNoRow(shape)) throw new Error("go has row shapes");
+  const reads = "cmd/reads_test.go";
+  const request = [
+    "Build cellref.",
+    "",
+    `The wrapper in \`${reads}\` calls run() once per row; the cli rows:`,
+    "",
+    `${fence}text`,
+    "cli in cmd/cli_test.go (2 rows)",
+    ...shape.example.rows,
+    fence,
+    "",
+    `${fence}text`,
+    `reads in ${reads} (2 rows)`,
+    ...shape.example.rows,
+    fence,
+    "",
+  ].join("\n");
+
+  test("the rows block is no file block of the named path, so the host writes the rows", async () => {
+    expect(suppliedBlocks(request, [reads]).get(reads)).toBeUndefined();
+    const root = mkdtempSync(join(tmpdir(), "rows-block-prose-"));
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, "cmd"), { recursive: true });
+    writeFileSync(join(root, "cmd/scaffold_test.go"), shape.example.reference);
+    const inputs = await hostApplyInputs(root, request, { writes: [{ path: reads, action: "create" }], reference: "cmd/scaffold_test.go" });
+    expect(inputs?.[0]).toMatchObject({ path: reads, files: 0, diffs: 0 });
+    expect(inputs?.[0]?.rows?.count).toBe(2);
+    expect(hostApplyDecision(inputs ?? [])).toMatchObject({ wouldApply: true });
+  });
+
+  test("a file comment whose path only spells rows stays the file's verbatim block", () => {
+    const path = "tests/rows.test.ts";
+    const given = [`Replace \`${path}\` with:`, "", `${fence}ts`, `// ${path}`, 'import { test } from "bun:test";', fence, ""].join("\n");
+    expect(suppliedBlocks(given, [path]).get(path)).toEqual([expect.objectContaining({ kind: "file", whole: true })]);
+  });
+});
+
 // Bench round 80 (#2666, second instance of #2462): deltaglue cli's brief gave `src/cli.ts`'s
 // shape as a `// src/cli.ts` block of declarations after prose that named `src/cli.ts` in passing.
 // The mention unset the listing, the host applied the stub under `hostApply: on`, lint failed, and
@@ -852,49 +898,5 @@ describe("a path-comment block is a listing unless its clause says whole; declar
     expect(declarationOnly("tools/cli.py", ["class Runner(Protocol):", "    def run(self) -> int: ..."])).toBe(false);
     expect(declarationOnly("tools/cli.pyi", ["def run(args: list[str]) -> int: ..."])).toBe(false);
     expect(declarationOnly("include/cli.h", ["int run(int argc, char **argv);"])).toBe(false);
-
-// #2909, bench round 96 cellref (Go) cli T002: the prose line before `cli`'s rows block named
-// `reads_test.go` (a note about its wrapper), the task's only path, so `suppliedBlocks` took the
-// rows block of `cli_test.go` for an excerpt of `reads_test.go`. `prescribedRows` drops a path with
-// a supplied block, the host declined ("may be an excerpt"), and a session wrote the 28 rows
-// (436k tokens in 15 attempts) while the ten other row files were host-written at 0 tokens.
-describe("a rows block after prose that names the task's only path (#2909)", () => {
-  const fence = "```";
-  const shape = ROW_FILE_SHAPES.go;
-  if (isNoRow(shape)) throw new Error("go has row shapes");
-  const reads = "cmd/reads_test.go";
-  const request = [
-    "Build cellref.",
-    "",
-    `The wrapper in \`${reads}\` calls run() once per row; the cli rows:`,
-    "",
-    `${fence}text`,
-    "cli in cmd/cli_test.go (2 rows)",
-    ...shape.example.rows,
-    fence,
-    "",
-    `${fence}text`,
-    `reads in ${reads} (2 rows)`,
-    ...shape.example.rows,
-    fence,
-    "",
-  ].join("\n");
-
-  test("the rows block is no file block of the named path, so the host writes the rows", async () => {
-    expect(suppliedBlocks(request, [reads]).get(reads)).toBeUndefined();
-    const root = mkdtempSync(join(tmpdir(), "rows-block-prose-"));
-    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-    mkdirSync(join(root, "cmd"), { recursive: true });
-    writeFileSync(join(root, "cmd/scaffold_test.go"), shape.example.reference);
-    const inputs = await hostApplyInputs(root, request, { writes: [{ path: reads, action: "create" }], reference: "cmd/scaffold_test.go" });
-    expect(inputs?.[0]).toMatchObject({ path: reads, files: 0, diffs: 0 });
-    expect(inputs?.[0]?.rows?.count).toBe(2);
-    expect(hostApplyDecision(inputs ?? [])).toMatchObject({ wouldApply: true });
-  });
-
-  test("a file comment whose path only spells rows stays the file's verbatim block", () => {
-    const path = "tests/rows.test.ts";
-    const given = [`Replace \`${path}\` with:`, "", `${fence}ts`, `// ${path}`, 'import { test } from "bun:test";', fence, ""].join("\n");
-    expect(suppliedBlocks(given, [path]).get(path)).toEqual([expect.objectContaining({ kind: "file", whole: true })]);
   });
 });
