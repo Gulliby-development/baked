@@ -6879,6 +6879,22 @@ export class WorkflowScheduler {
           })
         );
       });
+      // Opt-in `enforce` (#2287, default `shadow`): a blind repro is inconclusive for this
+      // attempt, so it no longer sends the submission back; its output stays for the next compare.
+      const mode = stopMode(policy, "repro_blind");
+      const blindIds = new Set(blind.map((b) => b.findingId));
+      const settled = outcomes.map((o) =>
+        mode === "enforce" && blindIds.has(o.findingId)
+          ? {
+              ...o,
+              outcome: {
+                ...o.outcome,
+                status: "inconclusive" as const,
+                reason: `The repro printed the same output after the attempt changed the finding's file, and reads ${reproOutsidePaths(o.repro, root).join(", ")} outside the root it runs in: it cannot see the correction (repro_blind)`,
+              },
+            }
+          : o,
+      );
       this.store.transaction(() =>
         this.store.artifact(
           runId,
@@ -6886,7 +6902,7 @@ export class WorkflowScheduler {
           path,
           canonical({
             taskId: task.id,
-            outcomes: outcomes.map(({ findingId, outcome, fileHash }) => ({
+            outcomes: settled.map(({ findingId, outcome, fileHash }) => ({
               findingId,
               ...outcome,
               ...(fileHash ? { fileHash } : {}),
@@ -6896,7 +6912,6 @@ export class WorkflowScheduler {
           }),
         ),
       );
-      const mode = stopMode(policy, "repro_blind");
       if (mode !== "enforce")
         for (const { findingId, repro } of blind)
           recordWouldStop(this.store, runId, {
@@ -6906,7 +6921,7 @@ export class WorkflowScheduler {
             summary: `Finding ${findingId}'s repro printed the same output after task ${task.id} changed the finding's file, and it reads ${reproOutsidePaths(repro, root, run).join(", ")} outside the root it runs in: it cannot see the correction, and would be inconclusive instead of reproduced.`,
             inputs: { taskId: task.id, findingId, outside: reproOutsidePaths(repro, root, run) },
           });
-      return outcomes
+      return settled
         .filter(({ outcome }) => outcome.status === "reproduced")
         .map(
           ({ findingId, repro, outcome }) =>

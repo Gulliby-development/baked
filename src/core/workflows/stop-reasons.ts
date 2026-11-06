@@ -192,9 +192,10 @@ export const STOP_REASONS = {
   repro_blind: {
     label:
       "A corrective's repro prints the same output after the attempt changed the finding's file, and reads a path outside its root",
-    // Shadow only until a bench round shows no false would-stop (#2287); its promotion makes such
-    // a repro inconclusive for the attempt instead of reproduced, so it no longer sends it back.
-    modes: NOT_ENFORCED,
+    // Shadow by default until a bench round shows a true would-stop and none false (#2287; R75
+    // recorded none at all). `stopModes: { repro_blind: "enforce" }` makes such a repro
+    // inconclusive for the attempt instead of reproduced, so it no longer sends it back.
+    modes: STOP_MODES,
     defaultMode: "shadow",
   },
   generated_case: {
