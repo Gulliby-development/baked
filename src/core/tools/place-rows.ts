@@ -336,26 +336,69 @@ function levelOf(path: string, requested: string | undefined, lines: readonly st
 const bare = (text: string) => text.trim().replace(/[,;]$/, "").trimEnd();
 
 /**
- * The file line (from 0, -1 when not held) that holds each of `rows`: a row the request gives more
- * than once takes the next equal line after the ones its earlier copies take, so a duplicate counts
- * as held only when the file holds it as often.
+ * The file line (from 0, -1 when not held) that holds each of `rows`. A row whose text no other
+ * row of the request has takes the first equal line. Rows that share a text (#2980) share that
+ * text's lines by place: a line goes to the row whose neighbours in the request are the line's
+ * neighbours in the file (the nearest non-blank line above and below), so the twin of a row in
+ * another list is not taken for it. R106 tokenpare bars T003 placed BarsRows.cs's second list
+ * first; its row 12 repeats row 4, row 4 was then refused as held at row 12's line, and the
+ * `move: true` retry lifted row 12 out of its list (15 rows of 16 delivered). Where the
+ * neighbours do not tell, the rows the call names (`span`, from 0) count as held when the call
+ * says they are (`spanHeld`: a move or a re-indent) and as not held when it places them; then the
+ * k-th copy takes the k-th line, as before. A duplicate counts as held only when the file holds it
+ * as often.
  */
-function heldLines(rows: readonly string[], lines: readonly string[]): number[] {
+function heldLines(
+  rows: readonly string[],
+  lines: readonly string[],
+  span: ReadonlySet<number> = new Set(),
+  spanHeld = false,
+): number[] {
+  const texts = lines.map(bare);
   const taken = new Map<string, number[]>();
-  for (const [i, line] of lines.entries()) {
-    const text = bare(line);
+  for (const [i, text] of texts.entries()) {
     if (!text) continue;
     const at = taken.get(text);
     if (at) at.push(i);
     else taken.set(text, [i]);
   }
-  const used = new Map<string, number>();
-  return rows.map((row) => {
-    const want = bare(row);
-    const k = used.get(want) ?? 0;
-    used.set(want, k + 1);
-    return taken.get(want)?.[k] ?? -1;
-  });
+  const wanted = rows.map(bare);
+  const copies = new Map<string, number[]>();
+  for (const [i, want] of wanted.entries()) {
+    const at = copies.get(want);
+    if (at) at.push(i);
+    else copies.set(want, [i]);
+  }
+  const near = (line: number, step: 1 | -1): string | undefined => {
+    for (let i = line + step; i >= 0 && i < texts.length; i += step) if (texts[i]) return texts[i];
+    return undefined;
+  };
+  const out = rows.map(() => -1);
+  for (const [want, idxs] of copies) {
+    const at = taken.get(want) ?? [];
+    if (idxs.length === 1) {
+      out[idxs[0] as number] = at[0] ?? -1;
+      continue;
+    }
+    const score = (row: number, line: number) =>
+      (row > 0 && near(line, -1) === wanted[row - 1] ? 1 : 0) +
+      (row < rows.length - 1 && near(line, 1) === wanted[row + 1] ? 1 : 0);
+    const preferred = (row: number) => (span.has(row) === spanHeld ? 0 : 1);
+    const pairs = idxs.flatMap((row, k) =>
+      at.map((line, m) => ({ row, line, score: score(row, line), order: Math.abs(k - m), k })),
+    );
+    pairs.sort(
+      (x, y) =>
+        y.score - x.score || preferred(x.row) - preferred(y.row) || x.order - y.order || x.k - y.k,
+    );
+    const usedLines = new Set<number>();
+    for (const pair of pairs) {
+      if (out[pair.row] !== -1 || usedLines.has(pair.line)) continue;
+      out[pair.row] = pair.line;
+      usedLines.add(pair.line);
+    }
+  }
+  return out;
 }
 
 /** A line that opens a row list: `= {`, `List.of(`, `ROWS = [`. */
@@ -483,7 +526,12 @@ export function placeRows(
       refusal: `${path} has ${count} line${count === 1 ? "" : "s"}; line ${where} is not one of them. Give the line the rows follow (0 puts them before the first line).`,
     };
   const placed = span;
-  const lineOf = heldLines(rows, lines);
+  const lineOf = heldLines(
+    rows,
+    lines,
+    new Set(span.map((n) => n - 1)),
+    Boolean(input.move || input.reindent),
+  );
   // Keyed by the request's number, as the result and the refusals name a row.
   const at = new Map(placed.map((n) => [label(n), lineOf[n - 1] ?? -1] as const));
   const held = [...at].flatMap(([n, line]) => (line < 0 ? [] : [`row ${n} (line ${line + 1})`]));
