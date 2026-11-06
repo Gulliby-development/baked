@@ -252,7 +252,27 @@ jobs:
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $target = Join-Path $env:RUNNER_TEMP "installed"
           $setup = Start-Process -FilePath "dist/bundle/baked-setup-$version-x64.exe" `
-            -ArgumentList "/S", "/D=$target" -Wait -PassThru
+            -ArgumentList "/S", "/D=$target" -PassThru
+          # Holding the handle keeps ExitCode readable after a wait with a timeout.
+          $null = $setup.Handle
+          # A silent install takes 10 to 25 s. One that runs 2 minutes is hung (#2864): print the
+          # installer's process tree and what it has written, then fail now instead of at the
+          # job timeout.
+          if (-not $setup.WaitForExit(120000)) {
+            Write-Host "installer still running after 120 s; process tree:"
+            $all = Get-CimInstance Win32_Process
+            $tree = @($setup.Id)
+            for ($i = 0; $i -lt $tree.Count; $i++) {
+              $tree += @($all | Where-Object { $_.ParentProcessId -eq $tree[$i] } | ForEach-Object { $_.ProcessId })
+            }
+            $all | Where-Object { $tree -contains $_.ProcessId } |
+              Format-Table ProcessId, ParentProcessId, Name, KernelModeTime, UserModeTime, CommandLine -AutoSize -Wrap |
+              Out-String -Width 400 | Write-Host
+            Get-ChildItem $target -ErrorAction SilentlyContinue | Format-Table Name, Length, LastWriteTime | Out-String | Write-Host
+            Stop-Process -Id $tree -Force -ErrorAction SilentlyContinue
+            throw "installer hung (#2864)"
+          }
+          $setup.WaitForExit()
           if ($setup.ExitCode -ne 0) { throw "installer exited with $($setup.ExitCode)" }
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "local-installed"
           New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null

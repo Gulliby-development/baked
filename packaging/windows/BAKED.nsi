@@ -2,7 +2,7 @@
 ;
 ; Per-user, no-admin installer following the Bun / Deno / OpenCode pattern:
 ;   - Installs to %LOCALAPPDATA%\Programs\baked
-;   - Adds the install dir to the User PATH (idempotent, EnVar plugin)
+;   - Adds the install dir to the User PATH (idempotent, user-path.ps1)
 ;   - Registers under HKCU\…\Uninstall (visible in Settings → Apps)
 ;   - Start Menu shortcut for "baked" and "Uninstall"
 ;   - Kills any running baked.exe before overwriting (Windows file lock)
@@ -18,9 +18,12 @@
 ;            -DOUTPUT=dist\bundle\baked-setup-2.15.3-x64.exe -DARCH=x64 ^
 ;            packaging\windows\baked.nsi
 ;
-; Dependencies (bundled with NSIS 3.10+; auto-install via build script):
-;   EnVar — clean PATH editing with WM_SETTINGCHANGE broadcast.
-;           https://nsis.sourceforge.io/EnVar_plug-in
+; No third-party plugins. PATH editing used the EnVar plugin until #2864: on a
+; Windows 11 laptop, 60 install/uninstall cycles gave one installer busy-loop
+; hang past EnVar::AddValue and two uninstaller access violations in ntdll, and
+; EnVar was the plugin code both had run. user-path.ps1 (embedded, run from
+; $PLUGINSDIR) edits HKCU\Environment\Path instead; the broadcast below has a
+; 5 s timeout so a window that never answers cannot hang the installer.
 
 !ifndef VERSION
   !define VERSION "0.0.0"
@@ -33,23 +36,6 @@
 !endif
 !ifndef ARCH
   !define ARCH "x64"
-!endif
-
-; PLUGIN_DIR optional — supplied by scripts/build-installer.ps1 so the
-; EnVar plugin DLL can live in a writable temp dir (CI runners can't write
-; into /usr/share/nsis/Plugins without sudo). When set, prepend it to the
-; plugin search path BEFORE any directives that need EnVar.
-;
-; NSIS 3 separates plugin archives into /x86-ansi and /x86-unicode subdirs.
-; Because this script declares `Unicode true` (see below), we must point
-; !addplugindir at the *unicode* subdir explicitly with the /x86-unicode
-; flag — otherwise makensis silently ignores it and reports "Plugin not
-; found, cannot call EnVar::*". The plugin zip from GsNSIS/EnVar v0.3.1
-; ships <root>/Plugins/x86-unicode/EnVar.dll which build-installer.ps1
-; lifts to <PLUGIN_DIR>/x86-unicode/EnVar.dll.
-!ifdef PLUGIN_DIR
-  !addplugindir /x86-unicode "${PLUGIN_DIR}\x86-unicode"
-  !addplugindir /amd64-unicode "${PLUGIN_DIR}\amd64-unicode"
 !endif
 
 !define APP_NAME      "baked"
@@ -79,6 +65,7 @@ VIAddVersionKey "ProductVersion"  "${VERSION}"
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
+!include "WinMessages.nsh"
 
 !define MUI_ABORTWARNING
 ; MUI_ICON / MUI_UNICON intentionally omitted — NSIS expects a standalone
@@ -120,15 +107,16 @@ Section "Install"
   WriteRegStr HKCU "Software\${APP_NAME}" "Version"    "${VERSION}"
   WriteRegStr HKCU "Software\${APP_NAME}" "Arch"       "${ARCH}"
 
-  ; Add install dir to User PATH via EnVar plugin (idempotent — refuses to
-  ; double-insert, preserves REG_EXPAND_SZ, broadcasts WM_SETTINGCHANGE so
-  ; freshly-opened shells see the new PATH without a logoff).
-  EnVar::SetHKCU
-  EnVar::AddValue "Path" "$INSTDIR"
+  ; Add install dir to User PATH (idempotent, keeps REG_EXPAND_SZ), then tell
+  ; running programs so freshly-opened shells see it without a logoff (#2864).
+  InitPluginsDir
+  File "/oname=$PLUGINSDIR\user-path.ps1" "${__FILEDIR__}\user-path.ps1"
+  nsExec::Exec '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\user-path.ps1" add "$INSTDIR"'
   Pop $0
   ${If} $0 != 0
-    DetailPrint "warning: EnVar::AddValue returned $0 (PATH not updated)"
+    DetailPrint "warning: user-path.ps1 add returned $0 (PATH not updated)"
   ${EndIf}
+  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 
   ; Add uninstaller entry in Settings → Apps.
   WriteUninstaller "$INSTDIR\uninstall.exe"
@@ -155,9 +143,11 @@ Section "Uninstall"
   Pop $0
 
   ; Strip install dir from User PATH (no-op if already absent).
-  EnVar::SetHKCU
-  EnVar::DeleteValue "Path" "$INSTDIR"
+  InitPluginsDir
+  File "/oname=$PLUGINSDIR\user-path.ps1" "${__FILEDIR__}\user-path.ps1"
+  nsExec::Exec '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\user-path.ps1" remove "$INSTDIR"'
   Pop $0
+  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 
   RMDir /r "$INSTDIR\deps"
   Delete   "$INSTDIR\${APP_EXE}"
