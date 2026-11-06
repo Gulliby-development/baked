@@ -66,6 +66,7 @@ import { packageNeeds } from "../src/core/workflows/package-probe.js";
 import { extractFixtures, nodeUnderBun, redirectFixture, writeIntoCopy } from "../src/core/verification/doc-examples.js";
 import { placedWhere, placeRows } from "../src/core/tools/place-rows.js";
 import { keepFixerRange } from "../src/core/workflows/range-fixer-scope.js";
+import { rowMoveDecision } from "../src/core/workflows/row-block-drift.js";
 import { entryPointCommand } from "../src/core/verification/entry-points.js";
 import { noteSiblingFindings, ownerOfFinding } from "../src/core/verification/initiative-ownership.js";
 import { failureSignature as convergenceSignature, missingPlannedPaths, noTestsCollected } from "../src/core/verification/convergence.js";
@@ -6599,6 +6600,20 @@ describe("format-written gate: a range fixer's change outside its range is put b
   for (const [name, after, ranges, kept] of cases)
     test(name, () => {
       expect(keepFixerRange(before, after, ranges).text).toBe(kept);
+    });
+});
+
+describe("row_block_drift gate: a row the file held before the run is not added (#2969)", () => {
+  // R104 netfold core: the scaffold's placeholder rows of a second list, left for feature styles.
+  const fileRow = (line: number, base?: true) => ({ line, literals: 2, matches: [], replaces: null, ...(base ? { base } : {}) });
+  const cases: [string, Parameters<typeof rowMoveDecision>[0], number[]][] = [
+    ["an unmatched row the base held", [fileRow(9, true), fileRow(10, true)], []],
+    ["an unmatched row the run wrote", [fileRow(11)], [11]],
+    ["both", [fileRow(9, true), fileRow(11)], [11]],
+  ];
+  for (const [name, rows, added] of cases)
+    test(name, () => {
+      expect(rowMoveDecision(rows).added).toEqual(added);
     });
 });
 
