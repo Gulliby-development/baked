@@ -852,6 +852,12 @@ function lastRowSeparator(
   return listed ? record.listSeparator : null;
 }
 
+/** A row without the `,` or `;` after its close: a separator is the list's layout, not the row. */
+function withoutSeparator(row: string): string {
+  const trimmed = row.trim();
+  return /^[,;]$/.test(rowTail(trimmed) ?? "") ? trimmed.slice(0, -1).trimEnd() : trimmed;
+}
+
 /** Whether the host writes row files of `path`'s language: its `ROW_FILE_SHAPES` row (#2633). */
 export function rowFileLanguage(path: string): boolean {
   return rowOf(ROW_FILE_SHAPES, detectLanguageFromPath(path)) !== null;
@@ -922,8 +928,14 @@ export function rowFilePlan(
   if (!inputs.arity || !inputs.separated) return { inputs, content: null };
   // Before a list's last row: the shape row's indentation and the separator, no close.
   const before = separator === null ? first : `${/^\s*/.exec(first)?.[0] ?? ""}row${separator}`;
-  const written = rows.map(
-    (row, i) => `${restoredLine(i === rows.length - 1 ? last : before, row)}${eol}`,
+  // The last written row ends as the shape's last row does, whatever separator the request's row
+  // carries (#3000): a feature's slice of a shared block ends with a row the request writes with
+  // its comma, since the block's later rows follow it there, yet in the file it is the list's last
+  // row until a later feature's rows land (R107 netweave `CliRowsTest.kt`, rows 1-4 of 9).
+  const written = rows.map((row, i) =>
+    i === rows.length - 1
+      ? `${restoredLine(last, withoutSeparator(row))}${eol}`
+      : `${restoredLine(before, row)}${eol}`,
   );
   const content = [...lines.slice(0, from), ...written, ...lines.slice(to + 1)].join("\n");
   return { inputs, content };
