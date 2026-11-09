@@ -332,6 +332,32 @@ describe("auto approval", () => {
       expect(result.approval).toBeNull();
       expect(result.reasons.join("\n")).toContain(reason);
     });
+  // Mutants M13, M14 and M21 of the weekly mutation run (#3005): each rank's lowest step is a
+  // widening of its own, and a renewal-only config never offers the model review.
+  const capabilities: [string, RunPolicy, RunPolicy, string][] = [
+    ["network deny to ask", renewing, { ...renewing, network: "ask" }, "network widened from deny to ask"],
+    ["network ask to allow", { ...renewing, network: "ask" }, { ...renewing, network: "allow" }, "network widened from ask to allow"],
+    ["sandbox auto to off", { ...renewing, sandbox: "auto" }, { ...renewing, sandbox: "off" }, "sandbox weakened from auto to off"],
+    ["sandbox required to auto", { ...renewing, sandbox: "required" }, { ...renewing, sandbox: "auto" }, "sandbox weakened from required to auto"],
+  ];
+  for (const [name, before, after, reason] of capabilities)
+    test(`does not renew after ${name} (#3005)`, () => {
+      const previous = approved(before, [modify("src/a.ts")]);
+      const result = evaluateAutoApproval(after, manifest, spec, graph([modify("src/a.ts")]), [previous]);
+      expect(result.approval).toBeNull();
+      expect(result.reasons).toContain(`Renewal: ${reason}`);
+      // The narrowing the other way renews.
+      const back = evaluateAutoApproval(before, manifest, spec, graph([modify("src/a.ts")]), [approved(after, [modify("src/a.ts")])]);
+      expect(back.reasons.join("\n")).not.toContain(reason.split(" from ")[0] ?? reason);
+    });
+
+  test("a renewal-only config that declines offers no model review (#3005)", () => {
+    const result = evaluateAutoApproval(renewing, manifest, spec, graph([modify("src/a.ts")]), []);
+    expect(result.approval).toBeNull();
+    expect(result).not.toHaveProperty("reviewable");
+    expect(result).not.toHaveProperty("limitsHash");
+  });
+
   test("does not renew when the frozen profiles changed", () => {
     const previous = approved(renewing, [modify("src/a.ts")]);
     const changed = { ...manifest, profileHashes: { implementer: "b".repeat(64) } };

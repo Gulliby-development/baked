@@ -159,6 +159,18 @@ describe("auto-approval of check configs, per language row (#2221)", () => {
     expect(evaluateAutoApproval(policy(), manifest, spec, edit, [], [], { exists: () => true, scaffold: true, request: "Create the value." }).configWouldStop).toBeUndefined();
   });
 
+  // Mutant M12 of the weekly mutation run (#3005): a request-named check config outside the
+  // enforced ones is held to the named-tightening rule only while `check-config-approval` enforces.
+  test("a named, unguarded check config's would-stop gives the config's reason only, and the rule once enforced", () => {
+    const edit = graph({ path: ".rubocop.yml", action: "modify" });
+    const request = "Create the value. Tighten .rubocop.yml.";
+    const shadow = evaluateAutoApproval(policy({ requestedManifestEdits: true }), manifest, spec, edit, [], [], { ...present, request });
+    expect(shadow.configWouldStop?.problems).toEqual([".rubocop.yml needs a person: a rubocop config sets what the checks enforce"]);
+    const enforced = evaluateAutoApproval(policy({ requestedManifestEdits: true }, { "check-config-approval": "enforce" }), manifest, spec, edit, [], [], { ...present, request });
+    expect(enforced.approval).toBeNull();
+    expect(enforced.reasons.join("\n")).toContain(".rubocop.yml needs a person: a rubocop config sets what the checks enforce; autoApproval.requestedCheckTightening approves a tightening the request names");
+  });
+
   test("a file outside the table is unchanged", () => {
     for (const path of ["src/config.yml", "src/settings.json", "README.md"])
       expect(evaluateAutoApproval(policy(), manifest, spec, graph({ path, action: "modify" }), [], [], { ...present, request: "x" })).toEqual({ approval: expect.objectContaining({ mode: "limits" }), reasons: [] });
