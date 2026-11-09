@@ -213,7 +213,8 @@ export const INDENT_DEFAULT =
  * ends with `,` or `;` (a C statement row, a row copied with its comma) keeps it, and an explicit
  * `separator` or `lastSeparator` replaces it, so a placed line never ends in two (`...;,`).
  */
-export const SEPARATOR_DEFAULT = "the row's own trailing comma or semicolon, else a comma";
+export const SEPARATOR_DEFAULT =
+  "the row's own trailing comma or semicolon, else a comma; right before the list's close, the last placed row ends as the request ends its last row of the file";
 
 export const placeRowsInput = z
   .object({
@@ -275,7 +276,7 @@ export const placeRowsInput = z
       .enum([",", ";", ""])
       .optional()
       .describe(
-        "What ends the last placed row's line, in place of the row's own, when the list takes no separator after its last item; by default the separator.",
+        "What ends the last placed row's line, in place of the row's own, when the list takes no separator after its last item; by default the separator, except right before the list's close, where it ends as the request ends its last row of the file.",
       ),
   })
   .strict();
@@ -334,6 +335,27 @@ function levelOf(path: string, requested: string | undefined, lines: readonly st
 
 /** A row's text as a line holds it: trimmed, a trailing separator dropped. */
 const bare = (text: string) => text.trim().replace(/[,;]$/, "").trimEnd();
+
+/** The `,` or `;` a row's text ends with, if any. */
+const separatorOf = (text: string) => /[,;]$/.exec(text.trim())?.[0];
+
+/** The first non-blank line from `from` (from 0) closes a list: `)`, `]`, `}`, `);`, `].freeze`. */
+function closesList(lines: readonly string[], from: number): boolean {
+  const next = lines.slice(from).find((line) => line.trim() !== "");
+  return next !== undefined && /^[)\]}]/.test(next.trim());
+}
+
+/**
+ * The separator a prescribed row line `line` takes when rows are placed after it: the given one,
+ * else the one the request writes the row with; nothing when the line already ends with one, or
+ * is not a prescribed row of the file.
+ */
+function separatorAfter(line: string, rows: readonly string[], given: string | undefined): string {
+  if (line.trim() === "" || separatorOf(line)) return "";
+  const row = rows.find((r) => bare(r) === bare(line));
+  if (row === undefined) return "";
+  return given || separatorOf(row) || "";
+}
 
 /**
  * The file line (from 0, -1 when not held) that holds each of `rows`. A row whose text no other
@@ -551,14 +573,28 @@ export function placeRows(
     input.indent ?? (opens ? anchorIndent + levelOf(path, indents.get(path), lines) : anchorIndent);
   // The line form of a restored row: the template's indentation and separator around the row. A
   // separator the row ends with is layout, not content: kept by default, replaced by the caller's.
+  // Before the list's close the last placed row is the list's last row (#3001): where the request
+  // ends its last row of this file without the separator its other rows carry, so does that row.
+  // A feature's slice of a shared block ends with a row the request writes with its comma, since
+  // the block's later rows follow it there (R107 netweave, Kotlin: a comma after the last row).
+  const endsList =
+    closesList(lines, where) &&
+    !separatorOf(rows[rows.length - 1] ?? "") &&
+    rows.slice(0, -1).some((row) => separatorOf(row));
   const written = placed.map((n, i) => {
     const row = (rows[n - 1] ?? "").trim();
-    const own = /[,;]$/.exec(row)?.[0];
-    const given =
-      i === placed.length - 1 ? (input.lastSeparator ?? input.separator) : input.separator;
+    const own = separatorOf(row);
+    const lastRow = i === placed.length - 1;
+    const given = lastRow
+      ? (input.lastSeparator ?? (endsList ? "" : input.separator))
+      : input.separator;
     const separator = given ?? own ?? ",";
     return restoredLine(`${indent}row${separator}${eol}`, own ? row.slice(0, -1).trimEnd() : row);
   });
+  // Rows placed after the list's last row: that row is no longer the last and takes the
+  // separator the request writes it with (part 2 of a shared block after part 1's rows, #3001).
+  const before = where > 0 ? separatorAfter(anchor.replace(/\r$/, ""), rows, input.separator) : "";
+  if (before) lines[where - 1] = `${anchor.replace(/\r$/, "").trimEnd()}${before}${eol}`;
   lines.splice(where, 0, ...written);
   return {
     content: lines.join("\n"),
