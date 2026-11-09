@@ -151,3 +151,44 @@ describe("place_rows separators: a row's own trailing separator", () => {
     expect(placeRowsDescription(new Map([[PATH, ROWS]]))).toContain("the row's own trailing comma or semicolon, else a comma");
   });
 });
+
+// #3001: R107 netweave (Kotlin). The request gives `CliRowsTest.kt` 9 rows, each with its comma
+// but the last; part 1 places rows 1-4, part 2 rows 5-6, part 3 rows 7-9. Row 4 carries the
+// comma the request writes because rows 5-9 follow it there, and place_rows kept it on the
+// list's last line (styles, merge, gaps and split: a comma after the last row).
+describe("scenario: R107 netweave, a feature's slice of a shared row block placed by a session (#3001)", () => {
+  const KT_PATH = "src/test/kotlin/netweave/CliRowsTest.kt";
+  const BLOCK = Array.from({ length: 9 }, (_, i) => `row(listOf("--row", "${i + 1}"), 0, "row ${i + 1}\\n", "")`);
+  const kotlin = (rows: string[], trailing: boolean) =>
+    ["class CliRowsTest {", "    fun rows() =", "        listOf(", ...rows.map((r, i) => `            ${r}${i < rows.length - 1 || trailing ? "," : ""}`), "        )", "}", ""].join("\n");
+  const place = (text: string, request: string[], line: number, rows: [number, number]) => {
+    const placed = placeRows({ path: KT_PATH, line, rows }, new Map([[KT_PATH, request]]), text);
+    if (!("content" in placed)) throw new Error(placed.refusal);
+    return placed.content;
+  };
+
+  test("no comma after the request's last row: each part's last placed row ends the list without one", () => {
+    const request = BLOCK.map((r, i) => (i < BLOCK.length - 1 ? `${r},` : r));
+    const part1 = place(kotlin([], false), request, 3, [1, 4]);
+    expect(part1).toBe(kotlin(BLOCK.slice(0, 4), false));
+    // Part 2 places after row 4, which is no longer the list's last row and takes its comma back.
+    const part2 = place(part1, request, 7, [5, 6]);
+    expect(part2).toBe(kotlin(BLOCK.slice(0, 6), false));
+    expect(place(part2, request, 9, [7, 9])).toBe(kotlin(BLOCK, false));
+  });
+
+  test("a trailing comma on the request's last row (ktlint): every placed row keeps its comma", () => {
+    const request = BLOCK.map((r) => `${r},`);
+    const part1 = place(kotlin([], true), request, 3, [1, 4]);
+    expect(part1).toBe(kotlin(BLOCK.slice(0, 4), true));
+    expect(place(part1, request, 7, [5, 9])).toBe(kotlin(BLOCK, true));
+  });
+
+  test("rows placed before another row keep the request's comma; lastSeparator still wins", () => {
+    const request = BLOCK.map((r, i) => (i < BLOCK.length - 1 ? `${r},` : r));
+    const tail = kotlin(BLOCK.slice(4), false);
+    expect(place(tail, request, 3, [1, 4])).toBe(kotlin(BLOCK, false));
+    const placed = placeRows({ path: KT_PATH, line: 3, rows: [1, 4], lastSeparator: "," }, new Map([[KT_PATH, request]]), kotlin([], false));
+    expect("content" in placed && placed.content).toBe(`${kotlin(BLOCK.slice(0, 4), true)}`);
+  });
+});
