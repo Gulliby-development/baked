@@ -95,6 +95,14 @@ describe("tool deadlines", () => {
     expect(toolDeadlineMs(stallSettings({}), "shell")).toBe(1_800_000);
   });
 
+  // Hot module provider-timers (#3006): an attempt stops at its third tool deadline. One is a slow
+  // disk, two a retry that hit the same wall; a fourth would spend another two minutes of file-tool
+  // deadline (eight in all) on tools that cannot answer.
+  test("an attempt stops at its third tool deadline by default", () => {
+    expect(DEFAULT_STALL_SETTINGS.maxToolTimeouts).toBe(3);
+    expect(stallSettings({}).maxToolTimeouts).toBe(3);
+  });
+
   test("an edit whose follow-up work hangs is recorded as applied and journaled with its deadline", async () => {
     const fixture = stallFixture(async (request) => {
       const result = await guardOf(fixture, request, 100).execute(
