@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { costStageOf, forecastSamples, stepTree } from "../src/core/workflows/stage-price.js";
+import { costStageOf, forecastSamples, providerFamily, stepTree } from "../src/core/workflows/stage-price.js";
 import { WorkflowStore } from "../src/core/workflows/store.js";
 import { workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -74,5 +74,27 @@ describe("forecast samples", () => {
     expect(reread("run-256")).toBe(true);
     expect(reread("run-1")).toBe(true);
     expect(reread("run-0")).toBe(false);
+  });
+});
+
+describe("provider family of a model ID (#2963, #3004)", () => {
+  test("an unknown provider prefix is its own family, and a bare unknown name is too", () => {
+    // `prefix || name`: the prefix names the family, a model without one is named by itself.
+    expect(providerFamily("mistral/large-2")).toBe("mistral");
+    expect(providerFamily("Ollama/Llama3")).toBe("ollama");
+    expect(providerFamily("llama3")).toBe("llama3");
+  });
+
+  test("a leading slash is an empty prefix: the family comes from the name after it", () => {
+    expect(providerFamily("/claude-sonnet")).toBe("claude");
+    expect(providerFamily("/gpt-5")).toBe("openai");
+  });
+
+  test("the known prefixes and bare names keep their families", () => {
+    expect(providerFamily("claude-code/sonnet")).toBe("claude");
+    expect(providerFamily("anthropic/claude-x")).toBe("claude");
+    expect(providerFamily("claude-x")).toBe("claude");
+    expect(providerFamily("codex/gpt-6")).toBe("openai");
+    expect(providerFamily("o3-mini")).toBe("openai");
   });
 });
