@@ -1358,3 +1358,58 @@ describe("scenario: R84 wrapsmith, rows in the request's notation are translated
     for (const shape of [TINYFLATE, PNMFORGE, BYTEMERGE]) expect(rowFilePlan(shape.path, WRAP_ROWS, { source: "reference", text: shape.reference.text }).inputs.sameHead).toBe(false);
   });
 });
+
+// #3000: R107 netweave (Kotlin). The request's block holds 9 rows of `CliRowsTest.kt`, each with
+// its comma but the last. Part 1's task T006 writes rows 1-4; the host copied row 4's comma onto
+// the list's last line, and the shape's layout (no comma after the last row) was lost. Every
+// later feature's session then found the same comma: all 7 findings of the run.
+describe("scenario: R107 netweave, a feature's slice of a shared row file ends as the shape's last row (#3000)", () => {
+  const NETWEAVE_PATH = "src/test/kotlin/netweave/CliRowsTest.kt";
+  const netweave = (rows: string[], trailing: boolean) =>
+    [
+      "package netweave",
+      "",
+      "class CliRowsTest {",
+      "    companion object {",
+      "        @JvmStatic",
+      "        fun rows() =",
+      "            listOf(",
+      ...rows.map((r, i) => `                ${r}${i < rows.length - 1 || trailing ? "," : ""}`),
+      "            )",
+      "    }",
+      "}",
+      "",
+    ].join("\n");
+  const BLOCK = Array.from({ length: 9 }, (_, i) => `Arguments.of(listOf("--row", "${i + 1}"), 0, "row ${i + 1}\\n", "")`);
+  // The request writes rows 1-8 with their comma: later rows follow them in the block.
+  const requested = BLOCK.map((r, i) => (i < BLOCK.length - 1 ? `${r},` : r));
+  const slice = requested.slice(0, 4);
+
+  test("no comma after the last row in the shape: part 1's four rows end without one", () => {
+    const shape = netweave(['Arguments.of(listOf("a"), 0, "", "")', 'Arguments.of(listOf("b"), 0, "", "")'], false);
+    const { inputs, content } = rowFilePlan(NETWEAVE_PATH, slice, { source: "reference", text: shape });
+    expect(rowFileRefusal(NETWEAVE_PATH, inputs)).toBeNull();
+    expect(content).toBe(netweave(BLOCK.slice(0, 4), false));
+  });
+
+  test("ktlint's trailing comma in the shape: the last row keeps it", () => {
+    const shape = netweave(['Arguments.of(listOf("a"), 0, "", "")'], true);
+    expect(rowFilePlan(NETWEAVE_PATH, slice, { source: "reference", text: shape }).content).toBe(netweave(BLOCK.slice(0, 4), true));
+    // The whole block, last row without its comma, writes the same layout.
+    expect(rowFilePlan(NETWEAVE_PATH, requested, { source: "reference", text: shape }).content).toBe(netweave(BLOCK, true));
+  });
+
+  // Every list shape of #2553 part B: a slice whose rows each carry the shape's separator ends as
+  // the shape's own last row does (Scala and R without one, Kotlin, PHP, Zig, Objective-C with `,`,
+  // OCaml and Solidity with `;`, C# with none).
+  for (const [language, shape] of Object.entries(ROWS_B))
+    test(`${language}: a slice whose last row carries its separator writes the shape's last row`, () => {
+      const full = plan(shape).content;
+      const lines = full?.split("\n") ?? [];
+      const rows = rowsOf(shape);
+      const lineOf = (row: string) => lines.find((l) => l.trim().startsWith(row)) ?? "";
+      const separator = /[,;]$/.exec(lineOf(rows[0]).trim())?.[0] ?? "";
+      const withSeparator = rows.map((r) => `${r}${separator}`);
+      expect(plan({ ...shape, block: [shape.block[0], ...withSeparator] }).content).toBe(full);
+    });
+});
