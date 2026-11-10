@@ -5856,7 +5856,7 @@ export class InitiativeService {
     );
     // Documentation follows the code it describes (#1751).
     const documented = sequenceDocumentation(proposed, withRuns);
-    const sequenced = sequenceSharedPaths(documented.plan, withRuns, noContract);
+    const sequenced = sequenceSharedPaths(documented.plan, withRuns, noContract, row.prompt);
     // A light feature that still gained a dependent writes a spec after all (#1406).
     const repaired = restoreContractWorkflows(sequenced.plan, choices, settings.workflowId);
     const plan = repaired.plan;
