@@ -1595,8 +1595,8 @@ describe("gate matrix: SwiftPM, Mix, Dart, Zig, dune and Bundler (#1753)", () =>
       ["zig-build-test", "zig", "build test", "build.zig"],
     ]);
     expect(ids({ "dune-project": "(lang dune 3.0)\n" })).toEqual([
-      ["dune-build", "dune", "build", "dune-project"],
-      ["dune-test", "dune", "test", "dune-project"],
+      ["dune-build", "dune", "build --root .", "dune-project"],
+      ["dune-test", "dune", "test --root .", "dune-project"],
     ]);
   });
 
