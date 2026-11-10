@@ -19,6 +19,7 @@ import {
 import { buildSafeEnv, OUTPUT_HELD_NOTE, onOutputHeld, SAFE_SPAWN_OPTS } from "../spawn.js";
 import { getIOClient } from "../workers/io-client.js";
 import { assertWorkspaceMutationAllowed } from "../workflows/leases.js";
+import { withProjectRootEnv } from "../workflows/project-root.js";
 import { checkShellBinaryRead } from "./binary-detect.js";
 import { compressShellOutputFull as compressLocal } from "./shell-compress.js";
 import { saveTee, truncateWithTee } from "./tee.js";
@@ -53,14 +54,16 @@ function startShell(
     ? { executable: process.env.COMSPEC ?? "cmd.exe", args: ["/d", "/s", "/c", command] }
     : { executable: "sh", args: ["-c", command] };
   const launch = request ? sandboxLaunch(shell.executable, shell.args, request, cwd) : null;
+  // In a task's worktree a build tool's root stops at the worktree, not the main checkout (#3011).
+  const env = withProjectRootEnv(cwd, buildSafeEnv());
   const proc =
     launch && launch.applied.backend !== "none"
       ? spawn(launch.executable, launch.args, {
           cwd,
-          env: sandboxEnv(buildSafeEnv(), launch),
+          env: sandboxEnv(env, launch),
           ...SAFE_SPAWN_OPTS,
         })
-      : spawnShell(command, { cwd, env: buildSafeEnv(), ...SAFE_SPAWN_OPTS });
+      : spawnShell(command, { cwd, env, ...SAFE_SPAWN_OPTS });
   // Tracked, so quitting kills the command's whole tree: on Windows the TUI left cmd.exe and
   // its child running after it exited (#2826).
   trackProcess(proc);

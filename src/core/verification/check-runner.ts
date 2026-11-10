@@ -11,6 +11,7 @@ import {
   type ProcessResult,
   type ProcessScope,
 } from "../workflows/process-scope.js";
+import { withProjectRoot, withProjectRootEnv } from "../workflows/project-root.js";
 import { generatedPaths, type RunPolicy } from "../workflows/schemas.js";
 import { recordWouldStop, stopMode } from "../workflows/stop-reasons.js";
 import type { WorkflowStore } from "../workflows/store.js";
@@ -52,10 +53,12 @@ export const executeCheckCommand = async (
   options: Parameters<ProcessScope["execute"]>[2],
 ): Promise<ProcessResult> => {
   const started = Date.now();
+  // A tool that finds its project root above the checkout stops at the checkout (#3011).
+  const rooted = withProjectRoot({ executable, args }, options.cwd);
   const raw = await scope.execute(
     executable,
-    withPerTestTimeout({ executable, args }, options.cwd),
-    options,
+    withPerTestTimeout({ executable, args: rooted }, options.cwd),
+    { ...options, env: withProjectRootEnv(options.cwd, options.env) },
   );
   const result: ProcessResult = {
     ...raw,

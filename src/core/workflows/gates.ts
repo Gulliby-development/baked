@@ -1069,20 +1069,24 @@ function zigGates(workspace: string): GateSuggestion[] {
   ];
 }
 
-/** dune builds and tests an OCaml project from `dune-project` (#1753). */
+/**
+ * dune builds and tests an OCaml project from `dune-project` (#1753), rooted at the workspace
+ * (`--root .`, #3011): dune takes the outermost `dune-project` above it as its root, which in a
+ * task's worktree (`.baked/worktrees/RUN/main`) is the main checkout.
+ */
 function duneGates(workspace: string): GateSuggestion[] {
   if (!has(workspace, "dune-project")) return [];
   return [
     {
-      check: gate("dune-build", "dune", ["build"], 600000),
+      check: gate("dune-build", "dune", ["build", "--root", "."], 600000),
       source: "dune-project",
-      reason: "dune build",
+      reason: "dune build --root .",
       preselected: true,
     },
     {
-      check: gate("dune-test", "dune", ["test"], 600000),
+      check: gate("dune-test", "dune", ["test", "--root", "."], 600000),
       source: "dune-project",
-      reason: "dune test",
+      reason: "dune test --root .",
       preselected: true,
     },
   ];
