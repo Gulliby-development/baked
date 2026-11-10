@@ -12,7 +12,8 @@ function rangeMisses(fewPathPrice: boolean) {
   const rounds = new Map<number, { features: number; below: number; above: number }>();
   for (const name of readdirSync(ROOT, { recursive: true, encoding: "utf8" }).filter((p) => p.endsWith(".sqlite.gz"))) {
     const path = join(ROOT, name);
-    const replays = replayInitiativeStarts(path, { fewPathPrice });
+    // Only the first start's estimate is read, so the later starts are rewound through, not priced.
+    const replays = replayInitiativeStarts(path, { fewPathPrice, firstStartOnly: true });
     if (!replays.length) continue;
     const { used, finished } = featureUsage(path);
     const round = Number(/R(\d+)/.exec(name)?.[1]);

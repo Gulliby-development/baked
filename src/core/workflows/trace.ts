@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { DEFAULT_CONFIG } from "../../config/index.js";
 import type { AppConfig } from "../../types/index.js";
 import { builtinProfiles } from "../agents/profiles/builtin.js";
@@ -149,7 +149,7 @@ import {
   rewritesSymbol,
   withRewrites,
 } from "./finding-chain.js";
-import { withHistorySnapshot } from "./history-snapshot.js";
+import { pinHistoryStore, withHistorySnapshot } from "./history-snapshot.js";
 import {
   HOST_APPLY_KIND,
   type HostApplyPartial,
@@ -4326,6 +4326,18 @@ function replayStarts(
 > {
   const { store, workspace, dispose } = openTrace(path);
   const histories = new Map<string, ReturnType<typeof openTrace>>();
+  /** The runs each history trace has had removed so far, which with the trace name its rows. */
+  const removed = new Map<string, string[]>();
+  /** Names a history store's rows by its trace and removed runs, so its reads are kept (#3014). */
+  const pin = (trace: string) => {
+    const history = histories.get(trace);
+    if (!history) return;
+    const gone = removed.get(trace) ?? [];
+    pinHistoryStore(
+      resolve(history.workspace, ".baked", "workflows.sqlite"),
+      `${resolve(trace)}#${[...gone].sort().join(",")}`,
+    );
+  };
   try {
     const db = store.connection;
     const row = db
@@ -4366,7 +4378,10 @@ function replayStarts(
       const mapped: string[] = [];
       for (const named of sizing.historyStores) {
         const trace = historyTrace(named);
-        if (trace && !histories.has(trace)) histories.set(trace, openTrace(trace));
+        if (trace && !histories.has(trace)) {
+          histories.set(trace, openTrace(trace));
+          pin(trace);
+        }
         const history = trace ? histories.get(trace) : undefined;
         if (history) mapped.push(history.workspace);
         else missingHistory.push(named);
@@ -4497,14 +4512,17 @@ function replayStarts(
         for (const runId of late) rewinders.delete(runId);
       })();
       // A history store of the same round holds runs the runner had not made or finished yet.
-      for (const history of histories.values()) {
+      for (const [trace, history] of histories) {
         const hdb = history.store.connection;
         const later = (
           hdb.query("SELECT id FROM runs WHERE created_at>=? OR updated_at>?").all(t, t) as {
             id: string;
           }[]
         ).map((r) => r.id);
-        if (later.length) hdb.transaction(() => removeRuns(hdb, runTables(hdb), later))();
+        if (!later.length) continue;
+        hdb.transaction(() => removeRuns(hdb, runTables(hdb), later))();
+        removed.set(trace, [...(removed.get(trace) ?? []), ...later]);
+        pin(trace);
       }
       if (firstStartOnly && link !== first) continue;
       const service = new NativeWorkflowService(
@@ -4608,7 +4626,10 @@ function replayStarts(
     };
   } finally {
     dispose();
-    for (const history of histories.values()) history.dispose();
+    for (const history of histories.values()) {
+      pinHistoryStore(resolve(history.workspace, ".baked", "workflows.sqlite"), null);
+      history.dispose();
+    }
   }
 }
 

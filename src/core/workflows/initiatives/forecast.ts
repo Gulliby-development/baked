@@ -6,46 +6,44 @@ import { historySnapshot } from "../history-snapshot.js";
 import { WorkflowStore } from "../store.js";
 import type { AttemptUsageRow } from "../usage.js";
 
-const sharedPrices = new Map<string, { stamp: string; samples: AttemptUsageRow[] }>();
+const sharedPrices = new Map<string, { stamp: string; samples: Map<string, AttemptUsageRow[]> }>();
 
 /** Finished stage usage from the same shared stores that supply the initiative's token ranges. */
 function sharedPriceSamples(path: string, history: PastRun[]): AttemptUsageRow[] {
   const parent = dirname(path);
   if (basename(path) !== "workflows.sqlite" || basename(parent) !== ".baked") return [];
-  const runs = history.filter((r) => r.source === "shared" && r.status === "completed");
-  // Read once per history snapshot (`withHistorySnapshot`), where a store's time stamp may not move.
-  return historySnapshot(`prices:${path}:${runs.map((r) => r.runId).join("/")}`, () =>
-    readSharedPrices(path, runs),
-  );
+  // Read once per history snapshot (`withHistorySnapshot`), where a store's time stamp may not move;
+  // every run of the store is read, so the read is the same whichever of its runs a caller asks for
+  // and a pinned store's is kept across replays (#3014).
+  const samples = historySnapshot(path, "prices", () => readSharedPrices(path));
+  return history
+    .filter((r) => r.source === "shared" && r.status === "completed")
+    .flatMap((r) => samples.get(r.runId) ?? []);
 }
-function readSharedPrices(path: string, runs: PastRun[]): AttemptUsageRow[] {
-  const parent = dirname(path);
-  const stamp = [
-    ...[path, `${path}-wal`].map((file) => {
+/** The stage usage of every completed run in the store's history, by run. */
+function readSharedPrices(path: string): Map<string, AttemptUsageRow[]> {
+  const stamp = [path, `${path}-wal`]
+    .map((file) => {
       try {
         return statSync(file).mtimeMs;
       } catch {
         return 0;
       }
-    }),
-    ...runs.map((r) => r.runId),
-  ].join("/");
+    })
+    .join("/");
   const cached = sharedPrices.get(path);
   if (cached?.stamp === stamp) return cached.samples;
   let store: WorkflowStore | null = null;
-  let samples: AttemptUsageRow[] = [];
+  let samples = new Map<string, AttemptUsageRow[]>();
   try {
     if (existsSync(path)) {
-      store = new WorkflowStore(dirname(parent), true);
-      const ids = new Set(store.history().map((r) => r.runId));
-      samples = forecastSamples(
-        store,
-        runs.filter((r) => ids.has(r.runId)).map((r) => r.runId),
-      );
+      store = new WorkflowStore(dirname(dirname(path)), true);
+      for (const run of store.history())
+        if (run.status === "completed") samples.set(run.runId, forecastSamples(store, [run.runId]));
     }
   } catch {
     // Like token history, a missing or incompatible shared store supplies no samples.
-    samples = [];
+    samples = new Map();
   } finally {
     store?.close();
   }
