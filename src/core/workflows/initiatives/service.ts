@@ -42,6 +42,7 @@ import {
 } from "../estimate.js";
 import { featureRowsLines } from "../feature-rows.js";
 import { forecastSamples, forecastStageCost, runForecastStages } from "../forecast-price.js";
+import { historySnapshot, historySnapshotting } from "../history-snapshot.js";
 import { executingLeases } from "../leases.js";
 import { FEATURE_REQUEST_HEADING } from "../person-request.js";
 import { plannedRunTokens } from "../plan-cost.js";
@@ -79,7 +80,7 @@ import {
   stopFault,
   stopMode,
 } from "../stop-reasons.js";
-import { newId, WorkflowStore } from "../store.js";
+import { newId, readStoreHistory, WorkflowStore } from "../store.js";
 import type { IssueSource } from "../types.js";
 import { HOST_AUTO_APPROVAL_CEILING, HostAutoApprovalSchema } from "../v2/definition.js";
 import { loadDefinition } from "../v2/definitions.js";
@@ -5986,27 +5987,42 @@ function sharedFeatureRunSamples(paths: string[], history: PastRun[]): FeatureRu
   return paths.flatMap((path) => {
     const parent = dirname(path);
     if (basename(path) !== "workflows.sqlite" || basename(parent) !== ".baked") return [];
-    // A WAL database changes its -wal file first.
-    const stamp = [path, `${path}-wal`]
-      .map((file) => (existsSync(file) ? statSync(file).mtimeMs : 0))
+    if (!historySnapshotting(path)) return readFeatureRunSamples(path, history);
+    // The samples depend on the store and on which of its runs the history counts as finished
+    // shared runs, so a history snapshot keeps them under those runs (#3014).
+    const ids = new Set(readStoreHistory(path).map((r) => r.runId));
+    const finished = history
+      .filter((r) => r.source === "shared" && r.status === "completed" && ids.has(r.runId))
+      .map((r) => r.runId)
       .join("/");
-    const cached = sharedSamples.get(path);
-    if (cached?.stamp === stamp) return cached.samples;
-    let store: WorkflowStore | null = null;
-    let samples: FeatureRunSample[] = [];
-    try {
-      if (existsSync(path)) {
-        store = new WorkflowStore(dirname(parent), true);
-        samples = featureRunSamples(new InitiativeStore(store), store, history, "shared", path);
-      }
-    } catch {
-      samples = [];
-    } finally {
-      store?.close();
-    }
-    sharedSamples.set(path, { stamp, samples });
-    return samples;
+    return historySnapshot(path, `featureRuns:${finished}`, () =>
+      readFeatureRunSamples(path, history),
+    );
   });
+}
+/** The samples of one shared store, read again when its files change. */
+function readFeatureRunSamples(path: string, history: PastRun[]): FeatureRunSample[] {
+  const parent = dirname(path);
+  // A WAL database changes its -wal file first.
+  const stamp = [path, `${path}-wal`]
+    .map((file) => (existsSync(file) ? statSync(file).mtimeMs : 0))
+    .join("/");
+  const cached = sharedSamples.get(path);
+  if (cached?.stamp === stamp) return cached.samples;
+  let store: WorkflowStore | null = null;
+  let samples: FeatureRunSample[] = [];
+  try {
+    if (existsSync(path)) {
+      store = new WorkflowStore(dirname(parent), true);
+      samples = featureRunSamples(new InitiativeStore(store), store, history, "shared", path);
+    }
+  } catch {
+    samples = [];
+  } finally {
+    store?.close();
+  }
+  sharedSamples.set(path, { stamp, samples });
+  return samples;
 }
 
 /** The workflow a feature's runs use: its own, or the initiative's default. */

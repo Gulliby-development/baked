@@ -336,7 +336,7 @@ function historyOf(db: Database, only?: string): PastRun[] {
  * only. A store that is missing, unreadable or of another schema gives no runs.
  */
 export function readStoreHistory(path: string): PastRun[] {
-  return [...historySnapshot(`history:${path}`, () => readStoreHistoryNow(path))];
+  return [...historySnapshot(path, "history", () => readStoreHistoryNow(path))];
 }
 function readStoreHistoryNow(path: string): PastRun[] {
   if (!existsSync(path)) return [];

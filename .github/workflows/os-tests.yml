@@ -58,10 +58,10 @@ jobs:
               echo "targeted=true" >> "$GITHUB_OUTPUT"
               echo "files=$(tr '\n' ' ' < "$RUNNER_TEMP/targeted.txt")" >> "$GITHUB_OUTPUT"
               # Only the shards that get a picked file start a Windows or macOS runner (#2915). The
-              # counts are the matrix's: 5 Windows shards, 3 macOS.
+              # counts are the matrix's: 5 Windows shards, 4 macOS.
               files="$(tr '\n' ' ' < "$RUNNER_TEMP/targeted.txt")"
               echo "windows_shards=$(TEST_FILES="$files" bun scripts/test-shard.ts --busy windows 5)" >> "$GITHUB_OUTPUT"
-              echo "macos_shards=$(TEST_FILES="$files" bun scripts/test-shard.ts --busy macos 3)" >> "$GITHUB_OUTPUT"
+              echo "macos_shards=$(TEST_FILES="$files" bun scripts/test-shard.ts --busy macos 4)" >> "$GITHUB_OUTPUT"
             else
               echo "Pull request: no test covers its changes; these platforms run in the merge queue."
               echo "run=false" >> "$GITHUB_OUTPUT"
@@ -97,9 +97,12 @@ jobs:
           - { os: windows-latest, shard: 3, shards: 5 }
           - { os: windows-latest, shard: 4, shards: 5 }
           - { os: windows-latest, shard: 5, shards: 5 }
-          - { os: macos-latest, shard: 1, shards: 3 }
-          - { os: macos-latest, shard: 2, shards: 3 }
-          - { os: macos-latest, shard: 3, shards: 3 }
+          # macOS went from three shards to four when two of three passed 30 minutes in the merge
+          # queue on 2026-11-10 (#3014): the corpus files had grown to 15-17 minutes each there.
+          - { os: macos-latest, shard: 1, shards: 4 }
+          - { os: macos-latest, shard: 2, shards: 4 }
+          - { os: macos-latest, shard: 3, shards: 4 }
+          - { os: macos-latest, shard: 4, shards: 4 }
     # A job that only skips runs on Linux: it would otherwise wait for a macOS or Windows runner
     # it does not use, and on 2026-11-04 macOS arm64 runners never came and ejected #2908 (#2915).
     # On a pull request a shard that gets none of the picked tests skips too.

@@ -300,7 +300,7 @@ export function samplesFrom(
 ): SizingSample[] {
   // Another project's store is read once per history snapshot (`withHistorySnapshot`).
   if (source === "shared" && !currentRunId)
-    return historySnapshot(`samples:${databasePath}`, () => samplesNow(databasePath, source)).map(
+    return historySnapshot(databasePath, "samples", () => samplesNow(databasePath, source)).map(
       (sample) => ({ ...sample }),
     );
   return samplesNow(databasePath, source, currentRunId);
