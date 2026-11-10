@@ -19,8 +19,9 @@ import { isCodePath } from "../check-policy.js";
 import { WorkflowFault } from "../errors.js";
 import { type FeatureRowFile, formatRowList, scopeRowRanges } from "../feature-rows.js";
 import { hostRowFiles } from "../host-apply.js";
+import { rowTokens } from "../row-block-drift.js";
 import { HOST_CONTENT_MAX_CHARS, type RunPolicy, SafeId } from "../schemas.js";
-import { rowBlockFiles, suppliedRows } from "../sizing.js";
+import { fileKind, rowBlockFiles, suppliedRows } from "../sizing.js";
 import type { StopMode } from "../stop-reasons.js";
 import { conditionalContractProblems } from "./upstream-symbols.js";
 
@@ -246,6 +247,61 @@ export interface RowOwnerInput {
   mode: StopMode;
 }
 
+const squashed = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+const COMMAND_WORD = /^[A-Za-z][A-Za-z0-9_-]*$/;
+
+/**
+ * The one answer to which features a prescribed row needs through the command it runs (#3010):
+ * the row's first quoted word (`rowTokens`, any notation: `&.{ "merge", ... }`,
+ * `listOf("merge", ...)`, `run "merge" ...`; the program's own name, the plan's title, skipped)
+ * joined with every feature whose boundary holds that command's source, a code path whose stem
+ * is the command or `<command>_command` / `<command>_cmd` in any case and separator
+ * (`merge_command.zig`, `MergeCommand.kt`, `cmd/merge.go`), or whose scope names "the <command>
+ * command". Null when the row runs no such word or no feature writes its source. The join is
+ * advisory for a row the command line itself refuses (an unknown flag, exit 2): such a row needs
+ * whoever parses the arguments, and a plan that states row ranges (`featureRowSplit`) decides it.
+ */
+export function rowNeedsFeatures(
+  plan: Pick<InitiativePlan, "features" | "title">,
+  row: string,
+): { command: string; features: string[] } | null {
+  const words = rowTokens(row).filter((t) => t.quoted);
+  const program = squashed(plan.title);
+  const word = (words[0] && squashed(words[0].text) === program ? words[1] : words[0])?.text ?? "";
+  if (!COMMAND_WORD.test(word)) return null;
+  const command = squashed(word);
+  const stems = new Set([command, `${command}command`, `${command}cmd`]);
+  const named = new RegExp(
+    `\\bthe\\s+\x60?${word.replace(/[-]/g, "\\-")}\x60?\\s+(?:sub)?command\\b`,
+    "i",
+  );
+  const features = plan.features
+    .filter(
+      (f) =>
+        named.test(f.boundary.scope) ||
+        f.boundary.paths.some((path) => {
+          if (GLOB.test(path) || fileKind(normalizePath(path)) !== "code" || !isCodePath(path))
+            return false;
+          const parts = normalizePath(path).split("/");
+          const stem = squashed((parts.at(-1) ?? "").replace(/\.[^.]*$/, ""));
+          // `cmd/merge/main.go`: the command is the directory of a `main` file.
+          const dir = squashed(parts.at(-2) ?? "");
+          return stems.has(stem) || (stem === "main" && parts.length > 1 && stems.has(dir));
+        }),
+    )
+    .map((f) => f.id);
+  return features.length ? { command: word, features } : null;
+}
+
+/**
+ * The plan with the host's own dependencies added as `propose` adds them: documentation after the
+ * code it describes, then features that share a file in order (`sequenceSharedPaths`). The
+ * row-owner rule reads it, so a dependency the host adds counts as one the decomposer wrote.
+ */
+export function hostSequenced(plan: InitiativePlan, request?: string): InitiativePlan {
+  return sequenceSharedPaths(sequenceDocumentation(plan).plan, new Set(), new Set(), request).plan;
+}
+
 /** A prescribed row file given to a feature although one of its rows needs a later feature. */
 export interface RowOwnerProblem {
   /** The prescribed row file (`suppliedRows`). */
@@ -265,8 +321,10 @@ export interface RowOwnerProblem {
   /**
    * `later-row`: a row of the owner's needs a later feature (#2487). `row-split`: the sharers'
    * row ranges give a row to two features or to none (#2898); `needs` is then the other sharer.
+   * `later-command`: a row of the owner's runs a command whose source only a later feature
+   * writes (#3010); `literal` is then the command.
    */
-  shape?: "later-row" | "row-split";
+  shape?: "later-row" | "later-command" | "row-split";
 }
 
 /**
@@ -283,7 +341,10 @@ export interface RowOwnerProblem {
  * core) implements. Core's required test check ran the row; T013 failed twice and T014 rewrote
  * it (582k tokens), and representations then failed on the rewritten row (#2485, #2486).
  */
-export function rowOwnerProblems(plan: InitiativePlan, request: string): RowOwnerProblem[] {
+export function rowOwnerProblems(proposed: InitiativePlan, request: string): RowOwnerProblem[] {
+  // The host's own dependencies count (#3010): a feature that `sequenceSharedPaths` puts after a
+  // row file's owner is a later feature too, so the rule reads the plan as `propose` stores it.
+  const plan = hostSequenced(proposed, request);
   const paths = [
     ...new Set(plan.features.flatMap((f) => f.boundary.paths.filter((p) => !GLOB.test(p)))),
   ];
@@ -321,18 +382,36 @@ export function rowOwnerProblems(plan: InitiativePlan, request: string): RowOwne
           const literal = own.find((l) => testsHold(row, l));
           return literal === undefined ? [] : [{ row, literal }];
         });
-        const first = held[0];
+        // A row that runs a command only a later feature writes (#3010): its first quoted word
+        // joined with that feature's source (`rowNeedsFeatures`), even when no literal is quoted.
+        const commands = held.length
+          ? []
+          : rows.flatMap((row) => {
+              const needed = rowNeedsFeatures(plan, row);
+              return needed?.features.length &&
+                needed.features.every((id) => later.some((f) => f.id === id)) &&
+                needed.features.includes(needs.id)
+                ? [{ row, literal: needed.command }]
+                : [];
+            });
+        const shape = held.length ? "later-row" : "later-command";
+        const hits = held.length ? held : commands;
+        const first = hits[0];
         if (!first) continue;
         const row = first.row.length > 120 ? `${first.row.slice(0, 117)}...` : first.row;
+        const why =
+          shape === "later-row"
+            ? `\`${row}\` holds \`${first.literal}\`, which the contract or scope of ${needs.id} cites`
+            : `\`${row}\` runs \`${first.literal}\`, whose source only ${needs.id} writes`;
         found.push({
           path,
           owner: owner.id,
           needs: needs.id,
           row: first.row,
           literal: first.literal,
-          rows: held.length,
-          problem: `${path} holds ${held.length === 1 ? "a row" : `${held.length} rows`} that only ${needs.id} can pass (\`${row}\` holds \`${first.literal}\`, which the contract or scope of ${needs.id} cites): give the file to ${needs.id} (it depends on ${owner.id}), or ask for the row in the brief to be split into a file of ${needs.id}.`,
-          shape: "later-row",
+          rows: hits.length,
+          problem: `${path} holds ${hits.length === 1 ? "a row" : `${hits.length} rows`} that only ${needs.id} can pass (${why}): give the file to ${needs.id} (it depends on ${owner.id}), or ask for the row in the brief to be split into a file of ${needs.id}.`,
+          shape,
         });
         break;
       }
@@ -751,6 +830,7 @@ export function sequenceSharedPaths(
   plan: InitiativePlan,
   fixed: ReadonlySet<string> = new Set(),
   noContract: ReadonlySet<string> = new Set(),
+  request?: string,
 ): { plan: InitiativePlan; added: { featureId: string; dependsOn: string; paths: string[] }[] } {
   const features = plan.features.map((f) => ({ ...f, dependsOn: [...f.dependsOn] }));
   const byId = new Map(features.map((f) => [f.id, f] as const));
@@ -766,6 +846,25 @@ export function sequenceSharedPaths(
     }
     return false;
   };
+  // Which features each feature's prescribed rows run the commands of (#3010).
+  const rowNeeds = new Map<string, Set<string>>();
+  if (request) {
+    const prescribed = suppliedRows(
+      request,
+      [...new Set(features.flatMap((f) => f.boundary.paths))].filter((p) => !GLOB.test(p)),
+    );
+    for (const feature of features) {
+      const needs = new Set<string>();
+      for (const [path, block] of prescribed) {
+        if (!feature.boundary.paths.some((pattern) => patternsMeet(path, pattern))) continue;
+        for (const row of block.lines)
+          for (const id of rowNeedsFeatures(plan, row)?.features ?? [])
+            if (id !== feature.id) needs.add(id);
+      }
+      rowNeeds.set(feature.id, needs);
+    }
+  }
+  const needsRows = (a: string, b: string) => rowNeeds.get(a)?.has(b) ?? false;
   const added: { featureId: string; dependsOn: string; paths: string[] }[] = [];
   for (const [j, later] of features.entries()) {
     if (fixed.has(later.id)) continue;
@@ -774,8 +873,16 @@ export function sequenceSharedPaths(
       if (!earlier) continue;
       const paths = sharedPaths(later, earlier);
       if (!paths.length || reaches(later.id, earlier.id) || reaches(earlier.id, later.id)) continue;
+      // An earlier feature whose prescribed rows run a command only the later one writes waits
+      // for it, unless the later one's rows need the earlier too (#3010): plan order then stays
+      // and `rowOwnerProblems` records the row file.
+      const rowsWait =
+        needsRows(earlier.id, later.id) &&
+        !needsRows(later.id, earlier.id) &&
+        !fixed.has(earlier.id);
       const [dependent, upstream] =
-        noContract.has(earlier.id) && !noContract.has(later.id) && !fixed.has(earlier.id)
+        rowsWait ||
+        (noContract.has(earlier.id) && !noContract.has(later.id) && !fixed.has(earlier.id))
           ? [earlier, later]
           : [later, earlier];
       dependent.dependsOn.push(upstream.id);

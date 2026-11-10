@@ -65,7 +65,7 @@ import { docFindingRepairs, documentationFinding, reproAllows, reproExecutables,
 import { packageNeeds } from "../src/core/workflows/package-probe.js";
 import { extractFixtures, nodeUnderBun, redirectFixture, writeIntoCopy } from "../src/core/verification/doc-examples.js";
 import { anchorLine, placedWhere, placeRows } from "../src/core/tools/place-rows.js";
-import { joinedRows } from "../src/core/workflows/initiatives/plan.js";
+import { type InitiativePlan, joinedRows, rowOwnerProblems } from "../src/core/workflows/initiatives/plan.js";
 import { oldStringRange, rangeText } from "../src/core/tools/line-range.js";
 import { watchSteps } from "../src/core/workflows/progress-watch.js";
 import { keepFixerRange } from "../src/core/workflows/range-fixer-scope.js";
@@ -6767,4 +6767,29 @@ describe("refused-edit gate: accept-workspace only for a refusal in the run root
   test("an inline run's root is the run root", () => {
     expect(refusalInRunRoot({ worktree: null } as unknown as Parameters<typeof refusalInRunRoot>[0], "")).toBe(true);
   });
+});
+
+describe("initiative-row-owner gate: a row's command joins the feature that writes it (#3010)", () => {
+  // R108 netknot (Zig): styles owned src/mask_rows_test.zig, whose totals rows run `merge`.
+  const fence = "```";
+  const request = [`${fence}text`, "totals in src/mask_rows_test.zig (2 rows: args | code | stdout)", '.{ &.{ "sort", "--style", "mask" }, 0, "a" },', '.{ &.{ "merge", "--style", "mask" }, 0, "b" },', fence].join("\n");
+  const split = (mergeOn: string[], mergeSource: string, coreAlso = false): InitiativePlan => ({
+    schemaVersion: 1, title: "netknot", goals: ["g"], completionCriteria: ["c"],
+    features: [
+      { id: "core", title: "core", boundary: { scope: "Entry.", paths: ["src/main.zig", ...(coreAlso ? [mergeSource] : [])] }, contract: "Parses.", dependsOn: [], mandatory: true },
+      { id: "styles", title: "styles", boundary: { scope: "Styles.", paths: ["src/styles.zig", "src/mask_rows_test.zig"] }, contract: "Styles.", dependsOn: ["core"], mandatory: true },
+      { id: "merge", title: "merge", boundary: { scope: "Merging.", paths: [mergeSource] }, contract: "Merges.", dependsOn: mergeOn, mandatory: true },
+    ],
+  });
+  const cases: [string, InitiativePlan, string | null][] = [
+    ["merge after styles writes merge_command.zig: would-stop", split(["styles"], "src/merge_command.zig"), "later-command"],
+    ["merge after styles writes merge.zig: would-stop", split(["styles"], "src/merge.zig"), "later-command"],
+    ["merge independent of styles: no would-stop", split(["core"], "src/merge_command.zig"), null],
+    ["core also writes the merge source: no would-stop", split(["styles"], "src/merge_command.zig", true), null],
+    ["merge writes an unrelated file: no would-stop", split(["styles"], "src/ranges.zig"), null],
+  ];
+  for (const [name, plan, shape] of cases)
+    test(name, () => {
+      expect(rowOwnerProblems(plan, request)[0]?.shape ?? null).toBe(shape);
+    });
 });
