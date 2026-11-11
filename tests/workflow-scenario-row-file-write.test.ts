@@ -1413,3 +1413,101 @@ describe("scenario: R107 netweave, a feature's slice of a shared row file ends a
       expect(plan({ ...shape, block: [shape.block[0], ...withSeparator] }).content).toBe(full);
     });
 });
+
+// #3016: R108 netknot (Zig) T003 and drawsieve (OCaml) T005. The request divides one block between
+// two lists of a file ("rows 1-15 in `rows`, rows 16-25 in `totals`"); an earlier feature left
+// rows in `rows` and `totals` empty. An empty list holds no row line, so the shape had one run and
+// the host wrote every owned row into `rows`: `totals` stayed empty, every test passed, and only
+// the reviewer saw it. An empty list of the run's kind is a list: the host declines, and the
+// session places each list's rows with place_rows.
+const ZIG_PATH = "src/mask_rows_test.zig";
+const zigTwoLists = (rows: string[], totals: string[]) =>
+  [
+    'const harness = @import("harness.zig");',
+    "",
+    "const rows = [_]harness.Row{",
+    ...rows.map((r) => `    ${r},`),
+    "};",
+    "",
+    totals.length ? ["const totals = [_]harness.Row{", ...totals.map((r) => `    ${r},`), "};"].join("\n") : "const totals = [_]harness.Row{};",
+    "",
+    'test "rows" {',
+    "    try harness.run(&rows);",
+    "    try harness.run(&totals);",
+    "}",
+    "",
+  ].join("\n");
+const zigRow = (n: number) => `.{ .mask = "m${n}", .count = ${n} }`;
+const ML_PATH = "test/test_topp.ml";
+const mlTwoLists = (rows: string[], totals: string[]) =>
+  ["let rows =", "  [", ...rows.map((r) => `    ${r};`), "  ]", "", "let totals =", "  [", ...totals.map((r) => `    ${r};`), "  ]", "", 'let () = Harness.run "topp" rows totals', ""].join("\n");
+const mlRow = (n: number) => `("p${n}", ${n})`;
+
+describe("rowFilePlan: a file whose second list is still empty (#3016)", () => {
+  test("Zig `{}` on one line and OCaml `[` / `]` on their own lines: the host declines, naming the empty list", () => {
+    const zig = rowFilePlan(ZIG_PATH, [4, 5, 10, 16, 21].map(zigRow), { source: "file", text: zigTwoLists([4, 5].map(zigRow), []) });
+    expect(zig.content).toBeNull();
+    expect(zig.inputs).toMatchObject({ runs: 2, emptyLists: 1 });
+    expect(rowFileRefusal(ZIG_PATH, zig.inputs)).toContain("1 of them empty");
+    const ml = rowFilePlan(ML_PATH, [1, 4, 9, 16].map(mlRow), { source: "file", text: mlTwoLists([4, 9].map(mlRow), []) });
+    expect(ml.content).toBeNull();
+    expect(rowFileRefusal(ML_PATH, ml.inputs)).toContain("2 lists of rows");
+  });
+
+  test("the reverse base (rows only in the second list) and a reference with one empty list decline too", () => {
+    const reverse = rowFilePlan(ML_PATH, [1, 16].map(mlRow), { source: "file", text: mlTwoLists([], [16].map(mlRow)) });
+    expect(reverse.content).toBeNull();
+    expect(reverse.inputs.emptyLists).toBe(1);
+    const reference = rowFilePlan(ZIG_PATH, [1, 2].map(zigRow), { source: "reference", text: zigTwoLists([zigRow(9)], []) });
+    expect(reference.content).toBeNull();
+    expect(rowFileRefusal(ZIG_PATH, reference.inputs)).toContain("which list each row goes in");
+  });
+
+  test("one list, or an empty list of another kind, is still written", () => {
+    const one = rowFilePlan(ML_PATH, [1, 2].map(mlRow), { source: "file", text: ["let rows =", "  [", `    ${mlRow(9)};`, "  ]", "", "let empty = []", ""].join("\n") });
+    expect(one.inputs).toMatchObject({ runs: 1 });
+    expect(one.inputs.emptyLists).toBeUndefined();
+    expect(one.content).toContain(`    ${mlRow(2)};`);
+    // A Zig file with an empty block of another shape (`test "x" {}`) is one list.
+    const zig = rowFilePlan(ZIG_PATH, [1, 2].map(zigRow), { source: "file", text: `${zigTwoLists([zigRow(9)], [zigRow(8)]).replace(/const totals[\s\S]*?};\n/, "")}test "empty" {}\n` });
+    expect(zig.inputs.runs).toBe(1);
+    expect(zig.content).toContain(`    ${zigRow(2)},`);
+  });
+});
+
+describe("scenario: R108 netknot and drawsieve, the second list's rows stay out of the first (#3016)", () => {
+  for (const [language, path, base, rows, written] of [
+    ["zig", ZIG_PATH, zigTwoLists([4, 5].map(zigRow), []), [4, 5, 16, 21].map(zigRow), zigTwoLists([4, 5].map(zigRow), [16, 21].map(zigRow))],
+    ["ocaml", ML_PATH, mlTwoLists([4, 9].map(mlRow), []), [4, 9, 16, 20].map(mlRow), mlTwoLists([4, 9].map(mlRow), [16, 20].map(mlRow))],
+  ] as const)
+    test(`${language}: the base holds rows in the first list and an empty second list; a session places them, the host writes nothing`, async () => {
+      const shape: WriteShape = { path, reference: { path, text: base }, block: [`Rows in ${path} (${rows.length} rows)`, ...rows], written };
+      const { final, file, sessions, record } = await deliver(shape, { rowFileWrite: "on" });
+      expect(final.status).toBe("completed");
+      // On main the host applied the write (`runs: 1`) and every row landed in the first list.
+      expect(sessions).toEqual(["T001", "T002"]);
+      expect(record).toMatchObject({ mode: "on", wouldApply: false, applied: false });
+      expect(record?.reason).toContain("1 of them empty");
+      expect(file).toBe(written);
+    }, 120000);
+});
+
+describe("ROW_FILE_SHAPES: an empty second list of the rows' kind declines the host write (#3016)", () => {
+  for (const [language, record] of Object.entries(ROW_FILE_SHAPES)) {
+    if (isNoRow(record)) continue;
+    const { path, reference, rows } = record.example;
+    const lines = (rowFilePlan(path, rows, { source: "reference", text: reference }).content ?? "").split("\n");
+    const first = lines.findIndex((line) => line.trim().startsWith(rows[0]?.trim() ?? "\u0000"));
+    const opener = lines[first - 1] ?? "";
+    const closer = lines[first + rows.length] ?? "";
+    // A list that closes on its last row's line (`Stream.of(...)`) or opens with no bracket line
+    // of its own (`[Theory]`) has no empty form to add here.
+    if (first < 1 || !/[[({]$/.test(opener.trim()) || !/^[)\]}]/.test(closer.trim())) continue;
+    test(`${language}: ${opener.trim()} ... ${closer.trim()} once more, empty`, () => {
+      const text = `${lines.join("\n")}\n${opener}\n${closer}\n`;
+      const { inputs, content } = rowFilePlan(path, rows, { source: "file", text });
+      expect(content).toBeNull();
+      expect(inputs).toMatchObject({ runs: 2, emptyLists: 1 });
+    });
+  }
+});

@@ -750,8 +750,13 @@ export interface RowFileInputs {
   language: boolean;
   /** The shape's source: the file in the task's base, the task's `reference`, or none. */
   shape: "file" | "reference" | null;
-  /** The runs of row lines in the rows' notation the shape holds. */
+  /** The runs of row lines in the rows' notation the shape holds, an empty list of them counted. */
   runs: number;
+  /**
+   * The lists of the rows' kind the shape opens with no row in them (#3016), counted in `runs`:
+   * absent when there are none.
+   */
+  emptyLists?: number;
   /** Every shape line that starts with the rows' head closes its row on that line. */
   oneLine: boolean;
   /** Every prescribed row has one head, and it is a row line of the language. */
@@ -772,6 +777,8 @@ export function rowFileRefusal(path: string, rows: RowFileInputs): string | null
     return `no shape for ${path}: the file is not in the task's base and the task names no reference of its language`;
   if (!rows.sameHead)
     return `the prescribed rows for ${path} do not share one row head the language writes rows with`;
+  if (rows.runs !== 1 && rows.emptyLists)
+    return `the ${rows.shape === "file" ? "file" : "reference"} for ${path} holds ${rows.runs} lists of rows in the request's notation, ${rows.emptyLists} of them empty, not one: which list each row goes in is the request's, not the host's`;
   if (rows.runs !== 1)
     return `the ${rows.shape === "file" ? "file" : "reference"} for ${path} holds ${rows.runs} runs of rows in the request's notation, not one`;
   if (!rows.oneLine) return `the shape for ${path} spreads a row over lines`;
@@ -826,6 +833,52 @@ function shapeRuns(
     open = null;
   }
   return { runs, oneLine };
+}
+
+/** A line's code with every name made one token, so `const rows = [_]harness.Row{` and `const totals = [_]harness.Row{` read the same. */
+const nameless = (line: string) =>
+  line
+    .trim()
+    .replace(/[A-Za-z_][\w.]*/g, "x")
+    .replace(/\s+/g, " ");
+
+/** A line that only closes brackets: `]`, `};`, `) ;`, `].freeze`, `);`, PowerShell's `) {`. */
+const CLOSES_ONLY = /^[)\]}]+[\s;,]*(?:\.\w+)?[\s;,]*\{?\s*$/;
+
+/**
+ * The lists of `run`'s kind the shape opens with no row in them (#3016): a line that opens a list
+ * as the run's own opening line does (names aside) and closes it on the same line
+ * (`const totals = [_]harness.Row{};`) or on the next code line (OCaml `  [` then `  ]`). R108
+ * netknot (Zig) and drawsieve (OCaml): an earlier feature left rows in `rows` and an empty `totals`,
+ * the shape held one run, and the host wrote the second list's rows into the first.
+ */
+function emptyLists(path: string, text: string, run: ShapeRun): number {
+  const code = stripComments(path, text)
+    .split("\n")
+    .map((line) => line.replace(/\r$/, ""));
+  const start = run.rows[0] ?? 0;
+  let at = start - 1;
+  while (at >= 0 && !(code[at] ?? "").trim()) at--;
+  const opener = (code[at] ?? "").trim();
+  // Only a run whose list opens on a line of its own shows what an opening line looks like.
+  if (at < 0 || !/[[({]$/.test(opener)) return 0;
+  const kind = nameless(opener);
+  let count = 0;
+  for (let i = 0; i < code.length; i++) {
+    if (i === at) continue;
+    const line = nameless(code[i] ?? "");
+    if (!line.startsWith(kind)) continue;
+    const rest = line.slice(kind.length).trim();
+    if (rest !== "" && CLOSES_ONLY.test(rest)) {
+      count++;
+      continue;
+    }
+    if (rest !== "") continue;
+    let next = i + 1;
+    while (next < code.length && !(code[next] ?? "").trim()) next++;
+    if (CLOSES_ONLY.test((code[next] ?? "").trim())) count++;
+  }
+  return count;
 }
 
 /**
@@ -891,10 +944,14 @@ export function rowFilePlan(
     rows.every((r) => record.rowLine.test(r.trim()) && !rowNotation(r));
   if (!inputs.sameHead) return { inputs, content: null };
   const { runs, oneLine } = shapeRuns(path, shape.text, head, record);
-  inputs.runs = runs.length;
+  // An empty list of the run's kind is a list too (#3016): with one, which list a row goes in is
+  // not the shape's to tell, so the host declines rather than write every row into the run.
+  const empty = runs.length === 1 && runs[0] ? emptyLists(path, shape.text, runs[0]) : 0;
+  inputs.runs = runs.length + empty;
+  if (empty) inputs.emptyLists = empty;
   inputs.oneLine = oneLine;
   const [run] = runs;
-  if (runs.length !== 1 || !run || !oneLine) return { inputs, content: null };
+  if (inputs.runs !== 1 || !run || !oneLine) return { inputs, content: null };
   const lines = shape.text.split("\n");
   const rowLines = run.texts;
   const arities = new Set([...rowLines.map((l) => rowArity(l)), ...rows.map((r) => rowArity(r))]);
