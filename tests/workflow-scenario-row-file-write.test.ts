@@ -1192,7 +1192,7 @@ const PLACE_CSP: PlaceShape = {
 describe("scenario: R85, place_rows indents rows as the request writes them (#2618)", () => {
   test("rescript: a frame without indented lines gets the request's two-space rows, and the result shows the first line", async () => {
     const { final, file, seen } = await placeScenario(PLACE_CSP, { rowFileWrite: "on" }, [placeAll(PLACE_CSP), submitRows(PLACE_CSP)]);
-    expect(seen.prompts[0]).toContain("the indentation of the request's own row lines");
+    expect(seen.prompts[0]).toContain("the column the request writes its own row lines at");
     // The prompt is the serialized conversation: the echoed line's quotes show escaped once more.
     expect(seen.prompts[1]).toContain('Line 2 now reads \\"  Harness.row(');
     expect(final.status).toBe("completed");
