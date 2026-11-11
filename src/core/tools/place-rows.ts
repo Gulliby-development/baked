@@ -206,7 +206,7 @@ export function placeRowsRecord(
 
 /** The default indentation, as the description and the scheduler's note state it (#2618). */
 export const INDENT_DEFAULT =
-  "the line's own; after a line that opens the list, one level deeper, the level being the indentation of the request's own row lines, else the file's smallest indentation, else the language's convention (two spaces in TypeScript, JavaScript, Ruby, Scala, OCaml, R, Bash, Dart, Elixir and ReScript, a tab in Go, otherwise four spaces)";
+  "the line's own; after a line that opens the list, the indentation of the rows the list already holds, else the column the request writes its own row lines at when that is deeper than the opening line, else one level deeper than the opening line, the level being the file's smallest indentation, else the language's convention (two spaces in TypeScript, JavaScript, Ruby, Scala, OCaml, R, Bash, Dart, Elixir and ReScript, a tab in Go, otherwise four spaces)";
 
 /**
  * The default separator, as the description and the scheduler's note state it: a row the request
@@ -324,13 +324,32 @@ function indentUnit(lines: readonly string[]): string | undefined {
 }
 
 /**
- * One level of `path`'s row list (#2618): the request's own row indentation, the file's smallest,
- * the language's `ROW_INDENT`, and four spaces only where the language states none.
+ * The indentation of a row after a line that opens its list (#2618, #3017). The request's own row
+ * indentation is the column it wants a row at, not a level to add: R108 drawsieve placed rows with
+ * six spaces after OCaml's `  [` where the request wrote four. So it is taken as it is where it is
+ * deeper than the opener; else a row is one level deeper than the opener, the level being the
+ * file's smallest indentation (not for a re-indent, whose misplaced rows are in the file), the
+ * language's `ROW_INDENT`, and four spaces only where the language states none.
  */
-function levelOf(path: string, requested: string | undefined, lines: readonly string[]): string {
-  return (
-    requested ?? indentUnit(lines) ?? rowOf(ROW_INDENT, detectLanguageFromPath(path)) ?? "    "
-  );
+function rowIndentAfter(
+  path: string,
+  opener: string,
+  requested: string | undefined,
+  lines: readonly string[] | null,
+): string {
+  if (requested !== undefined && requested.length > opener.length) return requested;
+  const fileLevel = lines ? indentUnit(lines) : undefined;
+  return opener + (fileLevel ?? rowOf(ROW_INDENT, detectLanguageFromPath(path)) ?? "    ");
+}
+
+/**
+ * The indentation of the rows a list already holds right after its opener (line `from`, from 0):
+ * the file's own layout, which comes before the request's (#3017). None for an empty list.
+ */
+function heldIndent(lines: readonly string[], from: number): string | undefined {
+  const next = lines.slice(from).find((line) => line.trim() !== "");
+  if (next === undefined || /^[)\]}]/.test(next.trim())) return undefined;
+  return /^[ \t]*/.exec(next)?.[0];
 }
 
 /** A row's text as a line holds it: trimmed, a trailing separator dropped. */
@@ -566,11 +585,15 @@ export function placeRows(
   const anchor = where > 0 ? (lines[where - 1] ?? "") : "";
   const eol = (anchor || (lines[0] ?? "")).endsWith("\r") ? "\r" : "";
   const anchorIndent = /^[ \t]*/.exec(anchor)?.[0] ?? "";
-  // After a line that opens the list (`= {`, `List.of(`, `ROWS = [`) a row is one level deeper;
-  // after a row or any other line it keeps that line's indentation.
+  // After a line that opens the list (`= {`, `List.of(`, `ROWS = [`) a row takes the indentation
+  // of the rows the list holds, else the request's row column or one level deeper than the opener
+  // (`rowIndentAfter`); after a row or any other line it keeps that line's indentation.
   const opens = OPENS_LIST.test(anchor.trimEnd());
   const indent =
-    input.indent ?? (opens ? anchorIndent + levelOf(path, indents.get(path), lines) : anchorIndent);
+    input.indent ??
+    (opens
+      ? (heldIndent(lines, where) ?? rowIndentAfter(path, anchorIndent, indents.get(path), lines))
+      : anchorIndent);
   // The line form of a restored row: the template's indentation and separator around the row. A
   // separator the row ends with is layout, not content: kept by default, replaced by the caller's.
   // Before the list's close the last placed row is the list's last row (#3001): where the request
@@ -652,7 +675,8 @@ function moved(
  * Rows the file already holds, re-indented in place (#2618): a layout correction in one call. Each
  * row of the span must be held; its line keeps its text and separator and takes `input.indent`, by
  * default the indentation of the line before the first held row, one level deeper when that line
- * opens the list (the level from the request's rows, then the language, never the file's own).
+ * opens the list: the request's row column where it is deeper than that line, else one level
+ * deeper (the language's level, never the file's own), #3017.
  */
 function reindented(
   input: PlaceRowsInput,
@@ -672,9 +696,11 @@ function reindented(
   const top = held[0] ?? 0;
   const before = lines[top - 1] ?? "";
   const beforeIndent = /^[ \t]*/.exec(before)?.[0] ?? "";
-  const level = requested ?? rowOf(ROW_INDENT, detectLanguageFromPath(path)) ?? "    ";
   const indent =
-    input.indent ?? (/[[({=]$/.test(before.trimEnd()) ? beforeIndent + level : beforeIndent);
+    input.indent ??
+    (/[[({=]$/.test(before.trimEnd())
+      ? rowIndentAfter(path, beforeIndent, requested, null)
+      : beforeIndent);
   for (const line of held) lines[line] = indent + (lines[line] ?? "").trimStart();
   return {
     content: lines.join("\n"),

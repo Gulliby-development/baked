@@ -77,7 +77,7 @@ describe("place_rows indentation (#2618)", () => {
 
   test("the description states the default indentation and the re-indent call", () => {
     const description = placeRowsDescription(new Map([[PATH, ROWS]]));
-    expect(description).toContain("the indentation of the request's own row lines, else the file's smallest indentation, else the language's convention");
+    expect(description).toContain("the column the request writes its own row lines at when that is deeper than the opening line, else one level deeper than the opening line, the level being the file's smallest indentation, else the language's convention");
     expect(description).toContain("reindent: true");
   });
 });
@@ -190,5 +190,52 @@ describe("scenario: R107 netweave, a feature's slice of a shared row block place
     expect(place(tail, request, 3, [1, 4])).toBe(kotlin(BLOCK, false));
     const placed = placeRows({ path: KT_PATH, line: 3, rows: [1, 4], lastSeparator: "," }, new Map([[KT_PATH, request]]), kotlin([], false));
     expect("content" in placed && placed.content).toBe(`${kotlin(BLOCK.slice(0, 4), true)}`);
+  });
+});
+
+// #3017: R108 drawsieve (OCaml), run 58a6ee43 T003. The request wrote the rows of
+// `test/test_bars.ml` with four spaces, the column it wants them at; the list opens with `  [`.
+// place_rows added the request's four spaces to the opener's two as one level: six spaces, and a
+// `reindent: true` call wrote six again. The request's row column is taken as it is.
+describe("scenario: R108 drawsieve, rows after an indented list opener (#3017)", () => {
+  const ML = "test/test_bars.ml";
+  const BARS = ['("a", 1)', '("b", 2)', '("c", 3)'];
+  const mlRequest = (indent: string) => ["```text", `bars in ${ML} (3 rows)`, ...BARS.map((r) => `${indent}${r}`), "```", ""].join("\n");
+  const mlTask = { writes: [{ path: ML, action: "modify" as const }] };
+  const ml = (rows: string[]) => ["let rows =", "  [", ...rows, "  ]", "", "let () = run rows", ""].join("\n");
+
+  test("OCaml `  [`: the request's four spaces stay four, after the opener and on a re-indent", () => {
+    const text = mlRequest("    ");
+    const targets = placeRowTargets(text, mlTask);
+    const indents = placeRowIndents(text, mlTask);
+    const placed = placeRows({ path: ML, after: "[", rows: [1, 3], separator: ";", lastSeparator: ";" }, targets, ml([]), indents);
+    expect("content" in placed && placed.content).toBe(ml(BARS.map((r) => `    ${r};`)));
+    const six = ml(BARS.map((r) => `      ${r};`));
+    const fixed = placeRows({ path: ML, line: 0, rows: [1, 3], reindent: true }, targets, six, indents);
+    expect("content" in fixed && fixed.content).toBe(ml(BARS.map((r) => `    ${r};`)));
+  });
+
+  test("Java and Kotlin: rows the request writes at the opener's column or less go one level deeper", () => {
+    const java = "src/test/java/BarsTest.java";
+    const javaTask = { writes: [{ path: java, action: "modify" as const }] };
+    const jRows = ['Arguments.of("a", 1)', 'Arguments.of("b", 2)'];
+    const jText = ["```text", `bars in ${java} (2 rows)`, ...jRows.map((r) => `  ${r}`), "```", ""].join("\n");
+    const jFile = ["class BarsTest {", "    static Stream<Arguments> rows() {", "        return Stream.of(", "        );", "    }", "}", ""].join("\n");
+    const placed = placeRows({ path: java, after: "return Stream.of(", rows: [1, 2] }, placeRowTargets(jText, javaTask), jFile, placeRowIndents(jText, javaTask));
+    expect("first" in placed && placed.first).toBe(`            ${jRows[0]},`);
+    // Kotlin at the request's own deeper column.
+    const kt = "src/test/kotlin/BarsTest.kt";
+    const ktTask = { writes: [{ path: kt, action: "modify" as const }] };
+    const kText = ["```text", `bars in ${kt} (2 rows)`, ...jRows.map((r) => `                ${r}`), "```", ""].join("\n");
+    const kFile = ["object Bars {", "    fun rows() =", "            listOf(", "            )", "}", ""].join("\n");
+    const kPlaced = placeRows({ path: kt, after: "listOf(", rows: [1, 2] }, placeRowTargets(kText, ktTask), kFile, placeRowIndents(kText, ktTask));
+    expect("first" in kPlaced && kPlaced.first).toBe(`                ${jRows[0]},`);
+  });
+
+  test("a list that already holds rows: placed rows take their indentation", () => {
+    const text = mlRequest("        ");
+    const targets = placeRowTargets(text, mlTask);
+    const placed = placeRows({ path: ML, after: "[", rows: [1, 2], separator: ";" }, targets, ml([`    ${BARS[2]};`]), placeRowIndents(text, mlTask));
+    expect("first" in placed && placed.first).toBe(`    ${BARS[0]};`);
   });
 });
