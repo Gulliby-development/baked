@@ -176,9 +176,22 @@ export type FeatureEstimateBasis =
   | "history"
   | "defaults";
 
+/**
+ * A feature's price at the stage shares runs of its routes measured (`routedStageShare`, #2963):
+ * `costUsd` at those shares, `blendedCostUsd` at the stage weights the shown price used. Under
+ * `shadow` the feature's `costUsd` is the blended one, under `on` this one.
+ */
+export interface RoutedShareRecord {
+  mode: "shadow" | "on";
+  costUsd: TokenRange;
+  blendedCostUsd: TokenRange | null;
+}
+
 export interface FeatureEstimate {
   /** Dollar range on the workflow's routed models; absent without a shared dollar budget. */
   costUsd?: TokenRange | null;
+  /** The price at the routes' measured stage shares beside `costUsd` (#2963); absent without one. */
+  routedShare?: RoutedShareRecord;
   featureId: string;
   title: string;
   workflowId: string;

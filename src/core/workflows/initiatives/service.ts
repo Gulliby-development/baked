@@ -41,7 +41,13 @@ import {
   tokenText,
 } from "../estimate.js";
 import { featureRowsLines } from "../feature-rows.js";
-import { forecastSamples, forecastStageCost, runForecastStages } from "../forecast-price.js";
+import {
+  DEFAULT_ROUTED_STAGE_SHARE,
+  forecastSamples,
+  forecastStageCost,
+  routedStageWeights,
+  runForecastStages,
+} from "../forecast-price.js";
 import { historySnapshot, historySnapshotting } from "../history-snapshot.js";
 import { executingLeases } from "../leases.js";
 import { FEATURE_REQUEST_HEADING } from "../person-request.js";
@@ -82,6 +88,7 @@ import {
 } from "../stop-reasons.js";
 import { newId, readStoreHistory, WorkflowStore } from "../store.js";
 import type { IssueSource } from "../types.js";
+import type { AttemptUsageRow } from "../usage.js";
 import { HOST_AUTO_APPROVAL_CEILING, HostAutoApprovalSchema } from "../v2/definition.js";
 import { loadDefinition } from "../v2/definitions.js";
 import { loadGateLibrary } from "../v2/library.js";
@@ -113,6 +120,7 @@ import {
   type InitiativeEstimate,
   type InitiativeProgress,
   MIN_CALIBRATION_FEATURES,
+  type RoutedShareRecord,
   SIZE_STAGE_FACTOR,
   SIZE_TASK_FACTOR,
   testVolumeText,
@@ -402,6 +410,12 @@ export interface FeatureView {
   /** Priced low and high estimates, independent of the allocated dollar share. */
   needUsd?: TokenRange | null;
   /**
+   * The price at the stage shares runs of the feature's routes measured, beside `needUsd`
+   * (`routedStageShare`, #2963); absent with it off, without such runs, or once a feature of its
+   * workflow is accepted.
+   */
+  routedShare?: RoutedShareRecord;
+  /**
    * What `sizing.fewPathPrice` did to its estimate (#2640): applied or not, why, and its range
    * before and after. Absent with the knob off, once it has a run, or before approval.
    */
@@ -657,7 +671,7 @@ export interface ShareGateRecord {
   >;
   view: ShareGateView;
   feature: Pick<FeatureView, "id" | "share" | "need" | "shareUsd"> &
-    Partial<Pick<FeatureView, "needUsd" | "fewPathShare">>;
+    Partial<Pick<FeatureView, "needUsd" | "fewPathShare" | "routedShare">>;
 }
 
 /** The few-path share records of `features`' estimates, by feature id (#2640). */
@@ -1333,7 +1347,7 @@ function stageWeights(
   size: FeatureSize,
   mix?: ReadonlyMap<string, number>,
 ): { id: string; models: string[]; tokens: number }[] {
-  const measured = mix && stages.some((s) => (mix.get(s.stageId) ?? 0) > 0) ? mix : undefined;
+  const measured = measuredMixOf(stages, mix);
   return stages.map((s) => ({
     id: s.stageId,
     models: s.models,
@@ -1342,6 +1356,28 @@ function stageWeights(
       : ((s.tokens.low + s.tokens.high) / 2) *
         (s.type === "tasks" ? SIZE_TASK_FACTOR[size] : SIZE_STAGE_FACTOR[size]),
   }));
+}
+
+/** The accepted features' stage mix when it covers a planned stage; `stageWeights` reads it then. */
+function measuredMixOf(
+  stages: PreRunEstimate["stages"],
+  mix?: ReadonlyMap<string, number>,
+): ReadonlyMap<string, number> | undefined {
+  return mix && stages.some((s) => (mix.get(s.stageId) ?? 0) > 0) ? mix : undefined;
+}
+
+/** Dollars per token of a feature whose tokens split as `weights`; null without a price. */
+function rateAt(
+  samples: AttemptUsageRow[],
+  weights: { id: string; models: string[]; tokens: number }[],
+): number | null {
+  const total = weights.reduce((sum, s) => sum + s.tokens, 0);
+  return total > 0
+    ? forecastStageCost(
+        samples,
+        weights.map((s) => ({ ...s, tokens: s.tokens / total })),
+      )
+    : null;
 }
 
 const usd = (n: number): string => `$${n.toFixed(2)}`;
@@ -2525,6 +2561,8 @@ export class InitiativeService {
         needUsd: feature.needUsd ?? null,
         // The few-path share its need was priced with (#2640), so a bench round can count it.
         ...(feature.fewPathShare ? { fewPathShare: feature.fewPathShare } : {}),
+        // Its price at the routes' stage shares beside `needUsd` (#2963), for the bench to compare.
+        ...(feature.routedShare ? { routedShare: feature.routedShare } : {}),
       },
     };
     this.store.emit(id, "feature.share_gate", record);
@@ -4421,6 +4459,8 @@ export class InitiativeService {
     for (const feature of waiting) {
       feature.need = needs.get(feature.id) ?? null;
       feature.needUsd = estimate.features.find((f) => f.featureId === feature.id)?.costUsd ?? null;
+      const routed = estimate.features.find((f) => f.featureId === feature.id)?.routedShare;
+      if (routed) feature.routedShare = routed;
     }
     // What `sizing.fewPathPrice` did to each waiting feature (#2640); none with the knob set off.
     const fewPathShare = fewPathShares(estimate.features, waiting);
@@ -4578,6 +4618,8 @@ export class InitiativeService {
     for (const feature of waitingForRun) {
       feature.need = needs?.get(feature.id) ?? null;
       feature.needUsd = estimate?.features.find((f) => f.featureId === feature.id)?.costUsd ?? null;
+      const routed = estimate?.features.find((f) => f.featureId === feature.id)?.routedShare;
+      if (routed) feature.routedShare = routed;
     }
     const fewPathShare = estimate ? fewPathShares(estimate.features, waitingForRun) : {};
     for (const feature of waitingForRun) {
@@ -5551,6 +5593,10 @@ export class InitiativeService {
       history,
       historyStorePaths(this.workflows.workspace, settings.basePolicy),
     );
+    // `routedStageShare` (#2963): the stage shares of finished runs that ran each stage on its
+    // route, read only where no accepted feature of the workflow measured the mix.
+    const routedMode = settings.basePolicy.routedStageShare ?? DEFAULT_ROUTED_STAGE_SHARE;
+    let routedSamples: AttemptUsageRow[] | null = null;
     const planned = new Map<string, PlannedStage[]>();
     for (const feature of estimate.features) {
       if (!planned.has(feature.workflowId))
@@ -5564,17 +5610,30 @@ export class InitiativeService {
         maxTotalTokens: 0,
         price: () => null,
       });
-      const weights = stageWeights(priced.stages, feature.size, mixes.get(feature.workflowId));
-      const total = weights.reduce((sum, s) => sum + s.tokens, 0);
-      const rate =
-        total > 0
-          ? forecastStageCost(
-              samples,
-              weights.map((s) => ({ ...s, tokens: s.tokens / total })),
-            )
-          : null;
-      feature.costUsd =
+      const mix = measuredMixOf(priced.stages, mixes.get(feature.workflowId));
+      const weights = stageWeights(priced.stages, feature.size, mix);
+      const blended = rateAt(samples, weights);
+      const range = (rate: number | null) =>
         rate === null ? null : { low: feature.tokens.low * rate, high: feature.tokens.high * rate };
+      feature.costUsd = range(blended);
+      if (routedMode === "off" || mix) continue;
+      routedSamples ??= this.priceSamples(
+        this.workflows.store,
+        [],
+        history,
+        historyStorePaths(this.workflows.workspace, settings.basePolicy),
+      );
+      const factor = new Map(
+        priced.stages.map((s) => [
+          s.stageId,
+          s.type === "tasks" ? SIZE_TASK_FACTOR[feature.size] : SIZE_STAGE_FACTOR[feature.size],
+        ]),
+      );
+      const routed = routedStageWeights(routedSamples, weights, (id) => factor.get(id) ?? 1);
+      const costUsd = range(routed && rateAt(samples, routed));
+      if (!costUsd) continue;
+      feature.routedShare = { mode: routedMode, costUsd, blendedCostUsd: feature.costUsd };
+      if (routedMode === "on") feature.costUsd = costUsd;
     }
   }
 

@@ -101,9 +101,12 @@ function owningStage(steps: StepTree, stepId: string): string {
   return stage.startsWith("task-") ? "implement" : stage;
 }
 
+/** A price sample with the run it was measured in, which `forecastSamples` sets. */
+export type PriceSample = AttemptUsageRow & { runId?: string };
+
 /** What pricing calls of one run share: its price samples and its steps. */
 export interface RunPrices {
-  samples: AttemptUsageRow[];
+  samples: PriceSample[];
   steps: StepTree;
 }
 
@@ -117,7 +120,7 @@ const CACHED_RUNS = 256;
 /** Each store's price samples per run, with the `priceStamp` they were read at. */
 const samplesCache = new WeakMap<
   WorkflowStore,
-  Map<string, { stamp: string; rows: AttemptUsageRow[] }>
+  Map<string, { stamp: string; rows: PriceSample[] }>
 >();
 
 /**
@@ -129,7 +132,7 @@ export function forecastSamples(
   store: WorkflowStore,
   runIds: string[],
   known?: StepTree,
-): AttemptUsageRow[] {
+): PriceSample[] {
   let runs = samplesCache.get(store);
   if (!runs) {
     runs = new Map();
@@ -149,6 +152,7 @@ export function forecastSamples(
     const rows = runUsage(store, runId).attempts.map((a) => ({
       ...a,
       stage: stages.get(a.attemptId) ?? a.stage,
+      runId,
     }));
     cache.delete(runId);
     if (cache.size >= CACHED_RUNS) {

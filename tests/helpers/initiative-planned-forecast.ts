@@ -7,6 +7,7 @@ import { InitiativeService } from "../../src/core/workflows/initiatives/service.
 import type { RunPolicy, Spec } from "../../src/core/workflows/schemas.js";
 import { newId, type WorkflowStore } from "../../src/core/workflows/store.js";
 import type { ExecutionRequest } from "../../src/core/workflows/types.js";
+import type { AppConfig } from "../../src/types/index.js";
 import { FixtureExecutor, fixturePolicy, fixtureSpec, workflowFixture } from "./workflow-fixture.js";
 
 export const MODEL = "anthropic/claude-sonnet-4-6";
@@ -87,10 +88,17 @@ class ScriptedExecutor extends FixtureExecutor {
   }
 }
 
-export async function historyFixture(featureUsd: number, mix: Mix = {}) {
+/** The run model and model routing of a history run or an initiative; `MODEL` alone by default. */
+export interface Routes {
+  model?: string;
+  modelRouting?: AppConfig["modelRouting"];
+}
+
+export async function historyFixture(featureUsd: number, mix: Mix = {}, routes: Routes = {}) {
   const policy = { ...fixturePolicy, checks: [{ ...fixturePolicy.checks[0]!, args: ["-e", "0"] }], sizing: { maxRunTokens: 50_000_000 } };
   const fixture = workflowFixture({ policy, executor: (root) => new ScriptedExecutor(root, featureUsd, false, mix) });
-  fixture.config.defaultModel = MODEL;
+  fixture.config.defaultModel = routes.model ?? MODEL;
+  if (routes.modelRouting) fixture.config.modelRouting = routes.modelRouting;
   fixture.executor.store = fixture.service.store;
   try {
     const run = await fixture.start();
@@ -121,11 +129,12 @@ function repository(root: string): void {
 
 export async function plannedForecastScenario(
   count: number, firstUsd: number | Record<string, number>, histories: string[],
-  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"]; mix?: Mix; skeleton?: boolean; capUsd?: number | null; maxTotalTokens?: number; extendWithinDollars?: "off" | "shadow" | "on"; planChargeExpected?: "off" | "shadow" | "on"; costTolerance?: number | "off"; approve?: boolean; globPaths?: boolean; tasks?: Record<string, number>; planAhead?: boolean; fewPathPrice?: boolean } = {},
+  options: { forecastStop?: boolean; stopModes?: RunPolicy["stopModes"]; mix?: Mix; skeleton?: boolean; capUsd?: number | null; maxTotalTokens?: number; extendWithinDollars?: "off" | "shadow" | "on"; planChargeExpected?: "off" | "shadow" | "on"; costTolerance?: number | "off"; approve?: boolean; globPaths?: boolean; tasks?: Record<string, number>; planAhead?: boolean; fewPathPrice?: boolean; routes?: Routes; routedStageShare?: RunPolicy["routedStageShare"] } = {},
 ) {
   const skeleton = options.skeleton ?? true;
   const fixture = workflowFixture({ executor: (root) => new ScriptedExecutor(root, firstUsd, skeleton, options.mix, options.tasks) });
   fixture.executor.store = fixture.service.store;
+  if (options.routes?.modelRouting) fixture.config.modelRouting = options.routes.modelRouting;
   if (options.extendWithinDollars) fixture.config.workflows = { ...fixture.config.workflows, extendWithinDollars: options.extendWithinDollars };
   if (options.planChargeExpected) fixture.config.workflows = { ...fixture.config.workflows, planChargeExpected: options.planChargeExpected };
   // Plan ahead (#1834) runs every feature in a worktree of a Git repository, two at once.
@@ -145,11 +154,12 @@ export async function plannedForecastScenario(
     })),
   };
   try {
-    let view = await initiatives.start({ commandId: newId(), initiativeId: "values", prompt: "Write values", ownerLabel: "test", model: MODEL,
+    let view = await initiatives.start({ commandId: newId(), initiativeId: "values", prompt: "Write values", ownerLabel: "test", model: options.routes?.model ?? MODEL,
       plan, keepFeatures: true, featureAutoApproval: { maxTasks: 5, maxFiles: 5 },
       ...(options.forecastStop ? { forecastStop: true } : {}),
       policy: { ...fixturePolicy, clarification: "assume", ...(options.planAhead ? { executionMode: "worktree" as const } : {}), checks: [{ ...fixturePolicy.checks[0]!, args: ["-e", "0"] }], sizing: { maxRunTokens: 50_000_000, historyStores: histories, ...(options.fewPathPrice !== undefined ? { fewPathPrice: options.fewPathPrice } : {}) },
-        ...(options.stopModes ? { stopModes: options.stopModes } : {}) },
+        ...(options.stopModes ? { stopModes: options.stopModes } : {}),
+        ...(options.routedStageShare ? { routedStageShare: options.routedStageShare } : {}) },
       budget: { maxTotalTokens: options.maxTotalTokens ?? 100_000_000, maxAgentCalls: 1000, maxActiveMs: 21_600_000 },
       ...(options.capUsd === null ? {} : { costBudget: { maxCostUsd: options.capUsd ?? 30, costTolerance: options.costTolerance ?? 0.25 } }),
     });
