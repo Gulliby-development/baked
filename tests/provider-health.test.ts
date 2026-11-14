@@ -242,6 +242,16 @@ test("local handshakes do not count as a first response", async () => {
   expect(settled).toEqual([false]);
 });
 
+test("provider keepalive pings do not count as a first response", async () => {
+  const settled: boolean[] = [];
+  const base = streaming((controller) => {
+    controller.enqueue({ type: "stream-start", warnings: [] });
+    controller.enqueue({ type: "ping" } as never);
+  });
+  await expect(generateText({ model: withProviderHealth(base, "fixture/model", { firstByteMs: 20, pending: () => (ok) => settled.push(ok) }), prompt: "Hi", maxRetries: 0 })).rejects.toBeInstanceOf(ProviderUnreachableError);
+  expect(settled).toEqual([false]);
+});
+
 test("reasoning is a response, and its text and usage survive collection", async () => {
   const settled: boolean[] = [];
   const base = streaming((controller) => {
