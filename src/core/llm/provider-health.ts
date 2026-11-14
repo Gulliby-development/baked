@@ -93,6 +93,13 @@ export interface FirstByteInputs {
   expired?: true;
 }
 
+/**
+ * A provider keepalive (`ping` stream part, added in @ai-sdk/provider 4.0.37). It is neither
+ * content nor a model response, so it must not end the first-response wait. Compared as a
+ * string so the check holds on provider versions whose stream-part union lacks it.
+ */
+const isKeepalive = (part: { type: string }): boolean => part.type === "ping";
+
 /** The inputs `firstByteDeadline` takes from a shape's healthy answers. */
 export function firstByteInputs(healthy: readonly (number | SizedFirstByte)[]): FirstByteInputs {
   if (!healthy.length) return { samples: 0 };
@@ -452,11 +459,12 @@ export function withProviderHealth(
               } else if (
                 part.type !== "tool-input-start" &&
                 part.type !== "tool-input-end" &&
-                part.type !== "raw"
+                part.type !== "raw" &&
+                !isKeepalive(part)
               ) {
                 response();
                 answered = true;
-                content.push(part);
+                content.push(part as LanguageModelV4Content);
               }
             }
             if (!finish)
