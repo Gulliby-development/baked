@@ -4194,34 +4194,103 @@ export function replayInitiativeStarts(
   );
 }
 
+type RecordedRoute = { model?: string; effort?: string; source?: string };
+type WorkflowRoutes = Record<
+  string,
+  { stages: Record<string, { model: string; effort?: string }> }
+>;
+
+const routeOf = (route: RecordedRoute & { model: string }) => ({
+  model: route.model,
+  ...(route.effort ? { effort: route.effort } : {}),
+});
+
+/** What the trace's routing records show of the runner's configuration beyond its profiles. */
+interface RecordedRouting {
+  workflows: WorkflowRoutes;
+  /** False when a run with a `specify` stage recorded no `specifyOnSonnet` route for it. */
+  specifyOnSonnet?: false;
+}
+
+/**
+ * The workflow stage routes (`modelRouting.workflows.sdd.stages.implement`) the trace's routing
+ * records show, and whether the runner moved `specify` to a Sonnet-tier route on an Opus run model
+ * (`specifyOnSonnet`, #1173), read before a rewind. They come from the runner's configuration,
+ * which a round does not change, and only a run of that workflow records them: R103's Claude track
+ * ran its tasks on another model than its planning, and its first start, rewound to where only the
+ * decompose run's record was left, priced every feature's tasks on the planning model and its
+ * specify stage on a model no run used (#2963).
+ */
+function recordedRouting(db: Database): RecordedRouting {
+  const workflows: WorkflowRoutes = {};
+  const specified = new Set(
+    (
+      db.query("SELECT DISTINCT run_id FROM steps WHERE stage_id='specify'").all() as {
+        run_id: string;
+      }[]
+    ).map((r) => r.run_id),
+  );
+  let sonnetSpecify = false;
+  let ownSpecify = false;
+  for (const row of db
+    .query(
+      "SELECT run_id, inline_content AS content FROM artifacts WHERE kind='routing' ORDER BY created_at",
+    )
+    .all() as { run_id: string; content: string | null }[]) {
+    const record = JSON.parse(row.content ?? "{}") as { stages?: Record<string, RecordedRoute> };
+    if (specified.has(row.run_id)) {
+      if (record.stages?.specify?.source === "modelRouting.specifyOnSonnet") sonnetSpecify = true;
+      else ownSpecify = true;
+    }
+    for (const route of Object.values(record.stages ?? {})) {
+      const [, workflow, stage] =
+        /^modelRouting\.workflows\.([^.]+)\.stages\.(.+)$/.exec(route.source ?? "") ?? [];
+      if (!workflow || !stage || !route.model || workflows[workflow]?.stages[stage]) continue;
+      workflows[workflow] = {
+        stages: {
+          ...workflows[workflow]?.stages,
+          [stage]: routeOf({ ...route, model: route.model }),
+        },
+      };
+    }
+  }
+  return { workflows, ...(ownSpecify && !sonnetSpecify ? { specifyOnSonnet: false } : {}) };
+}
+
 /**
  * The runner's model routing as the trace's latest routing record before `t` shows it: each
- * profile's route names the configured class, role or profile it came from. Features without a
- * run are routed with it, as the runner routed them; without it every stage would run on the
- * initiative's model and be priced there.
+ * profile's route names the configured class, role or profile it came from, and `recorded` adds
+ * what the whole trace shows of the rest (`recordedRouting`). Features without a run are routed
+ * with it, as the runner routed them; without it every stage would run on the initiative's model
+ * and be priced there.
  */
-function routingAt(db: Database, t: number): Pick<AppConfig, "modelRouting"> {
+function routingAt(
+  db: Database,
+  t: number,
+  recorded: RecordedRouting = { workflows: {} },
+): Pick<AppConfig, "modelRouting"> {
   const row = db
     .query(
       "SELECT inline_content AS content FROM artifacts WHERE kind='routing' AND created_at<? ORDER BY created_at DESC LIMIT 1",
     )
     .get(t) as { content: string | null } | null;
   if (!row?.content) return {};
-  const record = JSON.parse(row.content) as {
-    profiles?: Record<string, { model?: string; effort?: string; source?: string }>;
-  };
-  const routing: Record<string, Record<string, { model: string; effort?: string }>> = {};
+  const record = JSON.parse(row.content) as { profiles?: Record<string, RecordedRoute> };
+  const routing: Record<string, unknown> = {};
   for (const route of Object.values(record.profiles ?? {})) {
     const [, kind, name] =
       /^modelRouting\.(classes|roles|profiles)\.(.+)$/.exec(route.source ?? "") ?? [];
     if (!kind || !name || !route.model) continue;
     routing[kind] = {
-      ...routing[kind],
-      [name]: { model: route.model, ...(route.effort ? { effort: route.effort } : {}) },
+      ...(routing[kind] as Record<string, unknown> | undefined),
+      [name]: routeOf({ ...route, model: route.model }),
     };
   }
+  if (!Object.keys(routing).length) return {};
+  if (Object.keys(recorded.workflows).length) routing.workflows = recorded.workflows;
+  if (recorded.specifyOnSonnet === false) routing.specifyOnSonnet = false;
   const parsed = ModelRoutingSchema.safeParse(routing);
-  return parsed.success && Object.keys(routing).length ? { modelRouting: parsed.data } : {};
+  return parsed.success ? { modelRouting: parsed.data } : {};
 }
 
 /** Tables other than `runs` whose rows belong to a run. */
@@ -4340,6 +4409,7 @@ function replayStarts(
   };
   try {
     const db = store.connection;
+    const recorded = recordedRouting(db);
     const row = db
       .query("SELECT settings_json, decompose_run_id FROM initiatives WHERE id=?")
       .get(initiativeId) as { settings_json: string; decompose_run_id: string | null };
@@ -4529,7 +4599,7 @@ function replayStarts(
         workspace,
         {
           ...DEFAULT_CONFIG,
-          ...routingAt(db, t),
+          ...routingAt(db, t, recorded),
           // The replay reads only this setting of `workflows`; the rest stays unset, as before.
           ...(planChargeExpected
             ? {

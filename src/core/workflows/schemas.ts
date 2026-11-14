@@ -593,6 +593,13 @@ export const PolicySchema = z
      */
     providerTokenMix: z.enum(["off", "shadow", "on"]).optional(),
     /**
+     * How an initiative prices a feature before one of its workflow is accepted (#2963): `off` at
+     * the history's stage ranges, `shadow` the same and records the price at the stage shares
+     * runs of the same routes measured (`routedStageWeights`) beside it as `routedShare`, `on`
+     * uses that price. Absent means `shadow`, so stored policies keep their hash.
+     */
+    routedStageShare: z.enum(["off", "shadow", "on"]).optional(),
+    /**
      * The mode of each registered stop reason (stop-reasons.ts): `shadow` and `advisory` record a
      * `decision.would_stop` event instead of stopping the run or declining the approval (#1714).
      * Hard limits on money, tokens, time and storage take only `enforce`. Absent keeps every
