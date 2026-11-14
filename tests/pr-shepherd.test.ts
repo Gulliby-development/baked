@@ -8,6 +8,7 @@ import {
   type PullInfo,
   referencedIssues,
   report,
+  staleClaims,
   stuckPulls,
   stuckReasons,
   unclaimedIssues,
@@ -22,7 +23,7 @@ const pull = (over: Partial<PullInfo>): PullInfo => ({
   autoMerge: true, queued: false, mergeableState: "blocked", checks: [check("check", "success")], body: "", ...over,
 });
 const issue = (number: number, over: Partial<IssueInfo> = {}): IssueInfo => ({
-  number, title: `issue ${number}`, labels: [], assignees: [], comments: [], ...over,
+  number, title: `issue ${number}`, labels: [], assignees: [], comments: [], updatedAt: "2026-11-06T12:00:00Z", ...over,
 });
 
 describe("pr shepherd", () => {
@@ -59,6 +60,24 @@ describe("pr shepherd", () => {
       issue(12, { comments: ["Root cause still unknown."] }),
     ];
     expect(unclaimedIssues(issues, taken).map((i) => i.number)).toEqual([11, 10, 12]);
+  });
+
+  test("a smoke finding filed as a bug is work; a bare smoke log is not", () => {
+    const issues = [issue(20, { labels: ["bench-loop", "smoke"] }), issue(21, { labels: ["bug", "bench-loop", "smoke"] })];
+    expect(unclaimedIssues(issues, new Set()).map((i) => i.number)).toEqual([21]);
+  });
+
+  test("a claim with no update and no open pull request for three days is stale", () => {
+    const claimed = ["Claimed by the bug-fix line."];
+    const issues = [
+      issue(30, { comments: claimed, updatedAt: "2026-11-02T12:00:00Z" }),
+      issue(31, { comments: claimed, updatedAt: "2026-11-05T12:00:00Z" }),
+      issue(32, { comments: claimed, updatedAt: "2026-11-01T12:00:00Z" }),
+      issue(33, { comments: claimed, updatedAt: "2026-11-01T12:00:00Z", assignees: ["Gulliby"] }),
+      issue(34, { updatedAt: "2026-11-01T12:00:00Z" }),
+    ];
+    expect(staleClaims(issues, new Set([32]), now).map((i) => i.number)).toEqual([30]);
+    expect(report([], [], now, staleClaims(issues, new Set(), now))).toContain("- #32 issue 32 (no update for 5 d)");
   });
 
   test("the tracking issue the report rewrites is not listed as unclaimed work", () => {

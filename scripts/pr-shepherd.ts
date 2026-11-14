@@ -1,8 +1,9 @@
-// Finds stuck pull requests and open issues nobody has taken: `bun scripts/pr-shepherd.ts
+// Finds stuck pull requests, open issues nobody has taken and claims left without a pull request: `bun scripts/pr-shepherd.ts
 // [--idle-hours N] [--publish] [--json]`. A pull request is stuck when it conflicts with main, has a
 // failing or hung check, or sits ready without auto-merge or a merge queue entry; an issue is
 // unclaimed when it has no assignee, no "claimed" comment and no open pull request naming it, and
-// no label says it waits on the owner. The report goes to stdout and the job summary; `--publish`
+// no label says it waits on the owner; a claim is stale when the issue has had no update for
+// STALE_CLAIM_HOURS and no open pull request names it. The report goes to stdout and the job summary; `--publish`
 // also rewrites the body of one tracking issue, which the project's shepherd loop reads every run
 // to fix those pull requests or hand them and the issues to a line. It only reads and reports:
 // a merge queue entry made with the workflow token would never get its checks run.
@@ -14,7 +15,11 @@ export const DEFAULT_IDLE_HOURS = 3;
 /** Hours a check may stay in progress before it counts as hung (#2856 held one for 4.5 h). */
 export const HUNG_CHECK_HOURS = 2;
 /** Labels of issues that wait on the owner or are not work items. */
-export const SKIP_LABELS = new Set(["needs-gulliby", "deferred", "idea", "verification", "smoke", "question", "wontfix", "duplicate"]);
+export const SKIP_LABELS = new Set(["needs-gulliby", "deferred", "idea", "verification", "question", "wontfix", "duplicate"]);
+/** Smoke-run logs are not work items, but a smoke finding filed as a `bug` is. */
+const SMOKE_LOG = "smoke";
+/** Hours a claimed issue may go without an update or an open pull request before the claim counts as stale. */
+export const STALE_CLAIM_HOURS = 72;
 export const MARKER = "<!-- pr-shepherd-report -->";
 export const TRACKING_TITLE = "PR shepherd: stuck pull requests and unclaimed issues";
 
@@ -46,6 +51,7 @@ export interface IssueInfo {
   labels: string[];
   assignees: string[];
   comments: string[];
+  updatedAt: string;
 }
 
 export type StuckReason = "conflicts" | "failing checks" | "hung checks" | "no auto-merge" | "idle";
@@ -120,15 +126,28 @@ const rank = (issue: IssueInfo): number => {
   return (p < 0 ? PRIORITY.length : p) * 10 + kind;
 };
 
+/** An issue a line can work without the owner: no waiting label, and not a bare smoke log. */
+export const isWorkItem = (issue: Pick<IssueInfo, "labels">): boolean =>
+  !issue.labels.some((l) => SKIP_LABELS.has(l)) && (!issue.labels.includes(SMOKE_LOG) || issue.labels.includes("bug"));
+
 /** Open issues nobody has taken that a line can take without the owner, the most urgent first. */
 export function unclaimedIssues(issues: readonly IssueInfo[], taken: ReadonlySet<number>): IssueInfo[] {
   return issues
-    .filter((i) => !i.labels.some((l) => SKIP_LABELS.has(l)))
+    .filter(isWorkItem)
     .filter((i) => i.assignees.length === 0 && !taken.has(i.number) && !i.comments.some((c) => CLAIM.test(c)))
     .sort((a, b) => rank(a) - rank(b) || b.number - a.number);
 }
 
-export function report(stuck: readonly StuckPull[], unclaimed: readonly IssueInfo[], now: Date): string {
+/** Issues claimed by a comment that have had no update and no open pull request for STALE_CLAIM_HOURS. */
+export function staleClaims(issues: readonly IssueInfo[], taken: ReadonlySet<number>, now: Date): IssueInfo[] {
+  return issues
+    .filter(isWorkItem)
+    .filter((i) => i.assignees.length === 0 && !taken.has(i.number) && i.comments.some((c) => CLAIM.test(c)))
+    .filter((i) => hoursSince(i.updatedAt, now) > STALE_CLAIM_HOURS)
+    .sort((a, b) => rank(a) - rank(b) || a.updatedAt.localeCompare(b.updatedAt));
+}
+
+export function report(stuck: readonly StuckPull[], unclaimed: readonly IssueInfo[], now: Date, stale: readonly IssueInfo[] = []): string {
   const lines = [MARKER, `Updated ${now.toISOString().slice(0, 16).replace("T", " ")} UTC by \`scripts/pr-shepherd.ts\`.`, ""];
   lines.push(`## Stuck pull requests (${stuck.length})`, "");
   if (stuck.length === 0) lines.push("None.");
@@ -140,6 +159,9 @@ export function report(stuck: readonly StuckPull[], unclaimed: readonly IssueInf
   lines.push("", `## Unclaimed issues (${unclaimed.length})`, "");
   if (unclaimed.length === 0) lines.push("None.");
   else for (const i of unclaimed) lines.push(`- #${i.number} ${i.title}${i.labels.length ? ` (${i.labels.join(", ")})` : ""}`);
+  lines.push("", `## Stale claims (${stale.length})`, "");
+  if (stale.length === 0) lines.push("None.");
+  else for (const i of stale) lines.push(`- #${i.number} ${i.title} (no update for ${Math.floor(hoursSince(i.updatedAt, now) / 24)} d)`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -189,6 +211,7 @@ async function fetchIssues(): Promise<IssueInfo[]> {
       title: i.title,
       labels: i.labels.map((l: Json) => l.name),
       assignees: i.assignees.map((a: Json) => a.login),
+      updatedAt: i.updated_at,
       comments: i.comments ? (await gh<Json[]>(`repos/${REPO}/issues/${i.number}/comments?per_page=100`)).map((c) => c.body ?? "") : [],
     })),
   );
@@ -208,10 +231,13 @@ if (import.meta.main) {
   const now = new Date();
   const [pulls, issues] = await Promise.all([fetchPulls(), fetchIssues()]);
   const stuck = stuckPulls(pulls, now, idleHours);
-  const unclaimed = unclaimedIssues(issues, referencedIssues(pulls));
-  if (args.includes("--json")) console.log(JSON.stringify({ stuck, unclaimed: unclaimed.map(({ comments: _, ...i }) => i) }, null, 2));
+  const taken = referencedIssues(pulls);
+  const unclaimed = unclaimedIssues(issues, taken);
+  const stale = staleClaims(issues, taken, now);
+  const brief = ({ comments: _, ...i }: IssueInfo) => i;
+  if (args.includes("--json")) console.log(JSON.stringify({ stuck, unclaimed: unclaimed.map(brief), stale: stale.map(brief) }, null, 2));
   else {
-    const body = report(stuck, unclaimed, now);
+    const body = report(stuck, unclaimed, now, stale);
     console.log(body);
     if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, body);
     if (args.includes("--publish")) await publish(body);
