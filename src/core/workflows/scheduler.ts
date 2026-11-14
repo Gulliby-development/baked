@@ -74,8 +74,8 @@ import {
   failingOf,
   failuresCovered,
   isTestOf,
-  noTestsCollected,
   pathsInOutput,
+  testsNotBuilt,
 } from "../verification/convergence.js";
 import {
   acceptResidual,
@@ -6193,7 +6193,7 @@ export class WorkflowScheduler {
     output: string,
     evidenceId: string,
   ): string | null {
-    if (!isTestCheck(check) || !noTestsCollected(output)) return null;
+    if (!isTestCheck(check) || !testsNotBuilt(output, [])) return null;
     const writes = ((state.rootGraph ?? state.graph)?.tasks ?? []).flatMap((t) => t.writes);
     if (writes.some((w) => w.action !== "delete" && isTestPath(w.path))) return null;
     const bounds = state.initiativeBounds;
@@ -17185,7 +17185,13 @@ ${note}`;
       const first = await runOnce();
       let checked =
         (await this.silentRerun(runId, policy, check, "reported-defect", first, runOnce)) ?? first;
-      if (checked.status === "failed" && testsPending && noTestsCollected(checked.output ?? "")) {
+      // A test binary that cannot link for want of the tests' `main` (a C Makefile that links
+      // `src/*.c tests/*.c`, smoke c-strbuf) ran no test either (#2997).
+      if (
+        checked.status === "failed" &&
+        testsPending &&
+        testsNotBuilt(checked.output ?? "", plannedTests)
+      ) {
         ran.push({ checkId: check.id, status: "no_tests", evidenceId: checked.evidenceId });
         continue;
       }

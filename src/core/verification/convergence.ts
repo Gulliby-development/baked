@@ -380,6 +380,44 @@ export function noTestsCollected(raw: string): boolean {
 }
 
 /**
+ * The linker lines of a test binary that has no entry point (#2997): a C or C++ Makefile that links
+ * `src/*.c tests/*.c` into one test binary fails at link time while the plan's test file is still
+ * unwritten, before any test can run (smoke c-strbuf, "undefined reference to `main'"). While the
+ * plan's tests are pending this is an empty test run, not a defect of the sources. A new linker or
+ * toolchain form goes here, with a case in `tests/workflow-scenario-test-link-no-main.test.ts`,
+ * never as a regex at a call site.
+ */
+export const NO_ENTRY_POINT_LINES: readonly { tool: string; line: RegExp }[] = [
+  // GNU ld and gold: `(.text+0x1b): undefined reference to `main'`; MinGW's GUI form names WinMain.
+  { tool: "GNU ld", line: /\bundefined reference to [`']_?(?:main|WinMain|wmain)'/ },
+  // LLVM lld: `ld.lld: error: undefined symbol: main`.
+  { tool: "lld", line: /\bundefined symbol: _?main\b/ },
+  // Apple ld: `Undefined symbols for architecture arm64:` then `  "_main", referenced from:`.
+  { tool: "Apple ld", line: /^\s*"_main", referenced from:/m },
+  // MSVC link: `LINK : fatal error LNK1561: entry point must be defined`, or `LNK2019: unresolved
+  // external symbol main referenced in function "int __cdecl invoke_main(void)"`.
+  { tool: "MSVC", line: /\bLNK1561\b|\bunresolved external symbol _?main\b/ },
+];
+
+/** Whether a check's output is a link that failed only for want of `main` (#2997). */
+export function noEntryPoint(raw: string): boolean {
+  const output = plainOutput(raw);
+  return NO_ENTRY_POINT_LINES.some(({ line }) => line.test(output));
+}
+
+/**
+ * Whether a failed test check ran no test because the plan's tests are not written yet: the runner
+ * collected none (`noTestsCollected`), or the test binary failed to link for want of `main`
+ * (`noEntryPoint`) and the output names none of `testPaths`, the tests the plan writes, so the
+ * missing entry point is not one of theirs.
+ */
+export function testsNotBuilt(raw: string, testPaths: readonly string[]): boolean {
+  if (noTestsCollected(raw)) return true;
+  const output = plainOutput(raw);
+  return noEntryPoint(output) && !testPaths.some((path) => output.includes(path));
+}
+
+/**
  * The "path does not exist" lines of the gates that take path arguments, each capturing the path
  * (#1913). A gate that names a folder a later task creates (`ruff check src tests` before the test
  * task) fails with only this until that task runs. A new lint or test gate that takes paths adds
