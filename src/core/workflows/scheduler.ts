@@ -632,6 +632,7 @@ import {
   type SettleKind,
   settleFallback,
 } from "./misquote-fix.js";
+import { outOfReach } from "./out-of-reach.js";
 import { MAX_CONCURRENT_TASK_CHECKS, planBatch, Semaphore, unifiedDiff } from "./parallel.js";
 import {
   PITFALLS_DIR,
@@ -4541,6 +4542,94 @@ export class WorkflowScheduler {
       outcome: "implemented",
       summary:
         `The host finished this task: its attempt stopped (${stoppedBy}) after edits on which ${proof} and its required checks pass (${checks.map((c) => c.id).join(", ") || "none"}). The attempt's account: ${result.summary}`.slice(
+          0,
+          15000,
+        ),
+      evidenceIds: [...new Set([...result.evidenceIds, ...evidenceIds])],
+      unresolved: [],
+    };
+  }
+  /**
+   * A task that ended unfinished only on steps its tools cannot take is finished by the host
+   * (#3021): every unresolved item needs a path outside the workspace (smoke caesar 886d9832: a
+   * README task told to write a sample file in a scratch directory outside the repository) or
+   * names a file a later task writes (node-npm-wordfreq 8d80efd3), the attempt changed files and
+   * created every file it creates, and its required task checks pass. The items are recorded in
+   * `tasks/<task>/out-of-reach.json` and the result becomes `implemented`; the documented-example
+   * run and the review judge the README, and the later task writes its file. Otherwise null, and
+   * the task stops as before: a gap in its own scope still blocks the run.
+   */
+  private async hostFinishOutOfReach(
+    runId: string,
+    state: RuntimeState,
+    policy: RunPolicy,
+    stepId: string,
+    task: Task,
+    result: Implementation,
+    changed: string[],
+    root: string,
+    signal: AbortSignal,
+    run: (check: Check) => Promise<WorkerCheck["checked"]>,
+  ): Promise<Implementation | null> {
+    if (result.taskId !== task.id || !changed.length || !state.graph) return null;
+    if (!["blocked", "implemented"].includes(result.outcome) || !result.unresolved.length)
+      return null;
+    if (
+      task.writes.some(
+        (w) => w.action === "create" && !existsSync(join(root, ...w.path.split("/"))),
+      )
+    )
+      return null;
+    const reached = outOfReach(result.unresolved, root, state.graph, this.store.tasks(runId), task);
+    if (!reached) return null;
+    if (task.rows?.length) {
+      const rows = (() => {
+        try {
+          return this.taskRowFiles(runId, state, policy, task);
+        } catch {
+          return null;
+        }
+      })();
+      if (!rows || (await rowFileProblems(root, rows)).length) return null;
+    }
+    const checks = this.gatedChecks(runId, state, policy, task, root, changed).filter(
+      (check) => check.required,
+    );
+    const evidenceIds: string[] = [];
+    for (const check of checks) {
+      signal.throwIfAborted();
+      const checked = await run(check);
+      if (checked.status !== "passed") return null;
+      evidenceIds.push(checked.evidenceId);
+    }
+    this.store.transaction(() =>
+      this.store.artifact(
+        runId,
+        "recovery",
+        `tasks/${task.id}/out-of-reach.json`,
+        canonical({
+          taskId: task.id,
+          stepId,
+          outcome: result.outcome,
+          items: reached,
+          checks: checks.map((c) => c.id),
+          evidenceIds,
+          changed,
+        }),
+      ),
+    );
+    const left = reached
+      .map((r) =>
+        r.reason === "later_task"
+          ? `${r.item} (left to ${r.tasks.join(", ")})`
+          : `${r.item} (needs a path outside the workspace)`,
+      )
+      .join("; ");
+    return {
+      ...result,
+      outcome: "implemented",
+      summary:
+        `The host finished this task: its files are written and its required checks pass (${checks.map((c) => c.id).join(", ") || "none"}); what it left is out of its tools' reach: ${left}. The attempt's account: ${result.summary}`.slice(
           0,
           15000,
         ),
@@ -9695,7 +9784,25 @@ ${note}`;
           return checked;
         },
       );
-      if (finished) result = finished;
+      const reached = finished
+        ? null
+        : await this.hostFinishOutOfReach(
+            runId,
+            state,
+            policy,
+            child,
+            task,
+            result,
+            changed,
+            root,
+            signal,
+            async (check) => {
+              const checked = await this.runTaskCheck(runId, child, check, policy, signal, root);
+              cutOffResults.set(hashJson(check), checked);
+              return checked;
+            },
+          );
+      if (finished ?? reached) result = finished ?? reached ?? result;
       else if (capStop.fault) throw capStop.fault;
       const reproduced = await this.stillReproduces(
         runId,
@@ -11410,7 +11517,21 @@ ${note}`;
         signal,
         runCheck,
       );
-      if (finished) result = finished;
+      const reached = finished
+        ? null
+        : await this.hostFinishOutOfReach(
+            runId,
+            state,
+            policy,
+            entry.child,
+            task,
+            result,
+            changed,
+            root,
+            signal,
+            runCheck,
+          );
+      if (finished ?? reached) result = finished ?? reached ?? result;
       else if (capStop.fault) throw capStop.fault;
       const reproduced = await this.stillReproduces(
         runId,
