@@ -56,7 +56,7 @@ function routedStarts(): Priced[] {
           const tokens = feature.need.low + feature.need.high;
           const routed = feature.routedShare.costUsd;
           priced.push({
-            trace: path.split("/").slice(-2).join("/"),
+            trace: path.split(/[\\/]/).slice(-2).join("/"),
             feature: feature.id,
             shown: (feature.needUsd.low + feature.needUsd.high) / tokens,
             routed: (routed.low + routed.high) / tokens,
