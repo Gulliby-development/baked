@@ -113,7 +113,13 @@ describe("SAFE_STDIO", () => {
 describe("subprocess stdin isolation", () => {
 	it("command that reads stdin gets EOF immediately with SAFE_STDIO", async () => {
 		const { spawn } = await import("node:child_process");
-		const proc = spawn(process.execPath, ["-e", "for await (const chunk of process.stdin) process.stdout.write(chunk)"], { stdio: SAFE_STDIO });
+		// The child gets the env real spawns get, not the test process's own: on macOS this test hung
+		// with the inherited env only when the shard order put it after other files, while the
+		// buildSafeEnv test below ran clean in the same place.
+		const proc = spawn(process.execPath, ["-e", "for await (const chunk of process.stdin) process.stdout.write(chunk)"], {
+			stdio: SAFE_STDIO,
+			env: buildSafeEnv(),
+		});
 		const chunks: string[] = [];
 		proc.stdout?.on("data", (d: Buffer) => chunks.push(d.toString()));
 		const code = await new Promise<number | null>((resolve) => {
