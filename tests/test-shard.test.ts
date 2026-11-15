@@ -1,7 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { busyShards, planShards, type ShardWeights, testFiles, weightsFor } from "../scripts/test-shard.js";
+import {
+  ALONE_SECONDS,
+  busyShards,
+  mergeReports,
+  planShards,
+  processGroups,
+  type ShardWeights,
+  testFiles,
+  weightsFor,
+} from "../scripts/test-shard.js";
 import { buildWeights, fileSeconds } from "../scripts/test-shard-weights.js";
 
 // Round-robin by name put the replay corpus and the slowest workflow suites in one Windows shard:
@@ -99,5 +108,40 @@ describe("busy shards (#2915)", () => {
     });
     expect(run.exitCode).toBe(0);
     expect(run.stdout.toString()).toBe(" 1 \n");
+  });
+});
+
+describe("a long file runs in a bun test process of its own (#3034)", () => {
+  test("files at ALONE_SECONDS or more run alone, after the others together", () => {
+    const weights = {
+      default: 1,
+      files: { "tests/corpus.test.ts": ALONE_SECONDS, "tests/pools.test.ts": 600, "tests/a.test.ts": 30 },
+    };
+    const shard = ["./tests/a.test.ts", "./tests/corpus.test.ts", "./tests/new.test.ts", "./tests/pools.test.ts"];
+    expect(processGroups(shard, weights)).toEqual([
+      ["./tests/a.test.ts", "./tests/new.test.ts"],
+      ["./tests/corpus.test.ts"],
+      ["./tests/pools.test.ts"],
+    ]);
+    expect(processGroups(["./tests/pools.test.ts"], weights)).toEqual([["./tests/pools.test.ts"]]);
+    expect(processGroups([], weights)).toEqual([]);
+  });
+
+  test("the replay corpus pools file runs alone on macOS, as the table measures it", () => {
+    const table = JSON.parse(readFileSync(join(import.meta.dir, "..", "scripts", "test-shard-weights.json"), "utf8"));
+    const weights = weightsFor("darwin", table);
+    const groups = processGroups(["./tests/forecast-replay-corpus-pools.test.ts", "./tests/spawn-safety.test.ts"], weights);
+    expect(groups).toEqual([["./tests/spawn-safety.test.ts"], ["./tests/forecast-replay-corpus-pools.test.ts"]]);
+  });
+
+  test("the merged report keeps every test case of every process", () => {
+    const report = (name: string) =>
+      `<?xml version="1.0" encoding="UTF-8"?>\n<testsuites name="bun test" tests="1">\n  <testsuite name="${name}"><testcase name="${name} case" classname="x" time="1.0" /></testsuite>\n</testsuites>\n`;
+    const merged = mergeReports([report("a"), report("b")]);
+    expect([...merged.matchAll(/<testcase\b[^>]*>/g)].map((m) => /name="([^"]*)"/.exec(m[0])?.[1])).toEqual([
+      "a case",
+      "b case",
+    ]);
+    expect(merged.match(/<\?xml/g)).toHaveLength(1);
   });
 });
