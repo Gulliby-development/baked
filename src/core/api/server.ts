@@ -952,6 +952,12 @@ export async function startApiServer(options: ApiServerOptions): Promise<ApiServ
   function continueInitiativeOf(runId: string): void {
     if (shutdown.signal.aborted) return;
     try {
+      // A decompose run a person resumed leaves its split for a drive to finish (#3046).
+      const decomposed = initiatives.store.decompositionOfRun(runId);
+      if (decomposed) {
+        if (initiatives.ofRun(runId)?.drive?.state === "idle") driveInitiative(decomposed.id);
+        return;
+      }
       const id = initiatives.store.initiativeOfRun(runId);
       if (!id || initiatives.store.get(id).status !== "active") return;
       if (initiatives.store.links(id).some((link) => runDrives.has(link.run_id))) return;

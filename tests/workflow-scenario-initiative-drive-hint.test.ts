@@ -233,3 +233,52 @@ test("a resumed run outside an initiative has no initiative step", async () => {
   expect(result).not.toHaveProperty("initiative");
   expect(result).not.toHaveProperty("next");
 }, 60_000);
+
+// #3046 (R109 datefold and callfence): the decompose runs blocked on a logged-out provider and were
+// continued with `workflow resume`. They completed, the answer said nothing about the initiative,
+// and both initiatives waited at `finish_decompose` for about 50 hours until a manual drive.
+/** An initiative whose decompose run is blocked, as a provider stop leaves it. */
+async function blockedDecompose() {
+  const fixture = workflowFixture({ policy, executor: (root) => new AskingExecutor(root) });
+  cleanups.push(fixture.dispose);
+  const { service } = fixture;
+  const initiatives = new InitiativeService(service);
+  await initiatives.start({ commandId: newId(), initiativeId: "tpl", prompt: "Add the template values", policy, ownerLabel: "test" });
+  const runId = initiatives.store.get("tpl").decompose_run_id ?? "";
+  if (!runId) throw new Error("No decompose run");
+  service.store.transition(runId, "blocked", "budget_exhausted");
+  return { service, initiatives, runId, signal: new AbortController().signal };
+}
+
+test("`workflow resume` of a decompose run that completes names the initiative drive (#3046)", async () => {
+  const { service, initiatives, runId, signal } = await blockedDecompose();
+  const result = (await executeWorkflowCommand(service, parseWorkflowArgs(["extend", runId, "--tokens", "2000000", "--resume", "--expected-revision", String((await service.get(runId)).revision)]), signal)) as Answer;
+  expect(result.status).toBe("completed");
+  // On main: no `initiative` and no `next`, and the initiative waited for a manual drive.
+  expect(result.initiative?.initiativeId).toBe("tpl");
+  expect(result.initiative?.status).toBe("decomposing");
+  expect(result.initiative?.next.kind).toBe("finish_decompose");
+  expect(result.initiative?.drive).toEqual({ state: "idle", text: IDLE_TEXT, command: DRIVE });
+  expect(result.next).toBe(DRIVE);
+  // The drive it names takes the split to its approval.
+  const view = await initiatives.drive("tpl", signal);
+  expect(view.status).toBe("awaiting_approval");
+}, 60_000);
+
+test("`baked serve` resuming a decompose run drives its initiative to the split approval (#3046)", async () => {
+  const { service, initiatives, runId } = await blockedDecompose();
+  // A provider stop, as R109's logged-out Claude Code left both decompose runs.
+  service.store.transition(runId, "blocked", "provider");
+  const server = await startApiServer({ service, pollMs: 20, log: () => {} });
+  cleanups.push(() => server.stop());
+  const response = await fetch(`${server.url}/v1/workflow/runs/${runId}/resume`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${server.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ commandId: newId(), expectedRevision: (await service.get(runId)).revision }),
+  });
+  expect(response.ok).toBe(true);
+  const deadline = Date.now() + 30_000;
+  while (initiatives.view("tpl").status !== "awaiting_approval" && Date.now() < deadline) await Bun.sleep(50);
+  // On main: the initiative stayed `decomposing` at `finish_decompose` until a manual drive.
+  expect(initiatives.view("tpl").status).toBe("awaiting_approval");
+}, 60_000);
