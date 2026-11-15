@@ -65,7 +65,7 @@ export const RUNNER_LINES: Readonly<Record<string, string>> = {
 export const environmentRunners = (): string[] =>
   ENVIRONMENT_RUNNERS.map(([program, sub]) => `${program} ${sub}`);
 
-const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const escapePattern = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** The program names a check's command may fail to start: its own, its launcher's, the runner's. */
 function programsOf(executable: string, args: readonly string[]): string[] {
@@ -91,7 +91,7 @@ export function programNotStarted(
   for (const program of programsOf(executable, args))
     for (const row of PROGRAM_NOT_STARTED_LINES) {
       if (row.exitCode !== undefined && row.exitCode !== exitCode) continue;
-      const match = row.line(escape(program)).exec(output);
+      const match = row.line(escapePattern(program)).exec(output);
       if (match) {
         const at = output.lastIndexOf("\n", match.index) + 1;
         const end = output.indexOf("\n", match.index);
