@@ -3,7 +3,7 @@
 // far, from the per-OS table in `test-shard-weights.json`. Round-robin by name put the 17-minute
 // replay corpus and the slowest workflow suites in one Windows shard, which ran 27 minutes of a
 // 30-minute job while another ran 4. The shards together run exactly the files `bun test` finds.
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Glob } from "bun";
@@ -55,6 +55,41 @@ export function planShards(
  * The shards (from 1) that `planShards` gives at least one of `files`. A pull request's picked tests
  * often fill one or two shards; the rest would only start a Windows or macOS runner to exit (#2915).
  */
+/**
+ * Measured seconds from which a test file runs in a `bun test` process of its own (#3034). On
+ * macOS, a subprocess test that ran after the replay corpus's pools file (6 to 10 minutes of
+ * synchronous replay) in the same process waited 30 s for a child whose exit never arrived, while
+ * the same test passed in a process of its own; it hit four merge queue runs in shard 1/4.
+ */
+export const ALONE_SECONDS = 240;
+
+/**
+ * The `bun test` processes one shard runs: every file lighter than `aloneSeconds` together, first,
+ * then each heavier file alone.
+ */
+export function processGroups(
+  shard: readonly string[],
+  weights: ShardWeights,
+  aloneSeconds = ALONE_SECONDS,
+): string[][] {
+  const weight = (file: string) => weights.files[file.replace(/^\.\//, "")] ?? weights.default;
+  const alone = shard.filter((file) => weight(file) >= aloneSeconds);
+  const rest = shard.filter((file) => weight(file) < aloneSeconds);
+  return [rest, ...alone.map((file) => [file])].filter((group) => group.length > 0);
+}
+
+/** One JUnit report of several, for the scripts that read its `<testcase>` tags. */
+export function mergeReports(reports: readonly string[]): string {
+  const suites = reports.map((xml) =>
+    xml
+      .replace(/<\?xml[^>]*\?>/, "")
+      .replace(/<testsuites\b[^>]*>/, "")
+      .replace(/<\/testsuites>\s*$/, "")
+      .trim(),
+  );
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<testsuites>\n${suites.join("\n")}\n</testsuites>\n`;
+}
+
 export function busyShards(files: readonly string[], count: number, weights: ShardWeights): number[] {
   return planShards(files, count, weights).flatMap((shard, index) => (shard.length ? [index + 1] : []));
 }
@@ -106,20 +141,33 @@ async function main() {
   // that takes 1 s on Linux takes 5-25 s on a Windows runner, and a busy runner stretches that past
   // 30 s at random (#1177). The tests are the same; only the time they may take differs.
   const timeout = process.platform === "win32" ? "90000" : "30000";
-  const report = join(mkdtempSync(join(tmpdir(), "baked-shard-")), "junit.xml");
-  const proc = Bun.spawn(
-    [
-      "bun",
-      "test",
-      "--timeout",
-      timeout,
-      "--reporter=junit",
-      `--reporter-outfile=${report}`,
-      ...shard,
-    ],
-    { stdio: ["inherit", "inherit", "inherit"] },
-  );
-  const code = await proc.exited;
+  const dir = mkdtempSync(join(tmpdir(), "baked-shard-"));
+  const report = join(dir, "junit.xml");
+  // A file of several minutes runs in a process of its own, so what it leaves behind in a process
+  // never reaches the subprocess tests of the files after it (#3034).
+  const groups = processGroups(shard, weights);
+  let code = 0;
+  const reports: string[] = [];
+  for (const [i, group] of groups.entries()) {
+    const groupReport = join(dir, `junit-${String(i)}.xml`);
+    if (groups.length > 1)
+      console.log(`Process ${String(i + 1)}/${String(groups.length)}: ${String(group.length)} test files`);
+    const proc = Bun.spawn(
+      [
+        "bun",
+        "test",
+        "--timeout",
+        timeout,
+        "--reporter=junit",
+        `--reporter-outfile=${groupReport}`,
+        ...group,
+      ],
+      { stdio: ["inherit", "inherit", "inherit"] },
+    );
+    code ||= await proc.exited;
+    if (existsSync(groupReport)) reports.push(readFileSync(groupReport, "utf8"));
+  }
+  if (reports.length) writeFileSync(report, mergeReports(reports));
   // Tests that came close to their limit, before they time out on a busy runner (#1656).
   // SLOW_TESTS_FAIL=1 (the nightly run) fails the shard for a test above 80 percent of it.
   const slowCode = existsSync(report)
