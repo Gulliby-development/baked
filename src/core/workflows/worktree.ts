@@ -25,6 +25,7 @@ import { workspacePath } from "../specs/validate.js";
 import { RUN_MARKER, type RunRoots } from "../verification/run-roots.js";
 import {
   git,
+  gitFailure,
   gitMode,
   gitWorktreePaths,
   inSubmodule,
@@ -376,9 +377,13 @@ export async function mergedBase(
     if (merged.code === 1)
       return { conflicts: files.filter((f) => f.length > 0), between: [base, commit] };
     if (merged.code !== 0)
-      throw new WorkflowFault("INPUT_CHANGED", `git merge-tree failed: ${merged.stderr.trim()}`, {
-        reason: "worktree_failed",
-      });
+      throw new WorkflowFault(
+        "INPUT_CHANGED",
+        `git merge-tree failed: ${gitFailure(["merge-tree"], merged)}`,
+        {
+          reason: "worktree_failed",
+        },
+      );
     base = await required(
       workspace,
       ["commit-tree", tree, "-p", base, "-p", commit, "-m", `Merge ${commit} for a dependent run`],
@@ -493,9 +498,13 @@ export async function moveRunWorktree(
   const root = join(workspace, worktree.path);
   const status = await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=no"]);
   if (status.code !== 0)
-    throw new WorkflowFault("INPUT_CHANGED", `git status failed: ${status.stderr.trim()}`, {
-      reason: "worktree_failed",
-    });
+    throw new WorkflowFault(
+      "INPUT_CHANGED",
+      `git status failed: ${gitFailure(["status"], status)}`,
+      {
+        reason: "worktree_failed",
+      },
+    );
   const changed = statusPaths(status.stdout);
   if (changed.length)
     throw new WorkflowFault(

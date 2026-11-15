@@ -1755,6 +1755,26 @@ describe("gate matrix: Windows batch tools run by their absolute path (#2432)", 
     });
 });
 
+describe("gate matrix: a bare gate program the PATH gives as a batch shim runs by its absolute path (#3039)", () => {
+  // R109 callfence: `bundle` reached cmd.exe by its bare name, and cmd.exe, whose PATH was over
+  // 8191 characters, could not find it: every check printed "'bundle' is not recognized".
+  const shims = ["bundle.bat", "mix.bat", "npm.cmd", "npx.cmd", "pnpm.cmd", "yarn.cmd", "mvn.cmd", "gradle.bat", "sbt.bat", "composer.bat", "busted.bat", "luacheck.bat", "bats.cmd"];
+  for (const shim of shims) {
+    const name = shim.split(".")[0] as string;
+    test(`${name} starts as cmd.exe /c with ${shim}'s absolute path`, () => {
+      const path = `C:\\tools\\${name}\\bin`;
+      const which = (bin: string) => (bin === name ? `${path}\\${shim}` : null);
+      const program = windowsProgram(name, path, "C:\\work\\worktree", which);
+      expect(program).toBe(`${path}\\${shim}`);
+      expect(windowsBatchInvocation(program, ["exec", "rubocop"], "cmd.exe").args.at(-1)).toBe(`""${path}\\${shim}" "exec" "rubocop""`);
+    });
+  }
+  test("a program the PATH gives as an .exe keeps its bare name: Bun starts it directly", () => {
+    const which = (bin: string) => `C:\\Program Files\\Git\\cmd\\${bin}.exe`;
+    expect(windowsProgram("git", "C:\\Program Files\\Git\\cmd", "C:\\w", which)).toBe("git");
+  });
+});
+
 describe("gate matrix: a fixer gets the file only when its command takes one (#2436)", () => {
   // R77 pairwick: `sbt --server -batch scalafmtAll` got the file appended to its last command and
   // sbt refused it, exit 1, on every run. A fixer whose command takes no file runs once, as given.

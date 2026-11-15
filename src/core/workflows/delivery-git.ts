@@ -70,6 +70,49 @@ export interface GitResult {
   stdout: string;
   bytes: Uint8Array;
   stderr: string;
+  /** The signal that ended Git, when one did (#3041). */
+  signal?: string | null;
+}
+
+/**
+ * Why a Git command failed, for a message (#3041): the command, its exit code (with the Windows
+ * NTSTATUS in hex, such as 0xC0000142 for a process that could not start) or signal, and its
+ * stderr, or that it printed nothing. R109 datefold blocked with `Cannot read repository
+ * baseline: ` and nothing after it: the code was lost and the cause could not be told.
+ */
+export function gitFailure(
+  args: readonly string[],
+  result: Pick<GitResult, "code" | "stderr"> & { signal?: string | null },
+): string {
+  const command = `git ${args
+    .filter((arg) => !arg.startsWith("-"))
+    .slice(0, 2)
+    .join(" ")}`.trim();
+  const how = result.signal
+    ? `was ended by ${result.signal}`
+    : `exited with ${String(result.code)}${result.code > 255 || result.code < 0 ? ` (0x${(result.code >>> 0).toString(16).toUpperCase().padStart(8, "0")})` : ""}`;
+  const stderr = result.stderr.trim();
+  return `${command} ${how}${stderr ? `: ${stderr}` : " and printed nothing"}`;
+}
+
+/** How long a read-only Git command that failed silently waits before its one retry. */
+export const SILENT_GIT_RETRY_MS = 250;
+
+/**
+ * Runs a read-only Git command, and runs it once more after `SILENT_GIT_RETRY_MS` when it failed
+ * with no output at all (#3041): Git prints `fatal:` on its own errors, so a silent non-zero exit
+ * is a process that ended before Git ran (a start failure under load, a kill). R109 datefold's
+ * `ls-files` failed so 35 ms after 53 s of Swift checks, and the same command passed on resume.
+ * The result carries the first failure when it was retried. Never use it for a command that writes.
+ */
+export async function gitRead<R extends Pick<GitResult, "code" | "stdout" | "stderr">>(
+  run: () => Promise<R>,
+  wait: (ms: number) => Promise<void> = (ms) => Bun.sleep(ms),
+): Promise<R & { retriedAfter?: R }> {
+  const first = await run();
+  if (first.code === 0 || first.stdout.length > 0 || first.stderr.trim().length > 0) return first;
+  await wait(SILENT_GIT_RETRY_MS);
+  return { ...(await run()), retriedAfter: first };
 }
 
 export async function git(
@@ -90,6 +133,7 @@ export async function git(
     bytes,
     stdout: new TextDecoder().decode(bytes),
     stderr: new TextDecoder().decode(stderr),
+    signal: proc.signalCode === null ? null : String(proc.signalCode),
   };
 }
 
