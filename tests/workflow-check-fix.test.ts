@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModelV3, LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import { MockLanguageModelV3 } from "./helpers/workflow-model.js";
@@ -341,3 +342,85 @@ async function setup(
   };
   return { executor, request, root: fixture.root, seen, store };
 }
+
+// Bench round 109, datefold shift T001 (#3047): the model sent `request_check swift-build` and
+// `request_check swift-test` in one turn. Both started in the task's worktree 30 ms apart, and
+// SwiftPM refused the second with "database is locked"; the model ran it again (about 45 s).
+describe("parallel tool calls that run project commands in one root (#3047)", () => {
+  /** A check that fails when another holds the root's build lock, as SwiftPM's build database does. */
+  // The build directory lives outside the root, so the checks leave the task's sources as they were.
+  const buildDir = () => {
+    const dir = mkdtempSync(join(tmpdir(), "baked-root-lock-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    return dir;
+  };
+  const locking = (id: string, build: string) => {
+    const lock = JSON.stringify(join(build, "build.lock"));
+    const log = JSON.stringify(join(build, "intervals.txt"));
+    return {
+    id,
+    executable: "bun",
+    args: [
+      "-e",
+      `const { openSync, closeSync, unlinkSync, appendFileSync } = require("node:fs");
+let fd;
+try { fd = openSync(${lock}, "wx"); } catch { console.error("error: accessing build database: database is locked"); process.exit(1); }
+const start = Date.now();
+await Bun.sleep(300);
+appendFileSync(${log}, JSON.stringify([start, Date.now()]) + "\\n");
+closeSync(fd); unlinkSync(${lock});`,
+    ],
+    cwd: ".",
+    timeoutMs: 10000,
+    required: true,
+    scope: "task" as const,
+    envNames: [],
+    writes: [],
+    };
+  };
+  const both = (calls: { name: string; input: unknown }[]): LanguageModelV3GenerateResult => {
+    const [first] = calls.map(step);
+    if (!first) throw new Error("no call");
+    return { ...first, content: calls.flatMap((call) => step(call).content) };
+  };
+
+  test("two request_check calls in one turn run one after the other, and both pass", async () => {
+    const build = buildDir();
+    const { executor, request, seen } = await setup({ ...fixturePolicy, checks: [locking("build", build), locking("test", build)] }, ["build", "test"], [
+      both([
+        { name: "request_check", input: { checkId: "build" } },
+        { name: "request_check", input: { checkId: "test" } },
+      ]),
+      () => {
+        throw new Error("stop after the checks");
+      },
+    ]);
+    await expect(executor.execute(request)).rejects.toThrow("stop after the checks");
+    const result = JSON.stringify(seen);
+    // On main: one of them failed with "database is locked".
+    expect(result).not.toContain("database is locked");
+    expect(result.match(/"status":"passed"/g)?.length).toBe(2);
+    const intervals = readFileSync(join(build, "intervals.txt"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as [number, number]);
+    expect(intervals).toHaveLength(2);
+    const [a, b] = intervals.sort((x, y) => x[0] - y[0]);
+    expect((b?.[0] ?? 0) >= (a?.[1] ?? Number.POSITIVE_INFINITY)).toBe(true);
+  });
+
+  test("apply_fix and request_check in one turn run one after the other", async () => {
+    const build = buildDir();
+    const fixable = { ...locking("lint", build), fix: { executable: "bun", args: ["-e", "0"] } };
+    const { executor, request, seen } = await setup({ ...fixturePolicy, checks: [fixable, locking("test", build)] }, ["lint", "test"], [
+      both([
+        { name: "apply_fix", input: { checkId: "lint" } },
+        { name: "request_check", input: { checkId: "test" } },
+      ]),
+      () => {
+        throw new Error("stop after the checks");
+      },
+    ]);
+    await expect(executor.execute(request)).rejects.toThrow("stop after the checks");
+    const result = JSON.stringify(seen);
+    expect(result).not.toContain("database is locked");
+    expect(result.match(/"status":"passed"/g)?.length).toBe(2);
+  });
+});
