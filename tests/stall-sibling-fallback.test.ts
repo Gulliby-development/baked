@@ -166,7 +166,7 @@ describe("derived fallback of the next-model rung", () => {
   };
 
   test("with a sibling the next model comes before the lower effort and keeps the route position", () => {
-    expect(ladderOrder([ASTRA])).toEqual(["fresh-session", "other-transport", "next-model", "lower-effort"]);
+    expect(ladderOrder([ASTRA])).toEqual(["fresh-session", "other-transport", "next-model", "lower-effort", "retry"]);
     const exec = { rung: "other-transport" as const, freshSession: true as const, transport: "exec" as const, effort: "medium" as const, fallbackIndex: 0 };
     expect(nextRung(exec, { ...call, siblings: [ASTRA] })).toEqual({ rung: "next-model", fallbackIndex: 0, model: ASTRA });
     // Without one the order and the stop stay as they were.

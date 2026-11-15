@@ -3183,6 +3183,8 @@ export function replayStallLadder(
       fallbackIndex: Math.max(0, models.indexOf(attempt.model_id)),
       effort,
       ...(siblings ? { siblings } : {}),
+      // As the scheduler: a lost answer, not a stall, may take the `retry` rung (#3045).
+      ...(!stalled && usage.lostAnswer !== undefined ? { lostAnswer: true } : {}),
     });
     ladders.set(key, next ?? undefined);
     // As the scheduler: a ladder that ran out on a stall stops for the circuit and parks.

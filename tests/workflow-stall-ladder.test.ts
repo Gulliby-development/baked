@@ -5,7 +5,8 @@ import { buildCodexNativeRequest } from "../src/core/llm/providers/codex/native.
 import { canonical } from "../src/core/specs/hash.js";
 import { withCodexRecovery } from "../src/core/workflows/agent-executor.js";
 import { providerCircuitOpen } from "../src/core/workflows/retry.js";
-import { isStall, nextRung } from "../src/core/workflows/stall-ladder.js";
+import { isStall, nextRung, readLadder } from "../src/core/workflows/stall-ladder.js";
+import { ProviderAnswerError } from "../src/core/llm/provider-answer.js";
 import type { ExecutionRequest } from "../src/core/workflows/types.js";
 import { FixtureExecutor, workflowFixture } from "./helpers/workflow-fixture.js";
 
@@ -182,6 +183,67 @@ describe("scenario: wheeltags R58, a stalled call walks the recovery ladder (#18
   });
 });
 
+describe("scenario: R109 url-shortener, a Claude Code implementer turn that loses its answer (#3045)", () => {
+  // Run 2fb292a4: T003's Sonnet turn ended "finishReason=tool-calls without any tool calls" while
+  // the same model answered T002 in the same second; the ladder had no rung and the run stopped.
+  async function sonnetRun(lose: number) {
+    let lost = 0;
+    const models: string[] = [];
+    const fixture = workflowFixture({
+      executor: (root) =>
+        new (class extends FixtureExecutor {
+          override async execute(request: ExecutionRequest) {
+            if (request.profile.output === "implementation") {
+              models.push(request.profile.model);
+              if (lost < lose) {
+                lost++;
+                throw new ProviderAnswerError("Claude Code returned finishReason=tool-calls without any tool calls");
+              }
+            }
+            return super.execute(request);
+          }
+        })(root),
+    });
+    cleanups.push(fixture.dispose);
+    fixture.service.providerProbe = async () => ({});
+    fixture.service.providerDelay = async () => {};
+    const run = await fixture.start();
+    const { store } = fixture.service;
+    const artifact = store.latestArtifact(run.runId, ROUTING_ARTIFACT);
+    if (!artifact) throw new Error("Routing record missing");
+    const routing = JSON.parse(store.readArtifact(run.runId, artifact.id)) as RoutingRecord;
+    routing.stages.implement = { model: "claude-code/claude-sonnet-5-5", source: "scenario" };
+    store.artifact(run.runId, "routing", ROUTING_ARTIFACT, canonical(routing));
+    const signal = new AbortController().signal;
+    await fixture.service.drive(run.runId, signal);
+    await fixture.approve(run.runId);
+    const snapshot = await fixture.service.drive(run.runId, signal);
+    const ladders = store
+      .artifacts(run.runId)
+      .filter((a) => a.logical_path.startsWith("recovery/ladder-"))
+      .map((a) => readLadder(store, run.runId, a.logical_path));
+    const recoveries = store
+      .events(run.runId, 0, 10_000)
+      .flatMap((event) => (event.type === "attempt.recovery" ? [event.payload.rung] : []));
+    return { snapshot, models, ladders, recoveries };
+  }
+
+  test("one lost turn is retried on the same settings and the run completes without a person", async () => {
+    const { snapshot, models, recoveries } = await sonnetRun(1);
+    expect(snapshot).toMatchObject({ status: "completed", reason: "none" });
+    expect(recoveries).toEqual(["retry"]);
+    expect(models.slice(0, 2)).toEqual(["claude-code/claude-sonnet-5-5", "claude-code/claude-sonnet-5-5"]);
+  });
+
+  test("two lost turns on the same input stop for a person, naming both", async () => {
+    const { snapshot, ladders, recoveries } = await sonnetRun(10);
+    expect(snapshot).toMatchObject({ status: "blocked", reason: "no_progress" });
+    expect(recoveries).toEqual(["retry"]);
+    expect(ladders.at(-1)).toMatchObject({ exhausted: true });
+    expect(ladders.at(-1)?.steps.map((s) => s.rung)).toEqual(["first", "retry"]);
+  });
+});
+
 describe("recovery ladder rungs", () => {
   const call = {
     model: "codex/a",
@@ -214,6 +276,25 @@ describe("recovery ladder rungs", () => {
       if (previous === undefined) delete process.env.BAKED_CODEX_TRANSPORT;
       else process.env.BAKED_CODEX_TRANSPORT = previous;
     }
+  });
+
+  test("a lost answer on a model that is not native Codex gets one retry on the same settings, last (#3045)", () => {
+    const sonnet = { model: "claude-code/claude-sonnet-5-5", models: ["claude-code/claude-sonnet-5-5"], fallbackIndex: 0, effort: undefined, lostAnswer: true };
+    const retry = nextRung(undefined, sonnet);
+    expect(retry).toEqual({ rung: "retry", fallbackIndex: 0 });
+    expect(nextRung(retry ?? undefined, sonnet)).toBeNull();
+    // A stall on the same route keeps the provider wait.
+    expect(nextRung(undefined, { ...sonnet, lostAnswer: undefined })).toBeNull();
+    // The rungs that change something come first; the retry keeps what they changed.
+    const opus = { ...sonnet, model: "claude-code/claude-opus-5-5", models: ["claude-code/claude-opus-5-5"], effort: "medium" as const };
+    const lower = nextRung(undefined, opus);
+    expect(lower).toMatchObject({ rung: "lower-effort", effort: "low" });
+    expect(nextRung(lower ?? undefined, opus)).toEqual({ rung: "retry", effort: "low", fallbackIndex: 0 });
+    // Native Codex retries on its fresh session rung instead.
+    const codex = { ...call, models: ["codex/a"], effort: undefined, lostAnswer: true };
+    const fresh = nextRung(undefined, codex);
+    expect(fresh?.rung).toBe("fresh-session");
+    expect(nextRung(nextRung(fresh ?? undefined, codex) ?? undefined, codex)).toBeNull();
   });
 
   test("only a call the provider never answered is a stall", () => {
