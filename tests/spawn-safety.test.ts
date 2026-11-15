@@ -113,20 +113,20 @@ describe("SAFE_STDIO", () => {
 describe("subprocess stdin isolation", () => {
 	it("command that reads stdin gets EOF immediately with SAFE_STDIO", async () => {
 		const { spawn } = await import("node:child_process");
-		// The child gets the env real spawns get, not the test process's own: on macOS this test hung
-		// with the inherited env only when the shard order put it after other files, while the
-		// buildSafeEnv test below ran clean in the same place.
-		const proc = spawn(process.execPath, ["-e", "for await (const chunk of process.stdin) process.stdout.write(chunk)"], {
-			stdio: SAFE_STDIO,
-			env: buildSafeEnv(),
+		// The child reads fd 0 itself, as git, ssh and a shell do: with stdin ignored the read returns
+		// end of file at once. On macOS, after about 75 other files in one `bun test` process, the
+		// earlier child (`for await` over Bun's `process.stdin` stream, waited for by "close") ran out
+		// the 30 s limit while three isolated reruns of the same test passed (#3032); the result now
+		// comes from the child's own exit, and a child that does hang is killed and reported as such.
+		const proc = spawn(
+			process.execPath,
+			["-e", 'process.exit(require("node:fs").readFileSync(0).length === 0 ? 0 : 2)'],
+			{ stdio: SAFE_STDIO, env: buildSafeEnv(), timeout: 10_000 },
+		);
+		const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+			proc.on("exit", (code, signal) => resolve({ code, signal }));
 		});
-		const chunks: string[] = [];
-		proc.stdout?.on("data", (d: Buffer) => chunks.push(d.toString()));
-		const code = await new Promise<number | null>((resolve) => {
-			proc.on("close", resolve);
-		});
-		expect(code).toBe(0);
-		expect(chunks.join("")).toBe("");
+		expect(exit).toEqual({ code: 0, signal: null });
 	});
 
 	it("git command fails cleanly instead of prompting when auth is missing", async () => {
