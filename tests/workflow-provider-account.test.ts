@@ -118,6 +118,10 @@ describe("provider account refusals", () => {
       ["Codex, a duration", { message: "You've hit your usage limit. Upgrade to Pro (https://openai.com/chatgpt/pricing) or try again in 4 days 3 hours." }, "4 days 3 hours"],
       ["Claude Code, epoch", { message: "Claude AI usage limit reached|1760000000" }, "2025-10-09T08:53:20.000Z"],
       ["Claude Code", { message: "You've hit your limit \u00b7 resets 3pm (Europe/Berlin)" }, "3pm (Europe/Berlin)"],
+      // R110 (#3055): any "hit your <window> limit".
+      ["Claude Code, session", { message: "You've hit your session limit \u00b7 resets 9:10pm (Europe/Warsaw)" }, "9:10pm (Europe/Warsaw)"],
+      ["Claude Code, weekly wording", { message: "You've hit your weekly limit \u00b7 resets Nov 20, 10am" }, "Nov 20, 10am"],
+      ["Claude Code, Opus", { message: "You've hit your Opus limit \u00b7 resets 6pm" }, "6pm"],
       ["Claude Code, 5 hours", { message: "5-hour limit reached \u2219 resets 3pm" }, "3pm"],
       ["Claude Code, weekly", { message: "Weekly limit reached \u00b7 resets Oct 20, 10am" }, "Oct 20, 10am"],
       ["Anthropic API spend limit", { statusCode: 400, message: "You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC." }, "2026-11-01 at 00:00 UTC"],

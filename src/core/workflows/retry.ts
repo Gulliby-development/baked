@@ -139,14 +139,15 @@ const BAD_KEY = /api[ _-]?key|unauthori[sz]ed|authentication|invalid x-api-key/i
  * and 9 minute resumes of a provider outage (#1395). In each provider's words:
  * - Codex: "You've hit your usage limit ... try again at Oct 22nd, 2026 10:55 AM" (or "in 4 days");
  * - Claude Code: "Claude AI usage limit reached|<epoch>", "You've hit your limit · resets 3pm",
- *   "5-hour limit reached", "Weekly limit reached";
+ *   "You've hit your session limit · resets 9:10pm (Europe/Warsaw)" (any "hit your <window>
+ *   limit", #3055), "5-hour limit reached", "Weekly limit reached";
  * - Anthropic API: "You have reached your specified API usage limits. You will regain access on ...";
  * - GitHub Copilot: a monthly premium request or chat quota ("quota_exceeded");
  * - GitHub Models and others: a 429 that asks to wait over an hour (a daily request limit).
  * A rate limit ("Rate limit reached for requests", a short retry-after) is not one of them.
  */
 const USAGE_LIMIT =
-  /usage limit|hit your limit|\b(?:5-hour|weekly|session|daily|monthly) limit reached|regain access on|quota_exceeded|premium request(?:s)? (?:allowance|quota|limit)|monthly[\w ]{0,40} quota|exceeded your (?:monthly|premium|chat)[\w ]{0,40} (?:quota|allowance)/i;
+  /usage limit|hit your (?:[\w-]+ )?limit|\b(?:5-hour|weekly|session|daily|monthly) limit reached|regain access on|quota_exceeded|premium request(?:s)? (?:allowance|quota|limit)|monthly[\w ]{0,40} quota|exceeded your (?:monthly|premium|chat)[\w ]{0,40} (?:quota|allowance)/i;
 const LIMIT_RESET =
   /(?:try again (?:at|in)|resets(?: at| on)?|regain access on)\s+([^\n|]+?)(?:\.\s|\.?\s*$|\n|\||\s+to\s|\s+or\s)/i;
 /** Claude Code's older "usage limit reached|1760000000" carries the reset as epoch seconds. */

@@ -11688,6 +11688,19 @@ ${note}`;
           error.details.reason === "check_unavailable")
       )
         return { kind: "fatal", entry, error };
+      // A usage limit or another account refusal that reached the worker unclassified stops the
+      // run for the account, not as a lost worker whose resumes run hours before the reset (#3055).
+      const refusal = leaseSignal.aborted ? null : accountRefusal(error);
+      if (refusal)
+        return {
+          kind: "fatal",
+          entry,
+          error: new WorkflowFault(
+            "OUTPUT_INVALID",
+            `${entry.task.id}'s worker was refused: ${refusalAdvice(refusal, error)}. ${error instanceof Error ? error.message : String(error)}`,
+            { reason: "provider_account" },
+          ),
+        };
       // The task's worker or its worktree lease is gone; the other tasks continue.
       const lostWorker =
         leaseSignal.aborted ||

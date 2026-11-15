@@ -657,6 +657,25 @@ describe("workflow parallel writers", () => {
     expect(interrupted).toEqual([]);
   });
 
+  // R110 pathtree and bracelint (#3055): every Claude Code worker of a batch failed with the
+  // session limit, the run stopped `owner_lost` and spent its owner-lost resumes three hours
+  // before the stated reset.
+  test("workers refused by a Claude session limit block the run for the account, not as lost workers", async () => {
+    const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" });
+    const limit = () => {
+      throw new Error("You've hit your session limit \u00b7 resets 9:10pm (Europe/Warsaw)");
+    };
+    fx.executor.hooks = { T001: limit, T002: limit };
+    fx.service.ownerLostBackoffMs = [0, 0, 0];
+    const run = await fx.start(2);
+    const stopped = await fx.complete(run.runId);
+    // On main: owner_lost, "Lost the worker of T001, T002: You've hit your session limit".
+    expect(stopped).toMatchObject({ status: "blocked", reason: "provider_account" });
+    expect(fx.lastError(run.runId)).toContain("reached its usage limit until 9:10pm (Europe/Warsaw)");
+    expect(fx.store.state(run.runId).ownerLostResumes).toBe(0);
+    expect(fx.store.artifacts(run.runId).some((a) => a.logical_path.startsWith("owner-lost/") || a.logical_path.startsWith("provider/resume-"))).toBe(false);
+  });
+
   test("a task whose worker dies again after its restart blocks the run with owner_lost", async () => {
     const fx = setup([{ id: "T001", files: { "a.txt": "A" } }, { id: "T002", files: { "b.txt": "B" } }], { "a.txt": "A", "b.txt": "B" });
     fx.executor.crashes = { T002: 2 };
