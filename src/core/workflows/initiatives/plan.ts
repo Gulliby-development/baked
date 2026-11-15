@@ -257,14 +257,15 @@ const COMMAND_WORD = /^[A-Za-z][A-Za-z0-9_-]*$/;
  * joined with every feature whose boundary holds that command's source, a code path whose stem
  * is the command or `<command>_command` / `<command>_cmd` in any case and separator
  * (`merge_command.zig`, `MergeCommand.kt`, `cmd/merge.go`), or whose scope names "the <command>
- * command". Null when the row runs no such word or no feature writes its source. The join is
- * advisory for a row the command line itself refuses (an unknown flag, exit 2): such a row needs
- * whoever parses the arguments, and a plan that states row ranges (`featureRowSplit`) decides it.
+ * command". Null when the row runs no such word or no feature writes its source, and null for a
+ * row the command line or the input reader refuses (`refusedRow`: a missing option, a bad value,
+ * an empty list), which needs whoever parses the arguments, not the command's feature (#3048).
  */
 export function rowNeedsFeatures(
   plan: Pick<InitiativePlan, "features" | "title">,
   row: string,
 ): { command: string; features: string[] } | null {
+  if (refusedRow(row)) return null;
   const words = rowTokens(row).filter((t) => t.quoted);
   const program = squashed(plan.title);
   const word = (words[0] && squashed(words[0].text) === program ? words[1] : words[0])?.text ?? "";
@@ -291,6 +292,23 @@ export function rowNeedsFeatures(
     )
     .map((f) => f.id);
   return features.length ? { command: word, features } : null;
+}
+
+/**
+ * A row the command line or the input reader answers before its command runs (#3048): after the
+ * row's first quoted word, its first bare integer (the expected exit status) is not 0 and the next
+ * quoted value (the expected standard output) is empty, as in `(["shift"], "", 2, "",
+ * "datefold: missing --days\n")`. Such a row needs whoever parses the arguments or reads the
+ * input, not the feature that writes the command, so the `later-command` join leaves it out.
+ */
+export function refusedRow(row: string): boolean {
+  const tokens = rowTokens(row);
+  const first = tokens.findIndex((t) => t.quoted);
+  if (first < 0) return false;
+  const exit = tokens.findIndex((t, i) => i > first && !t.quoted && /^-?\d+$/.test(t.text));
+  const status = tokens[exit];
+  if (!status || Number(status.text) === 0) return false;
+  return tokens.slice(exit + 1).find((t) => t.quoted)?.text === "";
 }
 
 /**
