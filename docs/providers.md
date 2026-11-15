@@ -165,7 +165,7 @@ Workflow runs use the same chains for routes that have no fallback models of the
 
 - Each model gets `retry.maxTransientRetries` attempts (default 3) with exponential backoff before the next one is tried. After the last fallback the chain starts again from the primary, at most 3 cycles, then the original error is raised.
 - Transient means overload, 429, 5xx, rate limits, timeouts and connection errors. A 403 counts only when its body mentions overload or a rate limit. 401, invalid requests and unknown models fail at once.
-- Stalled streams are retried on the same model by the watchdog (`/watchdog`), not by fallback. In a workflow run a stalled call climbs a recovery ladder instead: a fresh session, the other Codex transport, a lower effort, then the next model of the route ([runtime](workflows/runtime.md#stalls-deadlines-and-automatic-resume)).
+- Stalled streams are retried on the same model by the watchdog (`/watchdog`), not by fallback. In a workflow run a stalled call climbs a recovery ladder instead: a fresh session, the other Codex transport, a lower effort, the next model of the route, and for a turn that lost its answer one retry on the same settings ([runtime](workflows/runtime.md#stalls-deadlines-and-automatic-resume)).
 - `Ctrl+X` stops the loop immediately.
 
 Workflow agents have their own fallback settings in `modelRouting` ([runtime guide](workflows/runtime.md#effort-and-fallback-models)).

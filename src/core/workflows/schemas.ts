@@ -2044,7 +2044,7 @@ export const EventSchema = z.discriminatedUnion("type", [
       payload: z
         .object({
           attemptId: SafeId,
-          rung: z.enum(["fresh-session", "other-transport", "lower-effort", "next-model"]),
+          rung: z.enum(["fresh-session", "other-transport", "lower-effort", "next-model", "retry"]),
           modelId: z.string(),
           transport: z.literal("exec").optional(),
           effort: z.string().optional(),

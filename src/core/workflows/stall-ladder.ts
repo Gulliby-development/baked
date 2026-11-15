@@ -16,6 +16,7 @@ export const LADDER_RUNGS = [
   "other-transport",
   "lower-effort",
   "next-model",
+  "retry",
 ] as const;
 export type LadderRung = (typeof LADDER_RUNGS)[number];
 
@@ -79,7 +80,7 @@ const provider = (model: string) => model.split("/")[0];
  */
 export function ladderOrder(siblings: readonly string[] | undefined): readonly LadderRung[] {
   return siblings?.length
-    ? ["fresh-session", "other-transport", "next-model", "lower-effort"]
+    ? ["fresh-session", "other-transport", "next-model", "lower-effort", "retry"]
     : LADDER_RUNGS;
 }
 
@@ -88,6 +89,12 @@ export function ladderOrder(siblings: readonly string[] | undefined): readonly L
  * The next model prefers another provider: a stall can belong to the account or the transport.
  * With no later model in the route's chain, it takes the first of `siblings`: models of the same
  * provider the run routes other calls to that answered a moment ago (#2271, `siblingFallbacks`).
+ *
+ * A turn that lost its answer (`lostAnswer`) on a model that is not native Codex gets one `retry`
+ * on the same settings last (#3045). A turn is sampled: R109 url-shortener's Sonnet implementer
+ * ended one turn "finishReason=tool-calls without any tool calls" while the same model answered a
+ * parallel task, and with no rung left the run stopped for a person after 10 s. Native Codex has
+ * its own retry, the fresh session; a stall keeps the provider wait.
  */
 export function nextRung(
   current: RecoveryPlacement | undefined,
@@ -97,6 +104,8 @@ export function nextRung(
     fallbackIndex: number;
     effort: RouteEffort | undefined;
     siblings?: readonly string[];
+    /** The call finished with no usable answer, not a stall (`recoverableCall`). */
+    lostAnswer?: boolean;
   },
 ): RecoveryPlacement | null {
   const order = ladderOrder(call.siblings);
@@ -128,6 +137,7 @@ export function nextRung(
       const sibling = call.siblings?.find((model) => model !== call.model);
       if (sibling) return { rung, fallbackIndex: call.fallbackIndex, model: sibling };
     }
+    if (rung === "retry" && call.lostAnswer && !codexNative(call.model)) return { ...base, rung };
   }
   return null;
 }
@@ -158,6 +168,7 @@ const RUNG_TEXT: Record<LadderStep["rung"], string> = {
   "other-transport": "codex exec transport",
   "lower-effort": "lower reasoning effort",
   "next-model": "next model of the route",
+  retry: "the same settings again",
 };
 
 export function rungText(rung: LadderStep["rung"]): string {

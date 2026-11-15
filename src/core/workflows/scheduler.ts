@@ -7863,6 +7863,7 @@ export class WorkflowScheduler {
           fallbackIndex,
           effort,
           ...(fallback ? { siblings: fallback.siblings } : {}),
+          ...(recoverable === "lost-answer" ? { lostAnswer: true } : {}),
         });
         if (next) {
           const nextModel = next.model ?? route.models[next.fallbackIndex] ?? profile.model;

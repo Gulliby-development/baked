@@ -169,9 +169,10 @@ describe("scenario: stepvet tagexpr analyze, a turn that loses its answer (#1957
   test("the same input failing on every rung stops for a person, naming the input and its separators", async () => {
     const { fixture, run, done, specify, events, calls } = await specRun(10);
     expect(done).toMatchObject({ status: "blocked", reason: "no_progress" });
-    // As routed, then lower effort: the route has no other transport (exec) and no other model.
-    expect(calls()).toBe(2);
-    expect(specify.map((a) => a.status)).toEqual(["failed", "failed"]);
+    // As routed, lower effort, then the same settings again (#3045): the route has no other
+    // transport (exec) and no other model.
+    expect(calls()).toBe(3);
+    expect(specify.map((a) => a.status)).toEqual(["failed", "failed", "failed"]);
     expect(JSON.stringify(events)).not.toContain("provider_unavailable");
     const { store } = fixture.service;
     const advice = store
@@ -181,6 +182,7 @@ describe("scenario: stepvet tagexpr analyze, a turn that loses its answer (#1957
       .join("\n");
     expect(advice).toContain("got no usable answer on every rung of the recovery ladder");
     expect(advice).toContain("lower reasoning effort on codex/gpt-6.1-sol");
+    expect(advice).toContain("the same settings again on codex/gpt-6.1-sol");
     expect(advice).toContain(specify[0]?.input_hash.slice(0, 12) ?? "missing");
     expect(advice).toContain("U+2028 x1");
 
