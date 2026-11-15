@@ -31,7 +31,9 @@ describe("scenario: a bare batch-shim check program with a PATH over 8191 charac
     delete env.Path;
     const result = await scope.execute("bundlefake", ["--version"], { cwd: work, env, timeoutMs: 60000, signal: new AbortController().signal, sandbox: null });
     // On main: exit 1, "'bundlefake' is not recognized as an internal or external command".
-    expect(result.output).toContain("Bundler version 2.6.9 --version");
+    expect(result.output).not.toContain("is not recognized");
+    // cmd.exe passes each argument quoted, so `%*` echoes `"--version"`.
+    expect(result.output).toContain("Bundler version 2.6.9");
     expect(result.exitCode).toBe(0);
   });
 });

@@ -85,6 +85,10 @@ export function windowsProgram(
   return found && isWindowsBatch(found) ? found : executable;
 }
 
+/** The PATH a launch searches: its environment's, or the process's when it names none. */
+const launchPath = (env: NodeJS.ProcessEnv | undefined): string =>
+  (env ?? process.env).PATH ?? (env ?? process.env).Path ?? "";
+
 /** The longest PATH cmd.exe reads: with a longer one it finds no program by its bare name. */
 export const CMD_PATH_LIMIT = 8191;
 
@@ -159,7 +163,7 @@ export class ProcessScope {
     // A bare name the PATH gives as a batch script runs by its absolute path too (#3039).
     const program =
       process.platform === "win32" && !options.verbatim
-        ? windowsProgram(executable, options.env.PATH ?? options.env.Path ?? "", options.cwd)
+        ? windowsProgram(executable, launchPath(options.env), options.cwd)
         : executable;
     const batch = process.platform === "win32" && !options.verbatim && isWindowsBatch(program);
     const direct = batch ? windowsBatchInvocation(program, args) : { executable, args };
