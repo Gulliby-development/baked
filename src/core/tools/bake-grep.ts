@@ -5,7 +5,7 @@ import { getCwd } from "../cwd.js";
 import { isForbidden } from "../security/forbidden.js";
 import { getVendoredPath } from "../setup/install.js";
 import type { IntelligenceClient } from "../workers/intelligence-client.js";
-import { enrichWithSymbolContext } from "./grep.js";
+import { enrichWithSymbolContext, searchLimits, searchOutcome, timedOutResult } from "./grep.js";
 
 const ENRICHMENT_TIMEOUT_MS = 2000;
 const MAX_SEARCH_OUTPUT_BYTES = 32_000;
@@ -221,8 +221,11 @@ function runCount(bin: string, args: string[]): Promise<ToolResult> {
 }
 
 async function runSearch(bin: string, args: string[]): Promise<ToolResult> {
+  // Set when the search was stopped by its timeout: its answer is not "No matches found." (#3037).
+  let timedOut = false;
+  let cannotRun: string | null = null;
   const rawOutput = await new Promise<string>((resolve) => {
-    const proc = spawn(bin, args, { cwd: getCwd(), timeout: 10_000 });
+    const proc = spawn(bin, args, { cwd: getCwd(), timeout: searchLimits.timeoutMs });
     const chunks: string[] = [];
     let totalBytes = 0;
     proc.stdout.on("data", (d: Buffer) => {
@@ -232,7 +235,7 @@ async function runSearch(bin: string, args: string[]): Promise<ToolResult> {
       }
     });
 
-    proc.on("close", (code: number | null) => {
+    proc.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
       let output = chunks.join("");
       if (totalBytes > MAX_SEARCH_OUTPUT_BYTES) {
         output = output.slice(0, MAX_SEARCH_OUTPUT_BYTES);
@@ -240,19 +243,23 @@ async function runSearch(bin: string, args: string[]): Promise<ToolResult> {
         if (lastNl > 0) output = output.slice(0, lastNl);
         output += `\n[output capped — narrow with glob or path params]`;
       }
-      if (code === 0 || code === 1) {
-        resolve(output || "No matches found.");
-      } else {
-        resolve(output || "No matches found.");
-      }
+      if (searchOutcome(code, signal) === "timed-out") timedOut = true;
+      resolve(output || "No matches found.");
     });
 
-    proc.on("error", () => {
-      resolve("No matches found.");
+    proc.on("error", (err: Error) => {
+      cannotRun = err.message;
+      resolve("");
     });
   });
 
+  // A search that could not start found nothing because it never looked (ripgrep missing).
+  if (cannotRun !== null) {
+    const msg = `Search could not run: ${bin} failed to start (${cannotRun}). The grep tool falls back to grep when ripgrep is missing.`;
+    return { success: false, output: msg, error: msg };
+  }
   const sanitized = filterForbiddenLines(rawOutput);
+  if (timedOut) return timedOutResult(sanitized);
 
   const enriched = await Promise.race([
     enrichWithSymbolContext(sanitized).catch(() => sanitized),
