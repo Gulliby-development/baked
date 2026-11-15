@@ -26,6 +26,7 @@ import { MISSING_GATE_REPORT, readGateReport, renderGateReport } from "./gate-re
 import { hostDocumentFailure, hostDocumentNote } from "./host-documents.js";
 import { testsRan } from "./output-counts.js";
 import { plainOutput, plainOutputEnv } from "./plain-output.js";
+import { notStartedNote, programNotStarted } from "./program-not-started.js";
 import { changedPaths, sourceManifest } from "./snapshot.js";
 import { testReport } from "./test-reports.js";
 
@@ -342,6 +343,8 @@ export class CheckRunner {
     truncated: boolean;
     /** The recorded timeout when the command ran out of time (#2358). */
     timeout?: CommandTimeout;
+    /** `spawn_error`: the program did not start, by a thrown spawn or a launcher's line (#3040). */
+    reason?: "spawn_error";
   }> {
     try {
       const executable = check.executable === "bun" ? process.execPath : check.executable;
@@ -358,6 +361,21 @@ export class CheckRunner {
         result.timedOut || result.cancelled || result.exitCode === null
           ? "inconclusive"
           : exitStatus(check, result.exitCode, result.output, cwd);
+      // A launcher that could not find the program: the check never ran (#3040).
+      const notStarted =
+        status === "failed"
+          ? programNotStarted(check.executable, check.args, result.output, result.exitCode)
+          : null;
+      if (notStarted) {
+        const output = `${result.output}\n\n${notStartedNote(check.id, notStarted)}`;
+        return {
+          status: "inconclusive",
+          reason: "spawn_error",
+          output,
+          signatureOutput: inStreamOrder(output, result.streams),
+          truncated: result.truncated,
+        };
+      }
       // A baseline or poll that ran out of time names the command and its files (#2358).
       if (result.timedOut && !result.cancelled && !signal.aborted) {
         const timeout = recordCommandTimeout({
@@ -382,8 +400,17 @@ export class CheckRunner {
         signatureOutput: inStreamOrder(result.output, result.streams),
         truncated: result.truncated,
       };
-    } catch {
-      return { status: "inconclusive", output: "", signatureOutput: "", truncated: false };
+    } catch (error) {
+      // A spawn that throws is a start failure, which the baseline stops on (#3040).
+      const started = signal.aborted || error instanceof SandboxUnavailableError;
+      const output = started ? "" : error instanceof Error ? error.message : String(error);
+      return {
+        status: "inconclusive",
+        output,
+        signatureOutput: output,
+        truncated: false,
+        ...(started ? {} : { reason: "spawn_error" as const }),
+      };
     }
   }
   async run(
@@ -619,6 +646,17 @@ export class CheckRunner {
         ...result,
         output: `${result.output}\n\n${environment ? environmentNote(check.id, environment) : unprepared}`,
       };
+    }
+    // A launcher that started and could not find the program (cmd.exe's "is not recognized",
+    // exit 127, `bundler: command not found`) never ran the check: a start failure (#3040).
+    const notStarted =
+      status === "failed" && reason === "exit"
+        ? programNotStarted(check.executable, check.args, result.output, result.exitCode)
+        : null;
+    if (notStarted) {
+      status = "inconclusive";
+      reason = "spawn_error";
+      result = { ...result, output: `${result.output}\n\n${notStartedNote(check.id, notStarted)}` };
     }
     // After the chain, so a JSON gate's report is still read when its log mentions a test that
     // timed out (#1426).

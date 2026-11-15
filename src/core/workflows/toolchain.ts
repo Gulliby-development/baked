@@ -41,7 +41,7 @@ const COMPOSER_BIN = /^(?:\.[\\/])?vendor[\\/]bin[\\/][\w.-]+$/;
  * `bundle exec`, which loads the versions a Ruby project's Gemfile pins (`bundle exec rspec`,
  * `bundle exec rubocop`, #1493).
  */
-const ENVIRONMENT_RUNNERS: readonly (readonly [string, string])[] = [
+export const ENVIRONMENT_RUNNERS: readonly (readonly [string, string])[] = [
   ...PYTHON_ENVIRONMENTS.map(({ prefix }) => prefix),
   ["bundle", "exec"],
 ];

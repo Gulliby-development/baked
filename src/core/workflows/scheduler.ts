@@ -5453,6 +5453,9 @@ export class WorkflowScheduler {
           runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
         );
         if (result.timeout) timeouts[commandKey(check)] = result.timeout.note;
+        // A required check whose program does not start stops the run before approval, not after
+        // every task (R109 callfence: `'bundle' is not recognized`, 1.97M tokens, #3040).
+        if (result.reason) failFastUnavailable(check, result);
         if (result.status === "failed" && check.required && !result.truncated) {
           // In stream order: the pipes' arrival order is not fixed (#2859).
           failures[commandKey(check)] = failureSignature(

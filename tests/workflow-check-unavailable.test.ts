@@ -8,6 +8,7 @@ import {
   smokeChecks,
   unresolvedChecks,
 } from "../src/core/workflows/check-preflight.js";
+import { environmentRunners, PROGRAM_NOT_STARTED_LINES, programNotStarted, RUNNER_LINES } from "../src/core/verification/program-not-started.js";
 import { WorkflowFault } from "../src/core/workflows/errors.js";
 import type { Check } from "../src/core/workflows/types.js";
 import { fixturePolicy, workflowFixture } from "./helpers/workflow-fixture.js";
@@ -57,7 +58,7 @@ describe("a required check that cannot be started", () => {
     expect(found).toEqual([{ checkId: "gone", executable: "nope-tool", required: true }]);
   });
 
-  test("a run blocks at the first spawn_error with check_unavailable, before review", async () => {
+  test("a run blocks at the first spawn_error with check_unavailable, at its baseline before any task", async () => {
     const fixture = workflowFixture({
       policy: {
         ...fixturePolicy,
@@ -67,14 +68,12 @@ describe("a required check that cannot be started", () => {
     cleanups.push(fixture.dispose);
     const signal = new AbortController().signal;
     const run = await fixture.start();
-    await fixture.service.drive(run.runId, signal);
-    await fixture.approve(run.runId);
+    // The check baseline before approval already stops on it (#3040).
     const snapshot = await fixture.service.drive(run.runId, signal);
     expect(snapshot.status).toBe("blocked");
     expect(snapshot.reason).toBe("check_unavailable");
+    expect(fixture.executor.calls).not.toContain("implementation");
     expect(fixture.executor.calls).not.toContain("review");
-    const results = fixture.service.store.checkDetails(run.runId);
-    expect(results.filter((r) => r.reason === "spawn_error")).toHaveLength(1);
   });
 });
 
@@ -137,5 +136,62 @@ describe("the start-time check smoke", () => {
       checks: { checkId: string; status: string }[];
     };
     expect(recorded.checks).toEqual([expect.objectContaining({ checkId: "check", status: "not_probed" })]);
+  });
+});
+
+// R109 callfence (#3040): cmd.exe printed `'bundle' is not recognized as an internal or external
+// command` and exited 1 on every check. The baseline recorded it as the project's debt and the run
+// implemented every task (1.97M tokens, $6.55) before it stopped at the checks stage.
+/** A launcher at `dir` that starts and cannot find the program it runs: `bundle exec rubocop`. */
+function writeLauncher(dir: string, line: string, exit: number): string {
+  const file = join(dir, process.platform === "win32" ? "bundle.cmd" : "bundle");
+  writeFileSync(
+    file,
+    process.platform === "win32" ? `@echo off\r\necho ${line} 1>&2\r\nexit /b ${exit}\r\n` : `#!/bin/sh\necho "${line}" >&2\nexit ${exit}\n`,
+  );
+  if (process.platform !== "win32") chmodSync(file, 0o755);
+  return file;
+}
+
+describe("scenario: a required check whose launcher cannot find its program (#3040)", () => {
+  test("the run blocks check_unavailable at the baseline, before approval and before any task", async () => {
+    const bin = mkdtempSync(join(tmpdir(), "baked-launcher-"));
+    cleanups.push(async () => rmSync(bin, { recursive: true, force: true }));
+    const launcher = writeLauncher(bin, "bundler: command not found: rubocop", 127);
+    const fixture = workflowFixture({ policy: { ...fixturePolicy, checks: [check({ id: "rubocop", executable: launcher, args: ["exec", "rubocop"] })] } });
+    cleanups.push(fixture.dispose);
+    const run = await fixture.start();
+    const signal = new AbortController().signal;
+    const first = await fixture.service.drive(run.runId, signal);
+    const snapshot = first.status === "blocked" ? first : (await fixture.approve(run.runId), await fixture.service.drive(run.runId, signal));
+    // On main: the baseline recorded the failure as debt and the run implemented every task.
+    expect(snapshot.status).toBe("blocked");
+    expect(snapshot.reason).toBe("check_unavailable");
+    expect(fixture.executor.calls).not.toContain("implementation");
+  });
+});
+
+describe("programNotStarted (#3040)", () => {
+  test("each launcher's line for the check's own program, and not for another program", () => {
+    expect(programNotStarted("bundle", ["exec", "rubocop"], "'bundle' is not recognized as an internal or external command,\r\noperable program or batch file.", 1)).toMatchObject({ launcher: "cmd.exe", program: "bundle" });
+    expect(programNotStarted("sh", ["-c", "ruff check ."], "sh: 1: ruff: not found", 127)).toMatchObject({ launcher: "POSIX shell", program: "ruff" });
+    expect(programNotStarted("bash", ["-c", "ruff check ."], "bash: line 1: ruff: command not found", 127)?.program).toBe("ruff");
+    expect(programNotStarted("bundle", ["exec", "rspec"], "bundler: command not found: rspec\nInstall missing gem executables with `bundle install`", 127)).toMatchObject({ launcher: "Bundler (bundle exec)", program: "rspec" });
+    expect(programNotStarted("uv", ["run", "pytest"], "error: Failed to spawn: `pytest`\n  Caused by: No such file or directory (os error 2)", 2)).toMatchObject({ launcher: "uv run" });
+    expect(programNotStarted("poetry", ["run", "pytest"], "Command not found: pytest", 1)).toMatchObject({ launcher: "poetry run" });
+    // A test that prints such a line about another command stays a plain failure.
+    expect(programNotStarted("bundle", ["exec", "rspec"], "  expected output: 'git' is not recognized as an internal or external command", 1)).toBeNull();
+    expect(programNotStarted("sh", ["-c", "make test"], "test_cli.sh: line 3: jq: command not found\nFAIL", 2)).toBeNull();
+    // The POSIX line needs exit 127; a passing run is never a start failure.
+    expect(programNotStarted("sh", ["-c", "ruff check ."], "sh: 1: ruff: not found", 1)).toBeNull();
+    expect(programNotStarted("bundle", ["exec", "rubocop"], "bundler: command not found: rubocop", 0)).toBeNull();
+  });
+
+  test("every environment runner has a row in the table", () => {
+    for (const runner of environmentRunners()) {
+      const launcher = RUNNER_LINES[runner];
+      expect(launcher, runner).toBeDefined();
+      expect(PROGRAM_NOT_STARTED_LINES.some((row) => row.launcher === launcher), runner).toBe(true);
+    }
   });
 });
