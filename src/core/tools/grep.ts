@@ -16,6 +16,34 @@ interface GrepArgs {
 
 const ENRICHMENT_TIMEOUT_MS = 2000;
 const MAX_SEARCH_OUTPUT_BYTES = 32_000;
+/** How long ripgrep, or grep in its place, may search before it is stopped; a test may shorten it. */
+export const searchLimits = { timeoutMs: 10_000 };
+
+/**
+ * What a finished search process means: exit 0 or 1 is its answer (1 is "no matches"), a process
+ * its timeout stopped is a search that did not finish, and any other end falls back to grep. A
+ * stopped search used to fall back to grep, which Windows lacks, and answer "No matches found."
+ * for a directory that held matches (#3037).
+ */
+export function searchOutcome(
+  code: number | null,
+  signal: NodeJS.Signals | null,
+): "answered" | "timed-out" | "failed" {
+  if (code === 0 || code === 1) return "answered";
+  if (code === null && signal !== null) return "timed-out";
+  return "failed";
+}
+
+/** The tool's answer when a search was stopped: never "No matches found.", whatever it had printed. */
+export function timedOutResult(partial: string): ToolResult {
+  const hits = partial === "No matches found." ? "" : partial.trim();
+  const msg = `Search stopped after ${String(searchLimits.timeoutMs / 1000)} s before it finished, so matches may be missing. Narrow it with path or glob and search again.`;
+  return {
+    success: false,
+    output: hits ? `${msg}\n\nHits found before it stopped:\n${hits}` : msg,
+    error: msg,
+  };
+}
 
 export const grepTool = {
   name: "grep",
@@ -54,11 +82,13 @@ export const grepTool = {
       searchPath,
     ];
 
+    // Set when the search process was stopped by its timeout rather than finishing.
+    let timedOut = false;
     const rawOutput = await new Promise<string>((res) => {
       const rgBin = getVendoredPath("rg") ?? "rg";
       const proc = spawn(rgBin, rgArgs, {
         cwd: getCwd(),
-        timeout: 10_000,
+        timeout: searchLimits.timeoutMs,
         stdio: ["ignore", "pipe", "pipe"],
         detached: true,
         windowsHide: true,
@@ -86,7 +116,7 @@ export const grepTool = {
 
         const grepProc = spawn("grep", fallbackArgs, {
           cwd: getCwd(),
-          timeout: 10_000,
+          timeout: searchLimits.timeoutMs,
           stdio: ["ignore", "pipe", "pipe"],
           detached: true,
           windowsHide: true,
@@ -98,7 +128,8 @@ export const grepTool = {
           grepBytes += data.length;
           if (grepBytes <= MAX_SEARCH_OUTPUT_BYTES) grepChunks.push(data.toString());
         });
-        grepProc.on("close", () => {
+        grepProc.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+          if (searchOutcome(code, signal) === "timed-out") timedOut = true;
           let out = grepChunks.join("") || "No matches found.";
           if (grepBytes > MAX_SEARCH_OUTPUT_BYTES) {
             out = out.slice(0, MAX_SEARCH_OUTPUT_BYTES);
@@ -121,7 +152,7 @@ export const grepTool = {
         }
       });
 
-      proc.on("close", (code: number | null) => {
+      proc.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
         let output = chunks.join("");
         if (totalBytes > MAX_SEARCH_OUTPUT_BYTES) {
           output = output.slice(0, MAX_SEARCH_OUTPUT_BYTES);
@@ -129,11 +160,10 @@ export const grepTool = {
           if (lastNl > 0) output = output.slice(0, lastNl);
           output += `\n[Output capped at 32KB. Use maxCount=N (default 50) for fewer hits per file, or narrow with glob/path to refine.]`;
         }
-        if (code === 0 || code === 1) {
-          settle(output || "No matches found.");
-        } else {
-          runFallback();
-        }
+        const outcome = searchOutcome(code, signal);
+        if (outcome === "timed-out") timedOut = true;
+        if (outcome === "failed") runFallback();
+        else settle(output || "No matches found.");
       });
     });
 
@@ -147,6 +177,8 @@ export const grepTool = {
               return !m?.[1] || isForbidden(m[1]) === null;
             })
             .join("\n") || "No matches found.";
+
+    if (timedOut) return timedOutResult(filtered);
 
     const enriched = await Promise.race([
       enrichWithSymbolContext(filtered).catch(() => filtered),
