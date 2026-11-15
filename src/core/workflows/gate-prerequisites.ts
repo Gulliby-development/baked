@@ -28,11 +28,33 @@ export interface GatePrerequisite {
    * prerequisite runs every time, for output that must be current, not only present.
    */
   marker?: string;
+  /**
+   * What the check prints when the prerequisite passed but left one of its outputs missing, and
+   * how the prerequisite rebuilds clean (#3054). An MSBuild link that broke mid-way records the
+   * link as done without the `.exe`: every later `cmake --build` passes and lists the target, and
+   * every `ctest` reports "Could not find executable". Only a clean build writes it again.
+   */
+  staleOutput?: { line: RegExp; clean: (args: readonly string[]) => string[] };
 }
+
+/** `cmake --build DIR ... [-- tool options]` with `--clean-first` before the tool options. */
+const cleanFirst = (args: readonly string[]): string[] => {
+  if (args.includes("--clean-first")) return [...args];
+  const tool = args.indexOf("--");
+  return tool < 0
+    ? [...args, "--clean-first"]
+    : [...args.slice(0, tool), "--clean-first", ...args.slice(tool)];
+};
 
 export const GATE_PREREQUISITES: Readonly<Record<string, GatePrerequisite>> = {
   "cmake-build": { checkId: "cmake-configure", marker: "build/CMakeCache.txt" },
-  ctest: { checkId: "cmake-build" },
+  ctest: {
+    checkId: "cmake-build",
+    staleOutput: {
+      line: /^.*(?:Could not find executable|Unable to find executable:?)\s+\S.*$/m,
+      clean: cleanFirst,
+    },
+  },
   "clang-tidy": { checkId: "cmake-configure", marker: "build/CMakeCache.txt" },
 };
 
@@ -46,13 +68,14 @@ export function pendingPrerequisite(
   check: Check,
   checks: readonly Check[],
   root: string,
-): { check: Check; marker?: string } | null {
+): { check: Check; marker?: string; staleOutput?: GatePrerequisite["staleOutput"] } | null {
   const row = Object.hasOwn(GATE_PREREQUISITES, check.id)
     ? GATE_PREREQUISITES[check.id]
     : undefined;
   if (!row) return null;
   const step = checks.find((c) => c.id === row.checkId);
   if (!step || step.id === check.id) return null;
-  if (!row.marker) return { check: step };
+  if (!row.marker)
+    return { check: step, ...(row.staleOutput ? { staleOutput: row.staleOutput } : {}) };
   return existsSync(workspacePath(root, row.marker)) ? null : { check: step, marker: row.marker };
 }

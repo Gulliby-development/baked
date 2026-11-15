@@ -187,3 +187,67 @@ describe("scenario: pnmforge (bench round 83), ctest run without a current build
     expect(checked.output).not.toContain("Could not find executable");
   });
 });
+
+// Scenario of bench round 110 (#3054). An MSBuild link interrupted mid-way (a timeout, a cancel, a
+// parallel link) records the link step as done without writing the `.exe`: every later
+// `cmake --build` passes and lists the target, every `ctest` reports "Could not find executable",
+// and the worker spent its edit rounds on code that was never at fault. Here the stand-in build
+// skips a step whose `link.done` record exists unless it runs with `--clean-first`.
+const STALE_BUILD = [
+  "const fs = require('node:fs');",
+  "if (!fs.existsSync('build/CMakeCache.txt')) { console.error('Error: build is not a directory'); process.exit(1); }",
+  "const clean = process.argv.includes('--clean-first');",
+  "if (clean || !fs.existsSync('build/link.done')) { fs.copyFileSync('src/value.txt', 'build/value_test'); fs.writeFileSync('build/link.done', ''); }",
+  "console.log('[100%] Built target value_test');",
+].join("\n");
+const staleBuild: Check = { ...command("cmake-build", ""), args: ["stale-build.js"] };
+
+async function interruptedLink(checks: Check[], value = "ok") {
+  const env = await runWith(checks);
+  mkdirSync(join(env.root, "src"));
+  writeFileSync(join(env.root, "src/value.txt"), `${value}\n`);
+  writeFileSync(join(env.root, "stale-build.js"), STALE_BUILD);
+  mkdirSync(join(env.root, "build"));
+  writeFileSync(join(env.root, "build/CMakeCache.txt"), "");
+  writeFileSync(join(env.root, "build/link.done"), "");
+  return env;
+}
+
+describe("scenario: R110 (#3054), a test executable missing after an interrupted link", () => {
+  test("ctest rebuilds clean once and passes, with no corrective on the code", async () => {
+    const { root, ran, recorded } = await interruptedLink([configure, staleBuild, ctest]);
+    const checked = await ran(ctest);
+    expect(checked.status).toBe("passed");
+    expect(checked.output).toContain("The host rebuilt it clean (`stale-build.js --clean-first`)");
+    expect(existsSync(join(root, "build/value_test"))).toBe(true);
+    expect(recorded().map(([id, status]) => `${id}:${status}`)).toEqual([
+      "cmake-build:passed",
+      "ctest:failed",
+      "cmake-build:passed",
+      "cmake-build:passed",
+      "ctest:passed",
+    ]);
+  });
+
+  test("a clean build that still leaves it missing is the environment, not the code", async () => {
+    const neverLinks: Check = {
+      ...command("cmake-build", ""),
+      args: ["-e", "console.log('[100%] Built target value_test')"],
+    };
+    const { ran } = await interruptedLink([configure, neverLinks, ctest]);
+    const checked = await ran(ctest);
+    expect(checked.status).toBe("inconclusive");
+    expect(checked.reason).toBe("environment_broken");
+    expect(checked.output).toContain("not the project's code");
+  });
+
+  test("a failing test in a built tree is the code's result, with no rebuild", async () => {
+    const { root, ran, recorded } = await interruptedLink([configure, staleBuild, ctest], "broken");
+    rmSync(join(root, "build/link.done"));
+    const checked = await ran(ctest);
+    expect(checked.status).toBe("failed");
+    expect(checked.output).toContain("Failed got broken");
+    expect(checked.output).not.toContain("rebuilt it clean");
+    expect(recorded().map(([id]) => id)).toEqual(["cmake-build", "ctest"]);
+  });
+});
