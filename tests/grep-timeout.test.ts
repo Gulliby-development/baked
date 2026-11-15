@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getVendoredPath } from "../src/core/setup/install.js";
 import { bakeGrepTool } from "../src/core/tools/bake-grep.js";
 import { grepTool, searchLimits, searchOutcome, timedOutResult } from "../src/core/tools/grep.js";
 
@@ -51,10 +52,14 @@ describe("a search stopped by its timeout (#3037)", () => {
       expect(result.output).not.toContain("No matches found");
     });
 
-    it("bake_grep reports that it stopped, not that nothing matched", async () => {
+    // bake_grep runs ripgrep alone: where it is missing (the macOS runner) the search cannot start,
+    // which it says too, instead of "No matches found.".
+    it("bake_grep reports that it stopped, or that it could not run, not that nothing matched", async () => {
       const result = await bakeGrepTool.createExecute()({ pattern: "API_KEY", path: fifo });
       expect(result.success).toBe(false);
-      expect(result.output).toContain("Search stopped after");
+      expect(result.output).not.toContain("No matches found");
+      const hasRipgrep = getVendoredPath("rg") !== null || Bun.which("rg") !== null;
+      expect(result.output).toContain(hasRipgrep ? "Search stopped after" : "Search could not run");
     });
   });
 });

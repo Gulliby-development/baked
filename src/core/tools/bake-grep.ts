@@ -223,6 +223,7 @@ function runCount(bin: string, args: string[]): Promise<ToolResult> {
 async function runSearch(bin: string, args: string[]): Promise<ToolResult> {
   // Set when the search was stopped by its timeout: its answer is not "No matches found." (#3037).
   let timedOut = false;
+  let cannotRun: string | null = null;
   const rawOutput = await new Promise<string>((resolve) => {
     const proc = spawn(bin, args, { cwd: getCwd(), timeout: searchLimits.timeoutMs });
     const chunks: string[] = [];
@@ -246,11 +247,17 @@ async function runSearch(bin: string, args: string[]): Promise<ToolResult> {
       resolve(output || "No matches found.");
     });
 
-    proc.on("error", () => {
-      resolve("No matches found.");
+    proc.on("error", (err: Error) => {
+      cannotRun = err.message;
+      resolve("");
     });
   });
 
+  // A search that could not start found nothing because it never looked (ripgrep missing).
+  if (cannotRun !== null) {
+    const msg = `Search could not run: ${bin} failed to start (${cannotRun}). The grep tool falls back to grep when ripgrep is missing.`;
+    return { success: false, output: msg, error: msg };
+  }
   const sanitized = filterForbiddenLines(rawOutput);
   if (timedOut) return timedOutResult(sanitized);
 
