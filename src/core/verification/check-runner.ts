@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { runSandbox, type SandboxRequest, SandboxUnavailableError } from "../security/sandbox.js";
@@ -254,6 +255,18 @@ export function timedOutFailure(output: string): boolean {
   return output.split("\n").some(isFailedTestLine);
 }
 
+/** One check's result as the runner returns it. */
+export interface CheckRun {
+  status: "passed" | "failed" | "inconclusive";
+  evidenceId: string;
+  snapshotId: string;
+  output: string;
+  /** `output` with the command's pipes in stream order, for a signature (`inStreamOrder`, #2859). */
+  signatureOutput: string;
+  /** Why the status is what it is: `exit`, `spawn_error`, `timeout`, `cancelled`, `source_changed`, `environment_broken`. */
+  reason: string;
+}
+
 export class CheckRunner {
   constructor(
     private store: WorkflowStore,
@@ -419,16 +432,74 @@ export class CheckRunner {
     check: Check,
     signal: AbortSignal,
     root: string = this.store.workspace,
-  ): Promise<{
-    status: "passed" | "failed" | "inconclusive";
-    evidenceId: string;
-    snapshotId: string;
-    output: string;
-    /** `output` with the command's pipes in stream order, for a signature (`inStreamOrder`, #2859). */
-    signatureOutput: string;
-    /** Why the status is what it is: `exit`, `spawn_error`, `timeout`, `cancelled`, `source_changed`, `environment_broken`. */
-    reason: string;
-  }> {
+  ): Promise<CheckRun> {
+    const result = await this.runOnce(runId, attemptId, check, signal, root);
+    const policy = JSON.parse(this.store.run(runId).policy_json) as RunPolicy;
+    const prerequisite = pendingPrerequisite(check, policy.checks, root);
+    const stale = prerequisite?.staleOutput;
+    // The build passed, yet the check reads one of its outputs as missing: the build tree holds a
+    // step that broke mid-way and that its tool counts as done (#3054). The host rebuilds clean
+    // once and runs the check again; a code corrective cannot fix the tree.
+    const missing =
+      stale && prerequisite && result.status === "failed" && !signal.aborted
+        ? stale.line.exec(result.output)?.[0]?.trim()
+        : undefined;
+    if (!stale || !prerequisite || !missing) return result;
+    if (result.output.startsWith(`${check.id} runs what ${prerequisite.check.id} builds`))
+      return result;
+    const clean = { ...prerequisite.check, args: stale.clean(prerequisite.check.args) };
+    const rebuilt = await this.runOnce(runId, attemptId, clean, signal, root);
+    const again =
+      rebuilt.status === "passed"
+        ? await this.runOnce(runId, attemptId, check, signal, root)
+        : null;
+    const still = again?.status === "failed" ? stale.line.exec(again.output)?.[0]?.trim() : null;
+    this.store.artifact(
+      runId,
+      "recovery",
+      `stale-build/${attemptId}-${check.id}-${randomUUID()}.json`,
+      canonical({
+        checkId: check.id,
+        prerequisite: prerequisite.check.id,
+        missing,
+        clean: clean.args,
+        rebuilt: rebuilt.status,
+        after: again?.status ?? null,
+        ...rootField(this.store.workspace, root),
+      }),
+    );
+    if (!again) {
+      const note = `Note: ${check.id} reported \`${missing}\` after ${prerequisite.check.id} passed, so the host rebuilt with \`${clean.args.join(" ")}\`, and that rebuild did not pass.`;
+      return {
+        ...rebuilt,
+        output: `${rebuilt.output}\n\n${note}`,
+        signatureOutput: `${rebuilt.signatureOutput}\n\n${note}`,
+      };
+    }
+    const lead = `Note: ${check.id} reported \`${missing}\` after ${prerequisite.check.id} passed: the build tree held a step its tool counted as done without its output. The host rebuilt it clean (\`${clean.args.join(" ")}\`) and ran ${check.id} again.`;
+    if (!still)
+      return {
+        ...again,
+        output: `${again.output}\n\n${lead}`,
+        signatureOutput: again.signatureOutput,
+      };
+    // A clean build that still leaves the output missing is the machine's build tree, not code.
+    const note = `${lead} The output is still missing (\`${still}\`). This is the build environment, not the project's code: remove the build directory, then resume.`;
+    return {
+      ...again,
+      status: "inconclusive",
+      reason: "environment_broken",
+      output: `${again.output}\n\n${note}`,
+      signatureOutput: again.signatureOutput,
+    };
+  }
+  private async runOnce(
+    runId: string,
+    attemptId: string,
+    check: Check,
+    signal: AbortSignal,
+    root: string = this.store.workspace,
+  ): Promise<CheckRun> {
     const policy = JSON.parse(this.store.run(runId).policy_json) as RunPolicy;
     // A gate that reads another gate's output runs that gate first where its output is missing,
     // a fresh task worktree (#2526), or every time when it must be current (#2565); a
