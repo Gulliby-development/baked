@@ -87,7 +87,8 @@ async function plan(executor: ScriptedExecutor) {
 }
 
 describe("scenario: hdrlens base 38dd8595, a late inconsistency after the reroute budget (#1830)", () => {
-  test("a finding that sets the artifacts against a requirement restating the request is settled for the request", async () => {
+  // Its run reaches the baseline, where a `go` that is not installed stops it (#3040).
+  test.skipIf(!Bun.which("go"))("a finding that sets the artifacts against a requirement restating the request is settled for the request", async () => {
     const executor = new ScriptedExecutor(["request"], [[SCOPE, STUBS], [SCOPE], [DOUBLE]]);
     const { service, runId, pending } = await plan(executor);
     expect(pending("clarification")).toHaveLength(0);

@@ -297,7 +297,8 @@ describe("another task's support file holds the written-tests check, in every la
   }
 });
 
-describe("scenario: a host-written fixtures_test.go before the package's tests (#2439, R77 trailspin)", () => {
+// The run takes a baseline of `go test`, which stops it when Go is not installed (#3040).
+describe.skipIf(!Bun.which("go"))("scenario: a host-written fixtures_test.go before the package's tests (#2439, R77 trailspin)", () => {
   test("no tests-written failure, no implementer session for the fixtures task, and supplied_drift stays quiet", async () => {
     const root = project({
       "go.mod": "module example.com/trailspin\n\ngo 1.21\n",
