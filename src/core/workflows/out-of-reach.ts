@@ -15,7 +15,47 @@ import type { Task } from "./types.js";
  */
 export type OutOfReach =
   | { item: string; reason: "outside_workspace"; paths: string[] }
-  | { item: string; reason: "later_task"; tasks: string[]; paths: string[] };
+  | { item: string; reason: "later_task"; tasks: string[]; paths: string[] }
+  | { item: string; reason: "settled"; checks: string[] };
+
+/**
+ * A step that only asks to look again: re-run a check, read a file, confirm or verify what the
+ * host's checks decide (#3030). Smoke tagcount 852ccff2: T002's files were written and the host's
+ * `pytest-written`, `ruff` and `pytest` passed in its last attempt, yet the worker, its own tool
+ * results compacted away, ended `blocked` three times with only "Re-run pytest -q and ruff check
+ * src tests ... confirm both pass", "Run request_check pytest-written", "Read README.md ... confirm
+ * the Example section" left. Such an item is settled when every check it names is one the host
+ * runs before finishing the task, and they all pass; an item that also asks for a change is not.
+ */
+const VERIFY_LEAD =
+  /^\s*(?:[-*]\s*)?(?:please\s+)?(?:re-?run|run|re-?read|read|re-?check|check|double-check|confirm|verify|validate|ensure|make sure|inspect|look at|re-?test)\b/i;
+const NOT_VERIFIED =
+  /\b(?:not|never|could not|cannot|can't|unable to)\s+(?:be\s+)?(?:verif|confirm|re-?run|relied on)/i;
+const CHANGE_VERBS =
+  /\b(?:add|implement|fix|write|create|rename|remove|delete|refactor|change|replace|handle|support|update|edit|modify|correct|resolve|rewrite|append|insert)\b/i;
+
+/** The checks a settled item may name: the ones the host runs, each by its id and command. */
+export interface SettlingChecks {
+  /** The checks the host runs (and requires to pass) before it finishes the task. */
+  run: readonly { id: string; command: string }[];
+  /** Every check id of the run's policy, so an item naming one the host does not run is kept. */
+  known: readonly string[];
+}
+
+const namesWord = (text: string, word: string): boolean =>
+  new RegExp(`(?<![\\w-])${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i").test(text);
+
+/** The checks a verify-only item names, or null when it is not one or names a check not run. */
+export function settledBy(item: string, checks: SettlingChecks): string[] | null {
+  if (!checks.run.length) return null;
+  if (!(VERIFY_LEAD.test(item) || NOT_VERIFIED.test(item)) || CHANGE_VERBS.test(item)) return null;
+  const run = checks.run.filter(
+    (check) => namesWord(item, check.id) || (check.command && item.includes(check.command)),
+  );
+  const ran = new Set(checks.run.map((c) => c.id));
+  if (checks.known.some((id) => !ran.has(id) && namesWord(item, id))) return null;
+  return run.map((c) => c.id);
+}
 
 /** Words that say a step needs a place outside the workspace. */
 const OUTSIDE_WORDS =
@@ -90,8 +130,9 @@ function laterTasks(graph: TaskGraph, rows: readonly TaskRow[], task: Task): Tas
 
 /**
  * Each unresolved item with why the task cannot resolve it: it needs a path outside the
- * workspace (one it names, or "outside the repository"), or it names a file that a later,
- * unfinished task writes and the task does not. Null when any item is neither, so a gap in the
+ * workspace (one it names, or "outside the repository"), it names a file that a later,
+ * unfinished task writes and the task does not, or it only asks to verify what the host's checks
+ * decide (`settled`, when `checks` is given). Null when any item is none of these, so a gap in the
  * task's own scope still stops the run, and null for no items.
  */
 export function outOfReach(
@@ -100,6 +141,7 @@ export function outOfReach(
   graph: TaskGraph,
   rows: readonly TaskRow[],
   task: Task,
+  checks?: SettlingChecks,
 ): OutOfReach[] | null {
   if (!unresolved.length) return null;
   const later = laterTasks(graph, rows, task);
@@ -120,7 +162,12 @@ export function outOfReach(
         )
         .map((w) => ({ task: other.id, path: w.path })),
     );
-    if (!owned.length) return null;
+    if (!owned.length) {
+      const settled = checks ? settledBy(item, checks) : null;
+      if (!settled) return null;
+      reached.push({ item, reason: "settled", checks: settled });
+      continue;
+    }
     reached.push({
       item,
       reason: "later_task",

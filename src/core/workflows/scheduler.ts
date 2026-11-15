@@ -522,6 +522,7 @@ import {
 } from "./finding-chain.js";
 import { fixerPaths } from "./fixer-languages.js";
 import {
+  clearPassedFixers,
   FAILED_FIXERS_NOTE,
   FIXER_KIND,
   type FixerProbe,
@@ -4553,8 +4554,10 @@ export class WorkflowScheduler {
    * A task that ended unfinished only on steps its tools cannot take is finished by the host
    * (#3021): every unresolved item needs a path outside the workspace (smoke caesar 886d9832: a
    * README task told to write a sample file in a scratch directory outside the repository) or
-   * names a file a later task writes (node-npm-wordfreq 8d80efd3), the attempt changed files and
-   * created every file it creates, and its required task checks pass. The items are recorded in
+   * names a file a later task writes (node-npm-wordfreq 8d80efd3), or only asks to re-run or
+   * verify what the host's checks decide (smoke tagcount 852ccff2, #3030); the attempt changed
+   * files (an earlier attempt's edits it carries count, `stillEdited`) and created every file it
+   * creates; and its required task checks pass. The items are recorded in
    * `tasks/<task>/out-of-reach.json` and the result becomes `implemented`; the documented-example
    * run and the review judge the README, and the later task writes its file. Otherwise null, and
    * the task stops as before: a gap in its own scope still blocks the run.
@@ -4580,7 +4583,20 @@ export class WorkflowScheduler {
       )
     )
       return null;
-    const reached = outOfReach(result.unresolved, root, state.graph, this.store.tasks(runId), task);
+    const checks = this.gatedChecks(runId, state, policy, task, root, changed).filter(
+      (check) => check.required,
+    );
+    const reached = outOfReach(
+      result.unresolved,
+      root,
+      state.graph,
+      this.store.tasks(runId),
+      task,
+      {
+        run: checks.map((c) => ({ id: c.id, command: formatCommandLine(c.executable, c.args) })),
+        known: policy.checks.map((c) => c.id),
+      },
+    );
     if (!reached) return null;
     if (task.rows?.length) {
       const rows = (() => {
@@ -4592,9 +4608,6 @@ export class WorkflowScheduler {
       })();
       if (!rows || (await rowFileProblems(root, rows)).length) return null;
     }
-    const checks = this.gatedChecks(runId, state, policy, task, root, changed).filter(
-      (check) => check.required,
-    );
     const evidenceIds: string[] = [];
     for (const check of checks) {
       signal.throwIfAborted();
@@ -4622,7 +4635,9 @@ export class WorkflowScheduler {
       .map((r) =>
         r.reason === "later_task"
           ? `${r.item} (left to ${r.tasks.join(", ")})`
-          : `${r.item} (needs a path outside the workspace)`,
+          : r.reason === "settled"
+            ? `${r.item} (settled by the host's passing checks)`
+            : `${r.item} (needs a path outside the workspace)`,
       )
       .join("; ");
     return {
@@ -13476,7 +13491,11 @@ ${note}`;
   }> {
     const attempt = this.store.reserve(runId, child, null, 0, policy);
     const checked = await this.checks.run(runId, attempt, check, signal, root);
-    this.store.transaction(() => this.store.finishAttempt(runId, attempt, "completed", 0));
+    this.store.transaction(() => {
+      this.store.finishAttempt(runId, attempt, "completed", 0);
+      // A fixer failure of this check is stale once the check passes (#3030).
+      if (checked.status === "passed") clearPassedFixers(this.store, runId, check.id);
+    });
     failFastUnavailable(check, checked);
     return checked;
   }

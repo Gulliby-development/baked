@@ -108,6 +108,19 @@ export function recordFixerRuns(
     store.artifact(runId, FIXER_KIND, FAILED_FIXERS_PATH, canonical({ schemaVersion: 1, failed }));
 }
 
+/**
+ * Drops the standing fixer failures of a check that has since passed (#3030): smoke tagcount
+ * 852ccff2 told every later attempt and the block's diagnostic that `ruff check --fix` failed on
+ * four files after `ruff` passed on them, and the worker made that one more unresolved item.
+ * Called inside the caller's transaction.
+ */
+export function clearPassedFixers(store: WorkflowStore, runId: string, checkId: string): void {
+  const standing = failedFixerRuns(store, runId);
+  const failed = standing.filter((run) => run.checkId !== checkId);
+  if (failed.length !== standing.length)
+    store.artifact(runId, FIXER_KIND, FAILED_FIXERS_PATH, canonical({ schemaVersion: 1, failed }));
+}
+
 /** The failed host fixer runs still standing, from `FAILED_FIXERS_PATH`. */
 export function failedFixerRuns(store: WorkflowStore, runId: string): FixerRun[] {
   const artifact = store.latestArtifact(runId, FAILED_FIXERS_PATH);
