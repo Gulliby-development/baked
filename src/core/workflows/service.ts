@@ -15,6 +15,7 @@ import {
 } from "../projects/working-set.js";
 import { canonical, hashBytes, hashJson } from "../specs/hash.js";
 import { validatePackage, workspacePath } from "../specs/validate.js";
+import { buildCheckEnv } from "../verification/check-runner.js";
 import { appendCorrections } from "../verification/convergence.js";
 import {
   acceptResidual,
@@ -102,6 +103,7 @@ import {
   WorkspaceLeases,
 } from "./leases.js";
 import { estimatePrepared } from "./pre-run.js";
+import { longPathWarning } from "./process-scope.js";
 import {
   collectProjectMemory,
   LEARNED_RULES_ARTIFACT,
@@ -684,8 +686,13 @@ export class NativeWorkflowService implements WorkflowService {
         `These required checks cannot start:\n${missing.map(smokeLine).join("\n")}`,
         { reason: "check_unavailable", problems: missing },
       );
-    if (failed.length)
-      prepared.routing.warnings = [...(prepared.routing.warnings ?? []), ...failed.map(smokeLine)];
+    // A PATH cmd.exe cannot read finds no program a batch script starts by name (#3039).
+    const longPath = prepared.policy.checks
+      .map((check) => longPathWarning(buildCheckEnv(check)))
+      .find((warning) => warning !== null);
+    const warnings = [...failed.map(smokeLine), ...(longPath ? [longPath] : [])];
+    if (warnings.length)
+      prepared.routing.warnings = [...(prepared.routing.warnings ?? []), ...warnings];
     return smoke;
   }
   /**

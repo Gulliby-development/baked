@@ -62,7 +62,7 @@ describe("batch scripts on Windows", () => {
     }
   });
 
-  test("a bare batch name runs by the absolute path the PATH gives; a path, an unknown name or a name without .bat/.cmd is kept (#2432)", () => {
+  test("a bare batch name runs by the absolute path the PATH gives; a path or an unknown name is kept (#2432, #3039)", () => {
     const found: Record<string, string> = {
       "sbt.bat": "C:\\sbt\\bin\\sbt.bat",
       "npm.cmd": "C:\\node\\npm.cmd",
@@ -71,8 +71,8 @@ describe("batch scripts on Windows", () => {
     const which = (bin: string) => found[bin] ?? null;
     expect(windowsProgram("sbt.bat", "C:\\sbt\\bin", "C:\\w", which)).toBe("C:\\sbt\\bin\\sbt.bat");
     expect(windowsProgram("npm.cmd", "C:\\node", "C:\\w", which)).toBe("C:\\node\\npm.cmd");
-    // Bun resolves an extensionless name itself and starts the script by its path.
-    expect(windowsProgram("gradle", "C:\\gradle\\bin", "C:\\w", which)).toBe("gradle");
+    // A bare name the PATH gives as a batch script runs by its absolute path too (#3039).
+    expect(windowsProgram("gradle", "C:\\gradle\\bin", "C:\\w", which)).toBe("C:\\gradle\\bin\\gradle.bat");
     expect(windowsProgram("missing.cmd", "", "C:\\w", which)).toBe("missing.cmd");
     expect(windowsProgram("C:\\x\\sbt.bat", "", "C:\\w", which)).toBe("C:\\x\\sbt.bat");
     expect(windowsProgram(".\\gradlew.bat", "", "C:\\w", which)).toBe(".\\gradlew.bat");

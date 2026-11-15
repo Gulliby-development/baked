@@ -65,11 +65,14 @@ export function inStreamOrder(text: string, streams: ProcessResult["streams"]): 
 export const isWindowsBatch = (executable: string): boolean => /\.(cmd|bat)$/i.test(executable);
 
 /**
- * The program a Windows launch names (#2432): a bare batch name (`sbt.bat`, `npm.cmd`, no
- * directory) is looked up on `path` from `cwd` and named by its absolute path. cmd.exe expands
- * `%~dp0` of a script started as a quoted bare name to the working directory, so R77's `sbt.bat`
- * looked for `<worktree>\bin\sbt-launch.jar`. A name with a directory, one not found, and a name
- * without `.bat`/`.cmd` (which Bun resolves itself) are kept.
+ * The program a Windows launch names (#2432, #3039): a bare name is looked up on `path` from
+ * `cwd`, and when it is a batch script (`sbt.bat`, `npm.cmd`, or `bundle`, which the PATH gives as
+ * `bundle.bat`) it is named by its absolute path. cmd.exe expands `%~dp0` of a script started as a
+ * quoted bare name to the working directory, so R77's `sbt.bat` looked for
+ * `<worktree>\bin\sbt-launch.jar`; and cmd.exe searches the PATH again for a bare name, which it
+ * cannot do when the PATH is over 8191 characters (R109 callfence: `'bundle' is not recognized`
+ * on every check). A name with a directory, one not found, and a name the PATH gives as a program
+ * (`git.exe`, which Bun starts directly) are kept.
  */
 export function windowsProgram(
   executable: string,
@@ -77,9 +80,27 @@ export function windowsProgram(
   cwd: string,
   which: (bin: string, options: { PATH: string; cwd: string }) => string | null = Bun.which,
 ): string {
-  if (!isWindowsBatch(executable) || /[\\/]/.test(executable) || /^[a-z]:/i.test(executable))
-    return executable;
-  return which(executable, { PATH: path, cwd }) ?? executable;
+  if (/[\\/]/.test(executable) || /^[a-z]:/i.test(executable)) return executable;
+  const found = which(executable, { PATH: path, cwd });
+  return found && isWindowsBatch(found) ? found : executable;
+}
+
+/** The longest PATH cmd.exe reads: with a longer one it finds no program by its bare name. */
+export const CMD_PATH_LIMIT = 8191;
+
+/**
+ * The warning for a Windows check environment whose PATH cmd.exe cannot read (#3039), or null. A
+ * check's batch program is started by its absolute path, but a script it runs that starts another
+ * program by name, and a command line run through cmd.exe, still cannot find it.
+ */
+export function longPathWarning(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (platform !== "win32") return null;
+  const length = (env.PATH ?? env.Path ?? "").length;
+  if (length <= CMD_PATH_LIMIT) return null;
+  return `PATH is ${String(length)} characters, over the ${String(CMD_PATH_LIMIT)} cmd.exe reads: a batch script or a cmd.exe command line that starts a program by its bare name will not find it. Shorten PATH (an environment script sourced twice adds its entries twice).`;
 }
 
 /**
@@ -135,10 +156,12 @@ export class ProcessScope {
     options.signal.throwIfAborted();
     const started = executionClock.now();
     const scope = randomUUID();
-    const batch = process.platform === "win32" && !options.verbatim && isWindowsBatch(executable);
-    const program = batch
-      ? windowsProgram(executable, options.env.PATH ?? options.env.Path ?? "", options.cwd)
-      : executable;
+    // A bare name the PATH gives as a batch script runs by its absolute path too (#3039).
+    const program =
+      process.platform === "win32" && !options.verbatim
+        ? windowsProgram(executable, options.env.PATH ?? options.env.Path ?? "", options.cwd)
+        : executable;
+    const batch = process.platform === "win32" && !options.verbatim && isWindowsBatch(program);
     const direct = batch ? windowsBatchInvocation(program, args) : { executable, args };
     // Wrapping follows the batch rewrite; the Windows launcher joins a verbatim line unquoted.
     const verbatim = (options.verbatim === true || batch) && process.platform === "win32";
