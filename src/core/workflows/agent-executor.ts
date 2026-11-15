@@ -117,6 +117,7 @@ import { refusalInRunRoot, refusedEditAdvice } from "./refused-edit.js";
 import { restorableVersion } from "./restore-file.js";
 import { isOutputLimit, isTransient } from "./retry.js";
 import { RevisionSchema } from "./revision-patch.js";
+import { withRootLock } from "./root-lock.js";
 import {
   AnalysisSchema,
   ApprovalReviewSchema,
@@ -888,100 +889,102 @@ export class NativeAgentExecutor implements AgentExecutor {
         available.request_check = tool({
           description: "Run an approved check by ID and return host evidence.",
           inputSchema: z.object({ checkId: z.string() }).strict(),
-          execute: async ({ checkId }) => {
-            const task = request.task;
-            // The affected-tests check (#634) runs only the tests that reach the task's files.
-            // So is the check of the test files the task writes (#1271).
-            const affected =
-              task && checkId.endsWith("-affected")
-                ? affectedTestsFor(root, policy.checks, task.writes).check
-                : task && checkId.endsWith("-written")
-                  ? writtenTestsCheck(
-                      root,
-                      policy.checks,
-                      requestedWrittenTests(task, request.writtenTests, editedPaths),
-                      taskCaseText(task),
-                    )
-                  : null;
-            // A correction whose findings point at no test file and that edited none has no
-            // tests-written check, after the attempt either (#1421).
-            if (
-              task &&
-              checkId.endsWith("-written") &&
-              !affected &&
-              request.writtenTests &&
-              writtenTestsCheck(root, policy.checks, task.writes, taskCaseText(task))?.id ===
-                checkId
-            )
-              return {
-                checkId,
-                status: "deferred",
-                note: `${checkId} runs the test files this correction's findings point at and the ones it edits. It points at none and has edited none, so the host runs no ${checkId} after this attempt; the task's other checks and the checks stage still run. Edit a test file of the task to have it run.`,
-              };
-            const check =
-              affected?.id === checkId ? affected : policy.checks.find((c) => c.id === checkId);
-            if (!check || (check !== affected && !task?.checkIds.includes(checkId)))
-              throw new WorkflowFault("CAPABILITY_DENIED", "Check ID is outside the task scope");
-            // A planned task runs before integration, where a whole-unit formatter only reports the
-            // other tasks' files; the checks stage formats the integrated change (#842).
-            if (task?.origin === "planned" && isWholeUnitFormatter(check))
-              return {
-                checkId: check.id,
-                status: "deferred",
-                note: `${check.id} formats the whole project, so it runs in the checks stage after the tasks are integrated, where the host applies its fixer to the files this run writes. It is not run for a single task and is not a failure: do not run it or reformat files by hand for it.`,
-              };
-            const scope = new ProcessScope();
-            try {
-              const result = await new CheckRunner(this.store, scope).run(
-                request.runId,
-                request.attemptId,
-                check,
-                request.signal,
-                root,
-              );
-              checkpoint?.check(
-                check.id,
-                result.status,
-                result.evidenceId,
-                journalPosition(),
-                budget.consumed(finished),
-              );
-              const own =
-                result.status === "failed"
-                  ? (request.attributeCheck?.(check, result.output) ?? null)
-                  : null;
-              // The full output stays in the evidence; the model gets a bounded view (#993).
-              const hint =
-                result.status === "failed" ? escapeHintFor(result.output, doubledEscapes) : null;
-              const shown = {
-                ...withoutSignature(result),
-                ...modelCheckOutput(result.output, result.evidenceId),
-                ...(hint ? { escapeHint: hint } : {}),
-              };
-              const owner =
-                result.status === "failed" ? request.failureOwner?.(result.output) : undefined;
-              const ownershipNote = owner ? failureOwnerNote(owner) : undefined;
-              if (!own)
+          execute: ({ checkId }) =>
+            // One project command at a time in this root (#3047).
+            withRootLock(root, async () => {
+              const task = request.task;
+              // The affected-tests check (#634) runs only the tests that reach the task's files.
+              // So is the check of the test files the task writes (#1271).
+              const affected =
+                task && checkId.endsWith("-affected")
+                  ? affectedTestsFor(root, policy.checks, task.writes).check
+                  : task && checkId.endsWith("-written")
+                    ? writtenTestsCheck(
+                        root,
+                        policy.checks,
+                        requestedWrittenTests(task, request.writtenTests, editedPaths),
+                        taskCaseText(task),
+                      )
+                    : null;
+              // A correction whose findings point at no test file and that edited none has no
+              // tests-written check, after the attempt either (#1421).
+              if (
+                task &&
+                checkId.endsWith("-written") &&
+                !affected &&
+                request.writtenTests &&
+                writtenTestsCheck(root, policy.checks, task.writes, taskCaseText(task))?.id ===
+                  checkId
+              )
+                return {
+                  checkId,
+                  status: "deferred",
+                  note: `${checkId} runs the test files this correction's findings point at and the ones it edits. It points at none and has edited none, so the host runs no ${checkId} after this attempt; the task's other checks and the checks stage still run. Edit a test file of the task to have it run.`,
+                };
+              const check =
+                affected?.id === checkId ? affected : policy.checks.find((c) => c.id === checkId);
+              if (!check || (check !== affected && !task?.checkIds.includes(checkId)))
+                throw new WorkflowFault("CAPABILITY_DENIED", "Check ID is outside the task scope");
+              // A planned task runs before integration, where a whole-unit formatter only reports the
+              // other tasks' files; the checks stage formats the integrated change (#842).
+              if (task?.origin === "planned" && isWholeUnitFormatter(check))
+                return {
+                  checkId: check.id,
+                  status: "deferred",
+                  note: `${check.id} formats the whole project, so it runs in the checks stage after the tasks are integrated, where the host applies its fixer to the files this run writes. It is not run for a single task and is not a failure: do not run it or reformat files by hand for it.`,
+                };
+              const scope = new ProcessScope();
+              try {
+                const result = await new CheckRunner(this.store, scope).run(
+                  request.runId,
+                  request.attemptId,
+                  check,
+                  request.signal,
+                  root,
+                );
+                checkpoint?.check(
+                  check.id,
+                  result.status,
+                  result.evidenceId,
+                  journalPosition(),
+                  budget.consumed(finished),
+                );
+                const own =
+                  result.status === "failed"
+                    ? (request.attributeCheck?.(check, result.output) ?? null)
+                    : null;
+                // The full output stays in the evidence; the model gets a bounded view (#993).
+                const hint =
+                  result.status === "failed" ? escapeHintFor(result.output, doubledEscapes) : null;
+                const shown = {
+                  ...withoutSignature(result),
+                  ...modelCheckOutput(result.output, result.evidenceId),
+                  ...(hint ? { escapeHint: hint } : {}),
+                };
+                const owner =
+                  result.status === "failed" ? request.failureOwner?.(result.output) : undefined;
+                const ownershipNote = owner ? failureOwnerNote(owner) : undefined;
+                if (!own)
+                  return {
+                    ...shown,
+                    ...(owner ? { failureOwner: owner } : {}),
+                    ...(ownershipNote ? { note: ownershipNote } : {}),
+                  };
                 return {
                   ...shown,
                   ...(owner ? { failureOwner: owner } : {}),
-                  ...(ownershipNote ? { note: ownershipNote } : {}),
+                  taskErrors: own,
+                  note: [
+                    ownershipNote,
+                    `${check.id} analyzes the whole project and runs in the checks stage after the tasks are integrated; in this task's directory it also fails on files other tasks have not written yet. ${own.length ? "Only the errors in taskErrors are in this task's files: fix those and ignore the rest." : "None of its errors is in this task's files, so there is nothing to fix for it here."}`,
+                  ]
+                    .filter(Boolean)
+                    .join("\n"),
                 };
-              return {
-                ...shown,
-                ...(owner ? { failureOwner: owner } : {}),
-                taskErrors: own,
-                note: [
-                  ownershipNote,
-                  `${check.id} analyzes the whole project and runs in the checks stage after the tasks are integrated; in this task's directory it also fails on files other tasks have not written yet. ${own.length ? "Only the errors in taskErrors are in this task's files: fix those and ignore the rest." : "None of its errors is in this task's files, so there is nothing to fix for it here."}`,
-                ]
-                  .filter(Boolean)
-                  .join("\n"),
-              };
-            } finally {
-              await scope.stop();
-            }
-          },
+              } finally {
+                await scope.stop();
+              }
+            }),
         });
       }
       const probeable = reproExecutables(policy.checks);
@@ -1033,7 +1036,8 @@ export class NativeAgentExecutor implements AgentExecutor {
           description: probe.description,
           inputSchema: probe.inputSchema,
           // Under the tool policy, so the call has a deadline and `tool.started`/`tool.finished`.
-          execute: async (input: unknown) => guard.host("run_probe", () => probe.execute(input)),
+          execute: async (input: unknown) =>
+            withRootLock(root, () => guard.host("run_probe", () => probe.execute(input))),
         });
       }
       // A correction runs the repros of its findings itself, the way the host checks them at
@@ -1117,163 +1121,169 @@ export class NativeAgentExecutor implements AgentExecutor {
         available.apply_fix = tool({
           description: `Run the automatic fixer of a check (${fixable.map((c) => c.id).join(", ")}) on each file this task writes, then run the check and return its result. Use it first for lint or format findings the fixer can resolve, then edit by hand only what remains.`,
           inputSchema: z.object({ checkId: z.string() }).strict(),
-          execute: async ({ checkId }) => {
-            const check = fixable.find((c) => c.id === checkId);
-            if (!check?.fix || !task)
-              throw new WorkflowFault("CAPABILITY_DENIED", `Check ${checkId} has no fixer`);
-            const tiers = fixerTiers(check);
-            const exists = (path: string) => !!fileHash(workspacePath(root, path));
-            const paths = task.writes
-              .filter((w) => w.action !== "delete" && exists(w.path))
-              .map((w) => w.path);
-            // A whole-unit formatter reads only source code; README and LICENSE give it nothing to do.
-            const codePaths = writtenCodePaths(task).filter(exists);
-            const generated = generatedPaths(policy);
-            const before = await sourceManifest(root, generated, request.signal);
-            // Every file the task writes is its own, also one that does not exist yet: the
-            // task's parallel edit may create it while the fixer runs, and a put-back would
-            // remove it as a file the fixer created (#2609).
-            const own = new Set(task.writes.map((w) => w.path));
-            const kept = keepOutside(root, before, own);
-            const scope = new ProcessScope();
-            // Unsignalled, so the put-back also runs after the call was aborted.
-            const changedOutside = async () =>
-              changedPaths(before, await sourceManifest(root, generated)).filter(
-                (p) => !own.has(p),
-              );
-            let reverted: string[] = [];
-            try {
-              // Each fixer run's exit and output tail: a fixer that cannot run says why (#2436).
-              const outputs: { target: string; exitCode: number | null; output?: string }[] = [];
-              const fixOnce = async (
-                command: { executable: string; args: string[] },
-                targets: string[],
-              ) => {
-                const once = () =>
-                  runFixer(scope, command, {
-                    cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-                    env: buildCheckEnv(check),
-                    timeoutMs: check.timeoutMs,
-                    signal: request.signal,
-                    sandbox: runSandbox(policy, root, { gitWrite: root !== this.store.workspace }),
-                  });
-                // A directory argument or wrapper can make any fixer rewrite sibling task files.
-                // Capture every pre-image before running it, as for a whole-unit formatter, so
-                // later edits and resume recognize those changes as this attempt's own (#1593).
-                // Distinct paths avoid nesting a guard inside its own serialized path queue.
-                return [...new Set(paths)].reduceRight<() => Promise<unknown>>(
-                  (inner, path) => () => guard.execute("edit_file", { path }, inner),
-                  async () => {
-                    // A range fixer's file as it was, to put back its changes outside the range
-                    // (#2970).
-                    const ranged = check.fixLines && targets.length === 1 ? targets[0] : undefined;
-                    const absolute = ranged ? workspacePath(root, ranged) : "";
-                    const rangedBefore =
-                      ranged && existsSync(absolute) ? readFileSync(absolute, "utf8") : null;
-                    // A fixer that writes text mode on Windows turns a LF file into CRLF (#2214).
-                    const endings = captureEndings(paths.map((path) => workspacePath(root, path)));
-                    const result = await once().finally(() => restoreEndings(endings));
-                    if (ranged) {
-                      const done = await putBackOutsideRange(
-                        absolute,
-                        ranged,
-                        rangedBefore,
-                        check.fixLines,
-                        async () =>
-                          (
-                            await runFixer(
-                              scope,
-                              { executable: check.executable, args: check.args },
-                              {
-                                cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
-                                env: buildCheckEnv(check),
-                                timeoutMs: check.timeoutMs,
-                                signal: request.signal,
-                                sandbox: runSandbox(policy, root, {
-                                  gitWrite: root !== this.store.workspace,
-                                }),
-                              },
-                            )
-                          ).exitCode === 0,
-                      );
-                      if (done)
-                        recordPutBack(
-                          this.store,
-                          request.runId,
-                          request.attemptId,
-                          `apply_fix ${check.id} range`,
-                          [done],
-                        );
-                    }
-                    outputs.push({
-                      target: targets.join(", "),
-                      exitCode: result.timedOut ? null : result.exitCode,
-                      ...(fixerFailed(result) && result.output ? { output: result.output } : {}),
-                    });
-                  },
-                )();
-              };
+          execute: ({ checkId }) =>
+            withRootLock(root, async () => {
+              const check = fixable.find((c) => c.id === checkId);
+              if (!check?.fix || !task)
+                throw new WorkflowFault("CAPABILITY_DENIED", `Check ${checkId} has no fixer`);
+              const tiers = fixerTiers(check);
+              const exists = (path: string) => !!fileHash(workspacePath(root, path));
+              const paths = task.writes
+                .filter((w) => w.action !== "delete" && exists(w.path))
+                .map((w) => w.path);
+              // A whole-unit formatter reads only source code; README and LICENSE give it nothing to do.
+              const codePaths = writtenCodePaths(task).filter(exists);
+              const generated = generatedPaths(policy);
+              const before = await sourceManifest(root, generated, request.signal);
+              // Every file the task writes is its own, also one that does not exist yet: the
+              // task's parallel edit may create it while the fixer runs, and a put-back would
+              // remove it as a file the fixer created (#2609).
+              const own = new Set(task.writes.map((w) => w.path));
+              const kept = keepOutside(root, before, own);
+              const scope = new ProcessScope();
+              // Unsignalled, so the put-back also runs after the call was aborted.
+              const changedOutside = async () =>
+                changedPaths(before, await sourceManifest(root, generated)).filter(
+                  (p) => !own.has(p),
+                );
+              let reverted: string[] = [];
               try {
-                for (const [tier, fix] of tiers.entries()) {
-                  if (isWholeUnitFixer(fix)) {
-                    // Only the code files of the languages the fixer handles (#2632).
-                    const code = fixerPaths(fix, fixerTierPaths(check, tier, codePaths));
-                    if (!code.length) continue;
-                    await fixOnce(
-                      wholeUnitFixerCommand(
-                        fix,
-                        code.map((path) => cwdPath(check, path)),
-                      ),
-                      code,
-                    );
-                    continue;
+                // Each fixer run's exit and output tail: a fixer that cannot run says why (#2436).
+                const outputs: { target: string; exitCode: number | null; output?: string }[] = [];
+                const fixOnce = async (
+                  command: { executable: string; args: string[] },
+                  targets: string[],
+                ) => {
+                  const once = () =>
+                    runFixer(scope, command, {
+                      cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                      env: buildCheckEnv(check),
+                      timeoutMs: check.timeoutMs,
+                      signal: request.signal,
+                      sandbox: runSandbox(policy, root, {
+                        gitWrite: root !== this.store.workspace,
+                      }),
+                    });
+                  // A directory argument or wrapper can make any fixer rewrite sibling task files.
+                  // Capture every pre-image before running it, as for a whole-unit formatter, so
+                  // later edits and resume recognize those changes as this attempt's own (#1593).
+                  // Distinct paths avoid nesting a guard inside its own serialized path queue.
+                  return [...new Set(paths)].reduceRight<() => Promise<unknown>>(
+                    (inner, path) => () => guard.execute("edit_file", { path }, inner),
+                    async () => {
+                      // A range fixer's file as it was, to put back its changes outside the range
+                      // (#2970).
+                      const ranged =
+                        check.fixLines && targets.length === 1 ? targets[0] : undefined;
+                      const absolute = ranged ? workspacePath(root, ranged) : "";
+                      const rangedBefore =
+                        ranged && existsSync(absolute) ? readFileSync(absolute, "utf8") : null;
+                      // A fixer that writes text mode on Windows turns a LF file into CRLF (#2214).
+                      const endings = captureEndings(
+                        paths.map((path) => workspacePath(root, path)),
+                      );
+                      const result = await once().finally(() => restoreEndings(endings));
+                      if (ranged) {
+                        const done = await putBackOutsideRange(
+                          absolute,
+                          ranged,
+                          rangedBefore,
+                          check.fixLines,
+                          async () =>
+                            (
+                              await runFixer(
+                                scope,
+                                { executable: check.executable, args: check.args },
+                                {
+                                  cwd: check.cwd === "." ? root : workspacePath(root, check.cwd),
+                                  env: buildCheckEnv(check),
+                                  timeoutMs: check.timeoutMs,
+                                  signal: request.signal,
+                                  sandbox: runSandbox(policy, root, {
+                                    gitWrite: root !== this.store.workspace,
+                                  }),
+                                },
+                              )
+                            ).exitCode === 0,
+                        );
+                        if (done)
+                          recordPutBack(
+                            this.store,
+                            request.runId,
+                            request.attemptId,
+                            `apply_fix ${check.id} range`,
+                            [done],
+                          );
+                      }
+                      outputs.push({
+                        target: targets.join(", "),
+                        exitCode: result.timedOut ? null : result.exitCode,
+                        ...(fixerFailed(result) && result.output ? { output: result.output } : {}),
+                      });
+                    },
+                  )();
+                };
+                try {
+                  for (const [tier, fix] of tiers.entries()) {
+                    if (isWholeUnitFixer(fix)) {
+                      // Only the code files of the languages the fixer handles (#2632).
+                      const code = fixerPaths(fix, fixerTierPaths(check, tier, codePaths));
+                      if (!code.length) continue;
+                      await fixOnce(
+                        wholeUnitFixerCommand(
+                          fix,
+                          code.map((path) => cwdPath(check, path)),
+                        ),
+                        code,
+                      );
+                      continue;
+                    }
+                    // The fixer runs in the check's cwd, so it names the file from there.
+                    for (const path of fixerPaths(fix, fixerTierPaths(check, tier, paths)))
+                      await fixOnce(fixerCommand(fix, cwdPath(check, path)), [path]);
                   }
-                  // The fixer runs in the check's cwd, so it names the file from there.
-                  for (const path of fixerPaths(fix, fixerTierPaths(check, tier, paths)))
-                    await fixOnce(fixerCommand(fix, cwdPath(check, path)), [path]);
+                } finally {
+                  // Also when a run throws: a whole-crate formatter may already have rewritten
+                  // sibling files (bench round 13, mdrefs T010: five files left reformatted).
+                  reverted = await changedOutside();
+                  recordPutBack(
+                    this.store,
+                    request.runId,
+                    request.attemptId,
+                    `apply_fix ${check.id}`,
+                    restoreOutside(root, kept, reverted),
+                  );
                 }
-              } finally {
-                // Also when a run throws: a whole-crate formatter may already have rewritten
-                // sibling files (bench round 13, mdrefs T010: five files left reformatted).
-                reverted = await changedOutside();
-                recordPutBack(
-                  this.store,
+                const outside = await changedOutside();
+                if (outside.length)
+                  throw new WorkflowFault(
+                    "CAPABILITY_DENIED",
+                    `The ${check.id} fixer changed files outside the task: ${outside.join(", ")}`,
+                  );
+                const checked = await new CheckRunner(this.store, scope).run(
                   request.runId,
                   request.attemptId,
-                  `apply_fix ${check.id}`,
-                  restoreOutside(root, kept, reverted),
+                  check,
+                  request.signal,
+                  root,
                 );
+                return {
+                  fixed: outputs,
+                  check: {
+                    ...withoutSignature(checked),
+                    ...modelCheckOutput(checked.output, checked.evidenceId),
+                  },
+                  ...(reverted.length
+                    ? {
+                        reverted,
+                        note: "The fixer also rewrote these files of other tasks; they were put back as they were.",
+                      }
+                    : {}),
+                };
+              } finally {
+                await scope.stop();
               }
-              const outside = await changedOutside();
-              if (outside.length)
-                throw new WorkflowFault(
-                  "CAPABILITY_DENIED",
-                  `The ${check.id} fixer changed files outside the task: ${outside.join(", ")}`,
-                );
-              const checked = await new CheckRunner(this.store, scope).run(
-                request.runId,
-                request.attemptId,
-                check,
-                request.signal,
-                root,
-              );
-              return {
-                fixed: outputs,
-                check: {
-                  ...withoutSignature(checked),
-                  ...modelCheckOutput(checked.output, checked.evidenceId),
-                },
-                ...(reverted.length
-                  ? {
-                      reverted,
-                      note: "The fixer also rewrote these files of other tasks; they were put back as they were.",
-                    }
-                  : {}),
-              };
-            } finally {
-              await scope.stop();
-            }
-          },
+            }),
         });
       }
       // A file the task's edits left unparsable goes back to its last version that parsed (#1835).
