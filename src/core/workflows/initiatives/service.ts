@@ -4418,11 +4418,12 @@ export class InitiativeService {
   }
 
   /**
-   * The initiative a feature run belongs to and its next step, for the answer of a decision on
-   * that run (#2024); null for a run outside an initiative.
+   * The initiative a feature run or its decompose run belongs to and its next step, for the answer
+   * of a decision on that run (#2024); null for a run outside an initiative. A decompose run is not
+   * in `initiative_runs`: after it completes, only a drive takes `finish_decompose` (#3046).
    */
   ofRun(runId: string): InitiativeStep | null {
-    const id = this.store.initiativeOfRun(runId);
+    const id = this.store.initiativeOfRun(runId) ?? this.store.decompositionOfRun(runId)?.id;
     if (!id) return null;
     const view = this.view(id);
     return { initiativeId: id, status: view.status, next: view.next, drive: view.drive };
