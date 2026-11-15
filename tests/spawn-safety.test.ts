@@ -112,21 +112,40 @@ describe("SAFE_STDIO", () => {
 
 describe("subprocess stdin isolation", () => {
 	it("command that reads stdin gets EOF immediately with SAFE_STDIO", async () => {
-		const { spawn } = await import("node:child_process");
-		// The child reads fd 0 itself, as git, ssh and a shell do: with stdin ignored the read returns
-		// end of file at once. On macOS, after about 75 other files in one `bun test` process, the
-		// earlier child (`for await` over Bun's `process.stdin` stream, waited for by "close") ran out
-		// the 30 s limit while three isolated reruns of the same test passed (#3032); the result now
-		// comes from the child's own exit, and a child that does hang is killed and reported as such.
+		const { spawn, spawnSync } = await import("node:child_process");
+		// The child reads fd 0 itself, as git, ssh and a shell do, and prints how many bytes it got:
+		// with stdin ignored the read returns end of file at once. The answer comes from the child's
+		// stdout reaching end of file, not from its exit event. On macOS, after about 75 other files
+		// in one `bun test` process, neither "close" (#3032) nor "exit" with a 10 s spawn timeout
+		// (#3036) arrived before the 30 s limit, while isolated reruns passed: the child's exit was
+		// not delivered to the test process. A pipe's end of file is a separate event, and if it does
+		// not come either, the failure says whether the child is still running or already exited.
 		const proc = spawn(
 			process.execPath,
-			["-e", 'process.exit(require("node:fs").readFileSync(0).length === 0 ? 0 : 2)'],
-			{ stdio: SAFE_STDIO, env: buildSafeEnv(), timeout: 10_000 },
+			["-e", 'process.stdout.write(`read ${require("node:fs").readFileSync(0).length}`)'],
+			{ stdio: SAFE_STDIO, env: buildSafeEnv() },
 		);
-		const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-			proc.on("exit", (code, signal) => resolve({ code, signal }));
+		const deadlineMs = 20_000;
+		let out = "";
+		proc.stdout?.on("data", (chunk) => {
+			out += chunk;
 		});
-		expect(exit).toEqual({ code: 0, signal: null });
+		const ended = await new Promise<boolean>((resolve) => {
+			const timer = setTimeout(() => resolve(false), deadlineMs);
+			proc.stdout?.on("end", () => {
+				clearTimeout(timer);
+				resolve(true);
+			});
+		});
+		if (!ended) {
+			const state =
+				process.platform === "win32"
+					? "unknown"
+					: spawnSync("ps", ["-o", "stat=", "-p", String(proc.pid)], { encoding: "utf8" }).stdout.trim() || "gone";
+			proc.kill("SIGKILL");
+			throw new Error(`child ${proc.pid} stdout still open after ${deadlineMs / 1000} s; ps state ${state}, exitCode ${proc.exitCode}`);
+		}
+		expect(out).toBe("read 0");
 	});
 
 	it("git command fails cleanly instead of prompting when auth is missing", async () => {
