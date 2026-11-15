@@ -5,7 +5,8 @@ import { dirname, join } from "node:path";
 import { DEFAULT_CONFIG } from "../src/config/index.js";
 import { hashBytes, hashJson } from "../src/core/specs/hash.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
-import { outOfReach, outsidePaths } from "../src/core/workflows/out-of-reach.js";
+import { clearPassedFixers, failedFixersBlockNote, recordFixerRuns } from "../src/core/workflows/fixer-run.js";
+import { outOfReach, outsidePaths, settledBy } from "../src/core/workflows/out-of-reach.js";
 import type { Check, RunPolicy, Spec, Task } from "../src/core/workflows/schemas.js";
 import { NativeWorkflowService } from "../src/core/workflows/service.js";
 import type { TaskRow } from "../src/core/workflows/store.js";
@@ -29,7 +30,7 @@ const spec: Spec = { schemaVersion: 1, featureId: "fixture", revision: 1, title:
 const markdown = "# Plan\n## Context\nA cipher, its README and its tests.\n## Decisions\nDEC-001: FR-001 is tested last.\n## Components\nsrc/main/java/caesar/Main.java, README.md, src/test/java/caesar/MainTest.java\n## Data\nText\n## Verification\nTests\n## Risks\nNone for fixture";
 // `mvn verify` stand-in: it passes on whatever the tasks wrote.
 const verify: Check = { id: "maven-verify", executable: "bun", args: ["-e", "console.log('Tests run: 22, Failures: 0')"], cwd: ".", timeoutMs: 10000, required: true, scope: "task", envNames: [], writes: [] };
-const policy: RunPolicy = { ...defaultWorkflowPolicy, maxRepairRounds: 2, checks: [verify] };
+const basePolicy: RunPolicy = { ...defaultWorkflowPolicy, maxRepairRounds: 2, checks: [verify] };
 const MAIN = "src/main/java/caesar/Main.java";
 const TEST = "src/test/java/caesar/MainTest.java";
 const planned = (id: string, path: string, dependsOn: string[] = []): Task => ({ id, title: `Write ${path}`, description: `Write ${path}`, requirementIds: ["FR-001"], criterionIds: ["AC-001"], dependsOn, profileId: "implementer", writes: [{ path, action: "create" }], readHints: [], checkIds: ["maven-verify"], origin: "planned", findingIds: [], rationale: "Required behavior" });
@@ -71,7 +72,7 @@ class ScriptedExecutor implements AgentExecutor {
   }
 }
 
-async function runScenario(blocked: Record<string, string[]>) {
+async function runScenario(blocked: Record<string, string[]>, policy: RunPolicy = basePolicy) {
   const root = mkdtempSync(join(tmpdir(), "baked-caesar-"));
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const executor = new ScriptedExecutor(root, blocked);
@@ -124,6 +125,45 @@ describe("scenario: smoke caesar, a README step that needs a file outside the re
   });
 });
 
+// Smoke tagcount (Python) 2026-11-15, run 852ccff2, #3030: the host's checks passed in T002's
+// last attempt, and the worker, distrusting its compacted transcript, left only re-run and verify
+// items, at every resume.
+const VERIFY_ITEMS = [
+  "Re-run mvn verify and confirm maven-verify passes",
+  "Run request_check maven-verify once more",
+  "Read README.md and confirm the Example section shows the CLI output",
+  "Run java -cp target/classes caesar.Main --shift 3 brief.md and make the README example output match",
+];
+
+describe("scenario: smoke tagcount, a task left with only re-run and verify items (#3030)", () => {
+  test("the host's passing checks settle them: the run completes and the items are recorded as settled", async () => {
+    const { service, runId, done, executor } = await runScenario({ T002: VERIFY_ITEMS });
+    // On main: T002 ended blocked at every attempt and the run stopped `blocked:invalid_output`.
+    expect(done.status).toBe("completed");
+    expect(executor.implemented).toEqual(["T001", "T002", "T003"]);
+    const record = outOfReachRecord(service, runId, "T002");
+    expect(record.items.map((i: { reason: string }) => i.reason)).toEqual(["settled", "settled", "settled", "settled"]);
+    expect(record.items[0]).toMatchObject({ checks: ["maven-verify"] });
+  });
+
+  test("a named check that fails keeps the task unfinished", async () => {
+    const failing: Check = { ...verify, args: ["-e", "console.log('Tests run: 22, Failures: 1'); process.exit(1)"] };
+    const { service, runId, done } = await runScenario({ T002: VERIFY_ITEMS }, { ...basePolicy, checks: [failing] });
+    expect(done.status).not.toBe("completed");
+    expect(outOfReachRecord(service, runId, "T002")).toBeNull();
+  });
+
+  test("a fixer failure of a check that has since passed leaves the next diagnostic", async () => {
+    const { service, runId } = await runScenario({});
+    const run = { checkId: "ruff", targets: ["src/tagcount/core.py"], command: ["ruff", "check", "--fix"], exitCode: 1, timedOut: false, changed: false, output: "Found 1 error." };
+    service.store.transaction(() => recordFixerRuns(service.store, runId, "a1", [run, { ...run, checkId: "black" }]));
+    expect(failedFixersBlockNote(service.store, runId)).toContain("- ruff: ruff check --fix");
+    service.store.transaction(() => clearPassedFixers(service.store, runId, "ruff"));
+    expect(failedFixersBlockNote(service.store, runId)).not.toContain("- ruff:");
+    expect(failedFixersBlockNote(service.store, runId)).toContain("- black:");
+  });
+});
+
 describe("outOfReach (#3021)", () => {
   const graph = { schemaVersion: 1 as const, featureId: "fixture", revision: 1, specHash: "", planHash: "", tasks: TASKS };
   const rows = (status: Record<string, string>) => TASKS.map((t) => ({ id: t.id, status: status[t.id] ?? "pending" }) as TaskRow);
@@ -151,5 +191,16 @@ describe("outOfReach (#3021)", () => {
     expect(outsidePaths("write C:\\Users\\me\\AppData\\Local\\Temp\\s.txt", root)).toEqual(["C:\\Users\\me\\AppData\\Local\\Temp\\s.txt"]);
     expect(outsidePaths("the sample at ../sample.txt", root)).toEqual(["../sample.txt"]);
     expect(outsidePaths(`${MAIN} lacks --decode`, root)).toEqual([]);
+  });
+
+  test("settledBy: verify-only items naming checks the host runs, not a change or an unrun check", () => {
+    const checks = { run: [{ id: "pytest", command: "pytest -q" }, { id: "ruff", command: "ruff check src tests" }], known: ["pytest", "ruff", "mypy"] };
+    expect(settledBy("Re-run pytest -q and ruff check src tests and confirm both pass", checks)).toEqual(["pytest", "ruff"]);
+    expect(settledBy("Read README.md and confirm the Example section", checks)).toEqual([]);
+    expect(settledBy("The pytest results could not be verified from this transcript", checks)).toEqual(["pytest"]);
+    expect(settledBy("Fix the failing test in tests/test_cli.py and re-run pytest", checks)).toBeNull();
+    expect(settledBy("Run mypy and confirm it passes", checks)).toBeNull();
+    expect(settledBy("The --top flag ignores ties", checks)).toBeNull();
+    expect(settledBy("Re-run pytest", { run: [], known: [] })).toBeNull();
   });
 });
