@@ -8,8 +8,11 @@ import { hashBytes, hashJson } from "../specs/hash.js";
 import {
   git,
   gitEnvironmentKey,
+  gitFailure,
   gitFileStamp,
+  gitRead,
   gitWorktreePaths,
+  SILENT_GIT_RETRY_MS,
 } from "../workflows/delivery-git.js";
 import { isLinkedDependency } from "../workflows/dependency-dirs.js";
 import { WorkflowFault } from "../workflows/errors.js";
@@ -17,6 +20,20 @@ import { WorkflowFault } from "../workflows/errors.js";
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
 
 const trackedFiles = new Map<string, { stamp: string; files: string[] }>();
+
+/**
+ * The message of a failed read of the repository baseline: the command, its code or signal and its
+ * stderr, and the first failure when the read was retried (#3041).
+ */
+function baselineFailure(
+  args: readonly string[],
+  result: Parameters<typeof gitFailure>[1] & { retriedAfter?: Parameters<typeof gitFailure>[1] },
+): string {
+  const again = result.retriedAfter
+    ? `; it was run again after ${String(SILENT_GIT_RETRY_MS)} ms because the first run (${gitFailure(args, result.retriedAfter)}) printed nothing`
+    : "";
+  return `Cannot read repository baseline: ${gitFailure(args, result)}${again}`;
+}
 
 /** A source scan needs only tracked names, not HEAD or the working copy's status. */
 async function gitTrackedFiles(workspace: string): Promise<string[]> {
@@ -26,8 +43,9 @@ async function gitTrackedFiles(workspace: string): Promise<string[]> {
   const stamp = paths ? gitFileStamp(paths.index) : null;
   const cached = trackedFiles.get(key);
   if (stamp && cached?.stamp === stamp) return cached.files;
-  const result = await git(workspace, ["ls-files", "-z", "--cached"], { timeoutMs: 10000 });
-  if (result.code !== 0) throw new Error(`Cannot read repository baseline: ${result.stderr}`);
+  const args = ["ls-files", "-z", "--cached"];
+  const result = await gitRead(() => git(workspace, args, { timeoutMs: 10000 }));
+  if (result.code !== 0) throw new Error(baselineFailure(args, result));
   const files = result.stdout.split("\0").filter(Boolean);
   // Do not cache a read raced by an index update, or a missing/unborn index.
   if (stamp && paths && gitFileStamp(paths.index) === stamp) {
@@ -42,15 +60,23 @@ export async function gitBaseline(
 ): Promise<{ head: string | null; tracked: string[]; userChanges: string[] } | null> {
   if (!existsSync(join(workspace, ".git"))) return null;
   async function git(args: string[], allowFailure = false): Promise<string> {
-    const proc = Bun.spawn(["git", "--no-optional-locks", "-C", workspace, ...args], {
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: 10000,
-    });
-    const result = await processOutput(proc);
-    const [output, error, code] = [decode(result.stdout), decode(result.stderr), result.code];
-    if (code !== 0 && !allowFailure) throw new Error(`Cannot read repository baseline: ${error}`);
-    return code === 0 ? output : "";
+    const once = async () => {
+      const proc = Bun.spawn(["git", "--no-optional-locks", "-C", workspace, ...args], {
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 10000,
+      });
+      const result = await processOutput(proc);
+      return {
+        code: result.code,
+        stdout: decode(result.stdout),
+        stderr: decode(result.stderr),
+        signal: proc.signalCode === null ? null : String(proc.signalCode),
+      };
+    };
+    const result = allowFailure ? await once() : await gitRead(once);
+    if (result.code !== 0 && !allowFailure) throw new Error(baselineFailure(args, result));
+    return result.code === 0 ? result.stdout : "";
   }
   return {
     head: (await git(["rev-parse", "--verify", "HEAD"], true)).trim() || null,
