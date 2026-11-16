@@ -111,9 +111,20 @@ export function quotedSpans(text: string): QuotedSpan[] {
     const code = [...line.matchAll(/`([^`]+)`/g)];
     // An odd count, or a span that starts or ends in a space (` at character 3`), means the
     // backticks pair across a span: the line's code spans are not guessed.
+    // A table cell that is one code span from its first character to its last is that span,
+    // whatever its spaces (#3068: R111 inisift's `` ` [a]\n\tk = 1\n  ; c\n` `` input cell).
+    const wholeCell = (m: RegExpExecArray | RegExpMatchArray) => {
+      if (!line.includes("|")) return false;
+      const at = m.index ?? 0;
+      const before = line.slice(0, at);
+      const after = line.slice(at + m[0].length);
+      return (
+        /(?:^|\|)[ \t]*$/.test(before) && /^[ \t]*(?:\||$)/.test(after) && /\|/.test(before + after)
+      );
+    };
     const paired =
       (line.match(/`/g) ?? []).length % 2 === 0 &&
-      code.every((m) => (m[1] ?? "") === asciiTrim(m[1] ?? ""));
+      code.every((m) => (m[1] ?? "") === asciiTrim(m[1] ?? "") || wholeCell(m));
     let kept = line;
     if (paired)
       for (const m of code) {
@@ -197,7 +208,8 @@ export type CitedKind =
   | "helper"
   | "range"
   | "scaffold"
-  | "state";
+  | "state"
+  | "structure";
 
 /** What `citedKind` reads beside the literal: the plan's test file names and row counts. */
 export interface CitedNames {
@@ -207,6 +219,10 @@ export interface CitedNames {
   counts: ReadonlySet<number>;
   /** The names a supplied or planned file declares (`declaredNames`), for `helper` (#2646). */
   helpers?: ReadonlySet<string>;
+  /** Upper-case words the request uses as placeholders (`requestPlaceholders`, #3068). */
+  placeholders?: ReadonlySet<string>;
+  /** Lines that open a list or block of a row file (`structureLines`, #3068). */
+  structure?: ReadonlySet<string>;
 }
 
 /**
@@ -236,6 +252,66 @@ export function declaredNames(contents: readonly string[]): Set<string> {
 /** Upper-case words a message or usage pattern uses for a value a row fills in. */
 const PLACEHOLDER_WORD =
   /(?<![\p{L}\p{N}_])(?:LINE|LINENO|COL|COLUMN|MESSAGE|MSG|NAME|FILES?|PATH|DIR|VALUE|KEY|NUM|COUNT|TEXT|ARGS?|PATTERN|URL|PORT|HOST|INPUT|OUTPUT|OFFSET|INDEX|POS|REASON|DETAIL|TOKEN|FILTER|EXPR|WORDS?)(?![\p{L}\p{N}_])/gu;
+/** An upper-case word of three or more characters, dotted parts included (`SECTION.KEY`). */
+const UPPER_WORD =
+  /(?<![\p{L}\p{N}_])[A-Z][A-Z0-9_]{2,}(?:\.[A-Z][A-Z0-9_]{2,})*(?![\p{L}\p{N}_])/gu;
+
+/** The code of a request: its fenced lines and its inline code spans. */
+function requestCode(request: string): string[] {
+  const out: string[] = [];
+  let fenced = false;
+  for (const line of request.split("\n")) {
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced) out.push(line);
+    else for (const m of line.matchAll(/`([^`\n]+)`/g)) out.push(m[1] ?? "");
+  }
+  return out;
+}
+
+/**
+ * The upper-case words a request uses as placeholders in a message or usage pattern (#3068): a word
+ * in its code beside lower-case text (`inisift: bad value for OPTION`) that no prescribed row
+ * holds, since a row writes the value, never the placeholder. R111 inisift and skillgate wrote
+ * `OPTION`, which `PLACEHOLDER_WORD` does not list, and 2 criteria quoting the pattern were noted.
+ */
+export function requestPlaceholders(request: string, rows: readonly string[]): Set<string> {
+  const held = new Set(rows.flatMap((row) => row.match(UPPER_WORD) ?? []));
+  const out = new Set<string>();
+  for (const code of requestCode(request)) {
+    if (!/\p{Ll}/u.test(code)) continue;
+    for (const word of code.match(UPPER_WORD) ?? []) if (!held.has(word)) out.add(word);
+  }
+  return out;
+}
+
+/** What a line that opens a list or block ends with: `{`, `(`, `[`, `do`, `:`, `->`, `=> {`. */
+const OPENER_END = /\s*(?:=>\s*\{|\{|\(|\[|\bdo|:|->)\s*$/;
+/** A line or a literal as `structureLines` keys it: trimmed, spaces collapsed. */
+const structureKey = (text: string) => asciiTrim(text).replace(/[ \t]+/g, " ");
+
+/**
+ * The lines of the request's code, its verbatim files and the planned writes that open a list or
+ * block (#3068), keyed with and without their opener: `It 'part 2' {` gives `It 'part 2' {` and
+ * `It 'part 2'`, `static void totals(void) {` both. A criterion that quotes one says which list a
+ * row goes in. R111: 7 of 11 `case_not_prescribed` records were Pester `It 'part N'` and C
+ * `static void totals(void) {`.
+ */
+export function structureLines(texts: readonly string[], rows: readonly string[]): Set<string> {
+  const own = new Set(rows.map(structureKey));
+  const out = new Set<string>();
+  for (const line of texts.flatMap((text) => text.split("\n"))) {
+    const key = structureKey(line);
+    if (!OPENER_END.test(key) || own.has(key)) continue;
+    out.add(key);
+    const bare = structureKey(key.replace(OPENER_END, ""));
+    if (/[\s(]/.test(bare) && /\p{L}/u.test(bare)) out.add(bare);
+  }
+  return out;
+}
+
 /** A number the words after it make a count of rows, cases or tests. */
 const COUNT_NOUN =
   /^[\s`"']*(?:[\w-]+\s+){0,2}?(?:rows?|cases?|tests?|lines?|entries|records|examples|blocks?|files?)\b/i;
@@ -327,10 +403,15 @@ export function citedKind(
   if (/[/\\]/.test(text) && FILE_NAME.test(text)) return "name";
   if (CODE_POINT.test(text) || CONTROL_ESCAPE.test(text) || SPELLED_OUT.test(after))
     return "description";
+  // A line that opens a list or block of a row file: where a row goes, not a row (#3068).
+  if (cited.structure?.has(structureKey(text))) return "structure";
   // A placeholder word beside other text: the envelope, not the literal itself (`NAME` alone).
-  const words = text.match(PLACEHOLDER_WORD) ?? [];
-  if (words.length && text.replace(PLACEHOLDER_WORD, "").replace(/[^\p{L}\p{N}]/gu, "").length)
-    return "placeholder";
+  // The request's own placeholder words count too (`bad value for OPTION`, #3068).
+  const own = (text.match(UPPER_WORD) ?? []).filter((w) => cited.placeholders?.has(w));
+  let rest = text.replace(PLACEHOLDER_WORD, "");
+  for (const word of own) rest = rest.split(word).join("");
+  const words = [...(text.match(PLACEHOLDER_WORD) ?? []), ...own];
+  if (words.length && rest.replace(/[^\p{L}\p{N}]/gu, "").length) return "placeholder";
   if (SCAFFOLD_TEXT.test(text)) return "scaffold";
   if (NULL_WORD.test(text) && !OUTPUT_BEFORE.test(before)) return "state";
   return undefined;
@@ -353,9 +434,16 @@ function citedNames(task: CaseTask, context: CaseContext): CitedNames {
   const planned = [task, ...(context.tasks ?? [])].flatMap((t) =>
     (t.writes ?? []).flatMap((w) => (w.content ? [w.content] : [])),
   );
+  const rows = [...(context.prescribedRows?.values() ?? [])].flat();
+  const request = context.request ?? "";
   return {
     names: new Set(paths.flatMap(testFileNames)),
     counts: new Set([...counts, ...(counts.length > 1 ? [counts.reduce((a, b) => a + b, 0)] : [])]),
+    placeholders: requestPlaceholders(request, rows),
+    structure: structureLines(
+      [requestCode(request).join("\n"), ...planned, ...(context.suppliedFiles ?? [])],
+      rows,
+    ),
     helpers: new Set([
       ...declaredNames([...planned, ...(context.suppliedFiles ?? [])]),
       ...plannedNames(
@@ -562,6 +650,11 @@ export interface CaseContext {
    * a criterion that names one cites a file, not a row's text (#2889).
    */
   rowFiles?: readonly string[];
+  /**
+   * The request as stated: its placeholder words (`requestPlaceholders`) and the lines of its code
+   * that open a list or block (`structureLines`) are `cited`, not cases (#3068).
+   */
+  request?: string;
   /**
    * `skip` (`citedCases`, #2531): a case nothing holds whose literal describes rows instead of
    * quoting one (`CriterionCase.cited`) is not demanded, for any task, and the walk record says
@@ -1390,6 +1483,13 @@ function tableInputs(text: string): {
       inputs.push({ literal, source, expected: cells.slice(1).join(" ") });
     if (/^[A-Za-z_]\w*\s*=(?!=)/.test(raw)) {
       push(raw);
+      return;
+    }
+    // A cell that is one code span from its first character to its last is that span, whatever
+    // its spaces (#3068): `quotedSpans` would not pair a span that starts with a space.
+    const whole = /^[ \t]*`([^`]+)`[ \t]*$/.exec(raw)?.[1];
+    if (whole !== undefined && whole !== asciiTrim(whole)) {
+      if (literalCase(asciiTrim(whole), true, false)) push(asciiTrim(whole));
       return;
     }
     const spans = quotedSpans(raw);

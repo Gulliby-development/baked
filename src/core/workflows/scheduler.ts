@@ -7631,6 +7631,8 @@ export class WorkflowScheduler {
               suppliedFiles: this.suppliedFiles(runId, state),
               // Every row file it names, also another feature's (#2889).
               rowFiles: rowBlockFiles(statedRequest(state, this.store.requests(runId))),
+              // Its placeholder words and the lines that open its lists (#3068).
+              request: statedRequest(state, this.store.requests(runId)),
               ...(policy.citedCases ? { citedCases: policy.citedCases } : {}),
               generatedKinds: this.bannedGeneratedKinds(state, task),
               refuseGenerated: stopMode(policy, "generated_case") === "enforce",
@@ -14665,6 +14667,7 @@ ${note}`;
         hostRows: (files ?? []).filter((file) => file.inline === true),
         prescribedRows: this.prescribedRows(runId, state),
         rowFiles: rowBlockFiles(statedRequest(state, this.store.requests(runId))),
+        request: statedRequest(state, this.store.requests(runId)),
       },
     );
     const cases = walk ? (await walk(fix.root)).length : 0;
