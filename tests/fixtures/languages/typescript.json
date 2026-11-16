@@ -18,6 +18,7 @@
   },
   "expected": {
     "rowIndent": ["\"  row(1),\""],
+    "rowSeparator": ["\"  row(1),\""],
     "languagePitfalls": null,
     "generatedValues": ["tests/gen.test.ts:1 repeat","tests/gen.test.ts:2 interpolate","tests/gen.test.ts:3 loop"],
     "exampleBuild": null,

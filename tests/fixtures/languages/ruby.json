@@ -16,6 +16,7 @@
   },
   "expected": {
     "rowIndent": ["\"  row(1),\""],
+    "rowSeparator": ["\"  row(1),\""],
     "languagePitfalls": ["Ruby"],
     "generatedValues": ["spec/gen_spec.rb:1 repeat","spec/gen_spec.rb:2 pack","spec/gen_spec.rb:3 interpolate","spec/gen_spec.rb:4 loop"],
     "exampleBuild": null,

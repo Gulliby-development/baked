@@ -13,6 +13,7 @@
   },
   "expected": {
     "rowIndent": null,
+    "rowSeparator": null,
     "languagePitfalls": null,
     "generatedValues": ["src/Gen.svelte:2 repeat"],
     "exampleBuild": null,

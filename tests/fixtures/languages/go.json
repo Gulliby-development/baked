@@ -16,6 +16,7 @@
   },
   "expected": {
     "rowIndent": ["\"\\trow(1),\""],
+    "rowSeparator": ["\"\\trow(1),\""],
     "languagePitfalls": ["Go"],
     "generatedValues": ["gen_test.go:3 repeat","gen_test.go:4 format"],
     "exampleBuild": null,

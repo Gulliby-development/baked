@@ -9,6 +9,7 @@
   },
   "expected": {
     "rowIndent": null,
+    "rowSeparator": ["\"    row(1),\""],
     "languagePitfalls": null,
     "generatedValues": ["Tests/GenTests.m:1 format"],
     "exampleBuild": null,

@@ -11,6 +11,7 @@
   },
   "expected": {
     "rowIndent": null,
+    "rowSeparator": ["\"    row(1),\""],
     "languagePitfalls": ["C and C++"],
     "generatedValues": ["src/gen_test.c:1 repeat","src/gen_test.c:2 format"],
     "exampleBuild": null,

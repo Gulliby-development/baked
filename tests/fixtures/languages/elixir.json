@@ -15,6 +15,7 @@
   },
   "expected": {
     "rowIndent": ["\"  row(1),\""],
+    "rowSeparator": ["\"  row(1),\""],
     "languagePitfalls": null,
     "generatedValues": ["test/gen_test.exs:1 repeat","test/gen_test.exs:2 interpolate"],
     "exampleBuild": ["mix run --no-compile; link _build"],
