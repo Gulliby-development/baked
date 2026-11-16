@@ -940,6 +940,7 @@ import {
   uncoveredFindings,
   uncoveredSpecNote,
 } from "./uncovered.js";
+import { noteUsageLimitResume } from "./usage-limit-reset.js";
 
 type Implementation = ReturnType<typeof ImplementationSchema.parse>;
 
@@ -1313,6 +1314,11 @@ function integrityRequirementText(state: RuntimeState, requests: readonly Reques
  * The request a spec's deliverables are checked against. A feature of an initiative has its
  * boundary approved with the split, not the request, so it is checked against nothing.
  */
+/** The refusal's kind and, for a usage limit, its reset in the provider's words (#3056). */
+function refusalDetails(refusal: AccountRefusal, error: unknown): Record<string, string> {
+  const reset = refusal === "limit" ? usageLimitReset(error) : null;
+  return { refusal, ...(reset ? { reset } : {}) };
+}
 /** What a person does about a provider refusal before resuming the run. */
 function refusalAdvice(refusal: AccountRefusal, error: unknown): string {
   if (refusal === "limit") {
@@ -4050,6 +4056,19 @@ export class WorkflowScheduler {
           outerSignal.aborted ? "paused" : "blocked",
           outerSignal.aborted ? "user_pause" : reason,
         );
+        // A usage limit that named its reset would be resumed then (#3056): shadow, the run stays
+        // blocked for a person.
+        if (
+          !outerSignal.aborted &&
+          reason === "provider_account" &&
+          fault instanceof WorkflowFault &&
+          typeof fault.details.reset === "string"
+        )
+          try {
+            noteUsageLimitResume(this.store, runId, diagnostic.id, fault.details.reset, "drive");
+          } catch {
+            // A shadow record never changes how the drive ends.
+          }
       });
     } finally {
       forgetProgress(runId);
@@ -8086,7 +8105,7 @@ export class WorkflowScheduler {
             `${profile.model} refused the request: ${refusalAdvice(refusal, error)}. ${error instanceof Error ? error.message : String(error)}`,
             { action: "reroute", runId },
           ),
-          { reason: "provider_account" },
+          { reason: "provider_account", ...refusalDetails(refusal, error) },
         );
       // An attempt that used its steps without submitting and changed nothing is repeated once
       // with half again as many steps; the same cap would repeat the same experiment (tasks grow
@@ -11698,7 +11717,7 @@ ${note}`;
           error: new WorkflowFault(
             "OUTPUT_INVALID",
             `${entry.task.id}'s worker was refused: ${refusalAdvice(refusal, error)}. ${error instanceof Error ? error.message : String(error)}`,
-            { reason: "provider_account" },
+            { reason: "provider_account", ...refusalDetails(refusal, error) },
           ),
         };
       // The task's worker or its worktree lease is gone; the other tasks continue.
