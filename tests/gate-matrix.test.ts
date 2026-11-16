@@ -97,6 +97,7 @@ import { toolchainCommand } from "../src/core/workflows/toolchain.js";
 import { type HostEdit, hostOnlyEvidence, plannerGraph } from "../src/core/workflows/host-edits.js";
 import { defaultWorkflowPolicy } from "../src/core/workflows/defaults.js";
 import { fixerProbeDecision } from "../src/core/workflows/fixer-run.js";
+import { undeliveredRows } from "../src/core/workflows/initiatives/delivered-rows.js";
 import { STOP_REASONS, stopMode } from "../src/core/workflows/stop-reasons.js";
 import { sizePlan, splitTestTasks, suppliedBlocks } from "../src/core/workflows/sizing.js";
 import { withPerTestTimeout } from "../src/core/workflows/test-timeout.js";
@@ -6812,4 +6813,27 @@ describe("initiative-row-owner gate: a row's command joins the feature that writ
     test(name, () => {
       expect(rowOwnerProblems(plan, request)[0]?.shape ?? null).toBe(shape);
     });
+});
+
+describe("initiative-rows-delivered gate: prescribed rows no accepted copy holds (#3071)", () => {
+  // R111 skillgate: the outline run held rows 6 and 8 of Outline's 13.
+  const fence = "```";
+  const rows = Array.from({ length: 4 }, (_, i) => `@{ Argv = @('outline', '${i + 1}'); Out = "ok ${i + 1}" }`);
+  const request = [`${fence}powershell`, "outline in tests/Outline.Tests.ps1 (4 rows)", ...rows, fence].join("\n");
+  const file = (held: number[]) => ["Describe 'outline' {", "    It 'part 2' -TestCases @(", ...held.map((n) => `        ${rows[n - 1]}`), "    ) { }", "}"].join("\n");
+  const cases: [string, string[] | null, number[] | null][] = [
+    ["every row in one copy: no would-stop", [file([1, 2, 3, 4])], null],
+    ["rows split over two features' copies: no would-stop", [file([1, 2]), file([3, 4])], null],
+    ["rows 2 and 4 in no copy: would-stop naming them", [file([1, 3])], [2, 4]],
+    ["no copy of the file: would-stop naming every row", [], [1, 2, 3, 4]],
+    ["copies unreadable: no would-stop", null, null],
+  ];
+  for (const [name, copies, missing] of cases)
+    test(name, () => {
+      expect(undeliveredRows(request, () => copies)[0]?.missing ?? null).toEqual(missing);
+    });
+  test("shadow by default, and never enforced before its promotion", () => {
+    expect(stopMode({}, "initiative-rows-delivered")).toBe("shadow");
+    expect(STOP_REASONS["initiative-rows-delivered"].modes).not.toContain("enforce");
+  });
 });

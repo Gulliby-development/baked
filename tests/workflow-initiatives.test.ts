@@ -3179,3 +3179,47 @@ describe("scenario: a split that fixes a crate skeleton (#1461)", () => {
     expect(planStructureProblems(parts)).toEqual([]);
   });
 });
+
+// #3071, R111 skillgate: a narrowed split (#3067) left 26 of 215 prescribed rows unwritten while
+// every check, review and the initiative passed, because each feature run's drift reads only its
+// own rows. At completion the initiative now reads each prescribed row file in every accepted
+// feature commit and the working copy, and records the rows none holds (shadow).
+describe("scenario: an initiative completes with prescribed rows no feature delivered (#3071)", () => {
+  const ROWS_PATH = "tests/value.test.ts";
+  const ROWS = ['["a", "ready a"],', '["b", "ready b"],', '["c", "ready c"],'];
+  const prompt = `Add the value files.\n\n\`\`\`ts\n// Rows in ${ROWS_PATH} (3 rows)\n${ROWS.join("\n")}\n\`\`\`\n`;
+  const complete = async (t: ReturnType<typeof setup>) => {
+    await t.start({ plan: threeFeatures, prompt });
+    await t.approveSplit();
+    let view = t.initiatives.view("values");
+    for (let i = 0; i < 12 && view.status !== "completed"; i++) {
+      view = await t.drive();
+      const waiting = view.pendingDecisions.find((d) => d.scope === "feature" && d.kind === "approval");
+      if (waiting?.featureId) await t.approveFeature(waiting.featureId);
+    }
+    expect(view.status).toBe("completed");
+    return t.initiatives.store.eventsOfType("values", "decision.would_stop") as { reason: string; mode: string; key: string; summary: string; inputs: Record<string, unknown> }[];
+  };
+
+  test("a row file the feature runs held only partly is recorded with its missing rows", async () => {
+    const t = setup();
+    mkdirSync(join(t.root, "tests"), { recursive: true });
+    writeFileSync(join(t.root, ROWS_PATH), `const rows = [\n  ${ROWS[0]}\n];\n`);
+    const stops = (await complete(t)).filter((s) => s.reason === "initiative-rows-delivered");
+    expect(stops).toEqual([
+      expect.objectContaining({
+        mode: "shadow",
+        key: `rows-delivered-${ROWS_PATH}`,
+        inputs: { path: ROWS_PATH, total: 3, missing: [2, 3], copies: 1 },
+      }),
+    ]);
+    expect(stops[0]?.summary).toContain("rows 2-3 of 3 are in no accepted feature's copy");
+  }, 120000);
+
+  test("every row delivered: no record", async () => {
+    const t = setup();
+    mkdirSync(join(t.root, "tests"), { recursive: true });
+    writeFileSync(join(t.root, ROWS_PATH), `const rows = [\n${ROWS.map((r) => `  ${r}`).join("\n")}\n];\n`);
+    expect((await complete(t)).filter((s) => s.reason === "initiative-rows-delivered")).toEqual([]);
+  }, 120000);
+});
