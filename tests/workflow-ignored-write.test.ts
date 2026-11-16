@@ -54,13 +54,14 @@ test("a task without writes is a verification task and needs no changed file to 
   cleanups.push(fixture.dispose);
   const { service, executor } = fixture;
   const original = executor.execute.bind(executor);
-  // The planner adds a last task that only confirms the result; it declares no file to write.
+  // The planner adds a last task that only confirms the result; it declares no file to write and
+  // names the check that closes it (a planned task with neither is refused, #3066).
   executor.execute = async (request: ExecutionRequest) => {
     const out = await original(request);
     if (request.profile.output === "plan") {
       const plan = out.output as { taskGraph: { tasks: Record<string, unknown>[] } };
       const first = plan.taskGraph.tasks[0] as Record<string, unknown>;
-      plan.taskGraph.tasks.push({ ...first, id: "T002", title: "Confirm the result", dependsOn: ["T001"], writes: [], rationale: "Verification only" });
+      plan.taskGraph.tasks.push({ ...first, id: "T002", title: "Confirm the result", dependsOn: ["T001"], writes: [], checkIds: ["check"], rationale: "Verification only" });
     }
     return out;
   };
