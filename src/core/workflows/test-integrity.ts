@@ -412,28 +412,40 @@ export function prescribedSuppression(
 
 /**
  * The suppressions on `lines` (string content blanked) that `text` does not prescribe, read
- * against the same line of `raw`, so `@SuppressWarnings("unchecked")` keeps its argument.
+ * against the same line of `raw`, so `@SuppressWarnings("unchecked")` keeps its argument. A
+ * suppression on a line the request gives verbatim for the file (`supplied`, 0-based, #3059) is
+ * the request's, bare or not, and is counted apart.
  */
 function unprescribedSuppressions(
   lines: readonly string[],
   raw: readonly string[],
   text: string,
-): number {
-  let total = 0;
+  supplied: ReadonlySet<number> = new Set(),
+): { counted: number; supplied: number } {
+  let counted = 0;
+  let given = 0;
   lines.forEach((line, index) => {
     const source = raw.length === lines.length ? (raw[index] ?? line) : line;
-    for (const match of line.matchAll(SUPPRESSIONS))
-      if (!text || !prescribedSuppression(source, match.index ?? 0, match[0], text)) total++;
+    for (const match of line.matchAll(SUPPRESSIONS)) {
+      if (supplied.has(index)) given++;
+      else if (!text || !prescribedSuppression(source, match.index ?? 0, match[0], text)) counted++;
+    }
   });
-  return total;
+  return { counted, supplied: given };
 }
 /** The suppressions in a file's `text` that `prescribed` does not name, string content left out. */
-export const suppressionsIn = (path: string, text: string, prescribed = ""): number =>
+export const suppressionsIn = (
+  path: string,
+  text: string,
+  prescribed = "",
+  supplied?: ReadonlySet<number>,
+): number =>
   unprescribedSuppressions(
     blankStringLiterals(path, text).split(/\r?\n/),
     text.split(/\r?\n/),
     prescribed,
-  );
+    supplied,
+  ).counted;
 const ANY_TYPE = /\bas\s+any\b|:\s*any\b|<any>/g;
 const TEST_HOOKS = new RegExp(
   [
@@ -542,6 +554,14 @@ export interface ScanOptions {
    * suppressions are not counted again at a later scan.
    */
   settledSuppressions?: ReadonlySet<string>;
+  /**
+   * The 0-based lines of a file's content the request gives verbatim for its path (#3059,
+   * `suppliedLinesOnce` in supplied-drift.ts, passed in so this module imports none of the
+   * request readers): a suppression there is not one the run added, though a bare marker such as
+   * `// prettier-ignore` is never prescribed by `specText`. R110 lwu: the host applied the
+   * request's `// prettier-ignore` and three correctives removed and restored it.
+   */
+  suppliedLines?: (path: string, content: string) => ReadonlySet<number>;
   /** Also read the framework rows measured in shadow (`testConventions(path, true)`, #2147). */
   shadowTitles?: boolean;
 }
@@ -679,6 +699,8 @@ export type IntegrityMeasure = {
       /** Not a documentation file: suppressions and bypasses are counted. */
       checked: boolean;
       suppressions: number;
+      /** Suppressions on lines the request supplies verbatim, not counted (#3059). */
+      suppliedSuppressions?: number;
       bypass: number;
     }
   | {
@@ -689,6 +711,8 @@ export type IntegrityMeasure = {
       specialLiterals: number;
       checked: boolean;
       suppressions: number;
+      /** Suppressions on lines the request supplies verbatim, not counted (#3059). */
+      suppliedSuppressions?: number;
       bypass: number;
     }
 );
@@ -824,14 +848,33 @@ export function measureTestIntegrity(
     // not string content.
     const checks = () => {
       const checked = change.after !== null && !DOC_FILE.test(path);
+      const counts =
+        checked && options.settledSuppressions?.has(path) !== true
+          ? (() => {
+              const supplied = options.suppliedLines ?? (() => new Set<number>());
+              const after = unprescribedSuppressions(
+                blankAfter.split(/\r?\n/),
+                afterRaw.split(/\r?\n/),
+                spec,
+                supplied(path, afterRaw),
+              );
+              const before = unprescribedSuppressions(
+                blankBefore.split(/\r?\n/),
+                beforeRaw.split(/\r?\n/),
+                spec,
+                supplied(path, beforeRaw),
+              );
+              return {
+                suppressions:
+                  after.counted - before.counted + (TS_FILE.test(path) ? grew(ANY_TYPE) : 0),
+                supplied: after.supplied,
+              };
+            })()
+          : { suppressions: 0, supplied: 0 };
       return {
         checked,
-        suppressions:
-          checked && options.settledSuppressions?.has(path) !== true
-            ? unprescribedSuppressions(blankAfter.split(/\r?\n/), afterRaw.split(/\r?\n/), spec) -
-              unprescribedSuppressions(blankBefore.split(/\r?\n/), beforeRaw.split(/\r?\n/), spec) +
-              (TS_FILE.test(path) ? grew(ANY_TYPE) : 0)
-            : 0,
+        suppressions: counts.suppressions,
+        ...(counts.supplied ? { suppliedSuppressions: counts.supplied } : {}),
         bypass: checked ? grew(BYPASS, [beforeRaw.split(/\r?\n/), afterRaw.split(/\r?\n/)]) : 0,
       };
     };
@@ -1154,8 +1197,9 @@ export function prescribedExemptions(
   changes: readonly FileChange[],
   specText: string,
   live: readonly IntegrityFinding[],
+  suppliedLines?: (path: string, content: string) => ReadonlySet<number>,
 ): { rule: IntegrityRule; path: string }[] {
-  if (!specText) return [];
+  if (!specText && !suppliedLines) return [];
   const patterns: Partial<Record<IntegrityRule, RegExp>> = {
     "test-hook": TEST_HOOKS,
     "verification-bypass": BYPASS,
@@ -1174,10 +1218,12 @@ export function prescribedExemptions(
   // A hook's or a bypass's arguments come before it (`NODE_ENV === "test"`, `"vitest run
   // --passWithNoTests"`), so the whole line, or the quoted command that holds it, is what a brief
   // names; a bare marker is never prescribed.
-  const unprescribed = (text: string | null, pattern: RegExp) => {
+  // A line the request gives verbatim for the file is the request's (#3059), as for suppressions.
+  const unprescribed = (path: string, text: string | null, pattern: RegExp) => {
+    const supplied = suppliedLines?.(path, text ?? "") ?? new Set<number>();
     let total = 0;
-    for (const line of (text ?? "").split(/\r?\n/))
-      for (const match of line.matchAll(pattern)) {
+    for (const [index, line] of (text ?? "").split(/\r?\n/).entries())
+      for (const match of supplied.has(index) ? [] : line.matchAll(pattern)) {
         const at = match.index ?? 0;
         const quote = Math.max(line.lastIndexOf('"', at), line.lastIndexOf("'", at));
         const candidates = [line, line.slice(at), quote >= 0 ? line.slice(quote) : ""].map(
@@ -1191,7 +1237,8 @@ export function prescribedExemptions(
     const pattern = patterns[rule];
     const change = changes.find((c) => c.path === path);
     if (!pattern || !change || change.before === undefined) return [];
-    return unprescribed(change.after, pattern) - unprescribed(change.before, pattern) <= 0
+    return unprescribed(path, change.after, pattern) - unprescribed(path, change.before, pattern) <=
+      0
       ? [{ rule, path }]
       : [];
   });

@@ -369,6 +369,31 @@ export function suppliedLineNumbers(request: string, path: string, content: stri
 }
 
 /**
+ * The lines of `content` the request gives verbatim for `path` (`suppliedLineNumbers`), each text
+ * at most as often as the request writes it (#3059): a second `// prettier-ignore` a session adds
+ * below the request's own is not the request's.
+ */
+export function suppliedLinesOnce(request: string, path: string, content: string): Set<number> {
+  const lines = suppliedLineNumbers(request, path, content);
+  if (!lines.size) return lines;
+  const quota = new Map<string, number>();
+  for (const line of request.split(/\r?\n/)) {
+    const text = line.replace(/^\+(?!\+\+)/, "").trim();
+    if (text) quota.set(text, (quota.get(text) ?? 0) + 1);
+  }
+  const rows = content.split("\n");
+  const kept = new Set<number>();
+  for (const index of [...lines].sort((a, b) => a - b)) {
+    const text = (rows[index] ?? "").trim();
+    const left = quota.get(text) ?? 0;
+    if (left <= 0) continue;
+    quota.set(text, left - 1);
+    kept.add(index);
+  }
+  return kept;
+}
+
+/**
  * Whether the request supplies a file whole (#2504): one fenced block attributed to the path that
  * is not a listing, or its diffs. A created file it supplies keeps the request's bytes: the
  * format-written check records the project's formatter on it and fixes nothing.
