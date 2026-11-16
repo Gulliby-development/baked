@@ -46,7 +46,7 @@ Fix the following contracts before enabling workflows:
 | --- | --- | --- |
 | W01 | A process has a version, a stage and a status | After a restart, the same finished stages and expected decisions are visible |
 | W02 | Requirements have stable IDs and criteria | An unknown ID, a duplicate or an uncovered criterion blocks approval |
-| W03 | The task graph is valid | A cycle, an unknown dependency and a self-dependency are rejected before execution |
+| W03 | The task graph is valid | A cycle, an unknown dependency and a self-dependency are rejected before execution; so are a planned task that writes no file and names no check, and a plan none of whose tasks writes a file (#3066) |
 | W04 | Roles have enforced restrictions | A reviewer cannot change sources through edit, shell, MCP or a hook |
 | W05 | Completion relies on evidence | completed cannot be reached with a failed/inconclusive required check |
 | W06 | Repairs are bounded | The budget and repeated findings stop new calls |

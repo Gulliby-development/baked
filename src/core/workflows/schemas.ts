@@ -3243,7 +3243,21 @@ export function validateTaskGraph(spec: Spec, graph: TaskGraph): string[] {
     for (const id of task.dependsOn) if (!tasks.has(id)) errors.push(`unknown dependency ${id}`);
     if (new Set(task.dependsOn).size !== task.dependsOn.length)
       errors.push(`duplicate dependency ${task.id}`);
+    // A planned task with no writes is never given to a session: the host closes it by its task
+    // checks alone, so one with no checks either does nothing (#3066, smoke 2026-11-16
+    // java-maven-palindrome: both tasks of a quick plan had `writes: []`, no code was written,
+    // and the run blocked at review). A verification task names the checks that close it.
+    if (task.origin === "planned" && task.writes.length === 0 && task.checkIds.length === 0)
+      errors.push(
+        `task ${task.id} writes no files: list every file it creates, modifies or deletes in writes, or merge it into a task that does`,
+      );
   }
+  // A plan none of whose tasks writes a file implements nothing, whatever checks its tasks name.
+  const planned = graph.tasks.filter((t) => t.origin === "planned");
+  if (planned.length > 0 && planned.every((t) => t.writes.length === 0))
+    errors.push(
+      "no planned task writes a file: every file the request needs must be in some task's writes",
+    );
   const visited = new Set<string>();
   const active = new Set<string>();
   function visit(id: string): void {
