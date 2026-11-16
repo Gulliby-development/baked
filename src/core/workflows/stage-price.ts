@@ -27,9 +27,11 @@ export interface ProviderTokenMix extends TokenMix {
  * prefix is its own family.
  */
 export function providerFamily(model: string): string {
-  const slash = model.indexOf("/");
-  const prefix = slash < 0 ? "" : model.slice(0, slash).toLowerCase();
-  const name = (slash < 0 ? model : model.slice(slash + 1)).toLowerCase();
+  // One boundary splits both: a leading slash leaves an empty prefix and the rest as the name.
+  const lower = model.toLowerCase();
+  const slash = lower.indexOf("/");
+  const [prefix, name]: [string, string] =
+    slash < 0 ? ["", lower] : [lower.slice(0, slash), lower.slice(slash + 1)];
   if (prefix === "claude-code" || prefix === "anthropic" || (!prefix && name.startsWith("claude")))
     return "claude";
   if (prefix === "codex" || prefix === "openai" || (!prefix && /^(gpt|o\d)/.test(name)))

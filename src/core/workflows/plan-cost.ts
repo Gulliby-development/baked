@@ -76,7 +76,7 @@ function rateOf(
   const paid = (rows: AttemptUsageRow[]) =>
     rows.some(
       (a) =>
-        a.stage === IMPLEMENT &&
+        a.stage !== IMPLEMENT &&
         a.status !== "running" &&
         a.model === model &&
         a.costUsd !== null &&
