@@ -238,7 +238,7 @@ export const ROW_SEPARATOR: LanguageRecord<string> = {
   rescript: ",",
   solidity: ",",
   sql: none("an SQL test file holds no row list to place rows into"),
-  powershell: ",",
+  powershell: "",
   r: ",",
 };
 
@@ -252,7 +252,7 @@ export const INDENT_DEFAULT =
  * `separator` or `lastSeparator` replaces it, so a placed line never ends in two (`...;,`).
  */
 export const SEPARATOR_DEFAULT =
-  "the row's own trailing comma or semicolon, else the language's (nothing in Bash, where a row is a command; a semicolon in OCaml; otherwise a comma); right before the list's close, the last placed row ends as the request ends its last row of the file";
+  "the row's own trailing comma or semicolon, else nothing when the row is a command (`row \"a\", 0`, `Row @('a') 0`) or the list already holds rows of the file that end with none, else the language's (nothing in Bash and PowerShell; a semicolon in OCaml; otherwise a comma); right before the list's close, the last placed row ends as the request ends its last row of the file";
 
 export const placeRowsInput = z
   .object({
@@ -395,6 +395,44 @@ const bare = (text: string) => text.trim().replace(/[,;]$/, "").trimEnd();
 
 /** The `,` or `;` a row's text ends with, if any. */
 const separatorOf = (text: string) => /[,;]$/.exec(text.trim())?.[0];
+
+/** Words that open an expression, not a command: a row they start is a list element. */
+const EXPRESSION_WORDS = new Set([
+  "new",
+  "not",
+  "lambda",
+  "await",
+  "async",
+  "typeof",
+  "yield",
+  "fn",
+  "fun",
+  "function",
+  "struct",
+]);
+
+/**
+ * The separator a row's shape gives before the language's (#3069), undefined when it gives none:
+ * nothing for a command row (a name, a space and its first argument: Ruby `row "a", 0`,
+ * PowerShell `Row @('a') 0`), which is a statement, not a list element; nothing when the file
+ * already holds two or more of the request's rows and none of them ends with a separator. OCaml
+ * and ReScript constructors (`Some x`) an expression a keyword opens (`new Row("a", 1)`) and a
+ * struct literal (`Row { input: "a" }`) are list elements, so their language decides.
+ */
+function shapeSeparator(
+  row: string,
+  rows: readonly string[],
+  lines: readonly string[],
+  language: string | null,
+): string | undefined {
+  const constructors = language === "ocaml" || language === "rescript";
+  const command = /^([A-Za-z_][\w.:-]*)[ \t]+[^\s=,:+*/<>|&.{(-]/.exec(row)?.[1];
+  if (!constructors && command && !EXPRESSION_WORDS.has(command)) return "";
+  const own = new Set(rows.map(bare));
+  const held = lines.filter((line) => line.trim() !== "" && own.has(bare(line)));
+  if (held.length >= 2 && !held.some((line) => separatorOf(line))) return "";
+  return undefined;
+}
 
 /** The first non-blank line from `from` (from 0) closes a list: `)`, `]`, `}`, `);`, `].freeze`. */
 function closesList(lines: readonly string[], from: number): boolean {
@@ -642,6 +680,7 @@ export function placeRows(
     closesList(lines, where) &&
     !separatorOf(rows[rows.length - 1] ?? "") &&
     rows.slice(0, -1).some((row) => separatorOf(row));
+  const language = detectLanguageFromPath(path);
   const written = placed.map((n, i) => {
     const row = (rows[n - 1] ?? "").trim();
     const own = separatorOf(row);
@@ -649,7 +688,12 @@ export function placeRows(
     const given = lastRow
       ? (input.lastSeparator ?? (endsList ? "" : input.separator))
       : input.separator;
-    const separator = given ?? own ?? rowOf(ROW_SEPARATOR, detectLanguageFromPath(path)) ?? ",";
+    const separator =
+      given ??
+      own ??
+      shapeSeparator(row, rows, lines, language) ??
+      rowOf(ROW_SEPARATOR, language) ??
+      ",";
     return restoredLine(`${indent}row${separator}${eol}`, own ? row.slice(0, -1).trimEnd() : row);
   });
   // Rows placed after the list's last row: that row is no longer the last and takes the

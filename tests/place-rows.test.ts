@@ -148,7 +148,7 @@ describe("place_rows separators: a row's own trailing separator", () => {
   });
 
   test("the description states the default separator", () => {
-    expect(placeRowsDescription(new Map([[PATH, ROWS]]))).toContain("the row's own trailing comma or semicolon, else the language's (nothing in Bash");
+    expect(placeRowsDescription(new Map([[PATH, ROWS]]))).toContain("the row's own trailing comma or semicolon, else nothing when the row is a command");
   });
 });
 
@@ -181,6 +181,55 @@ describe("scenario: R110 pathtree, rows placed in a bats file without a separato
 
   test("a comma-list language keeps the comma", () => {
     expect(placeRows({ path: PATH, line: 1, rows: [1] }, new Map([[PATH, ROWS]]), frame)).toMatchObject({ first: `  ${ROWS[0]},` });
+  });
+});
+
+// #3069: R111 skillgate (PowerShell 7, Pester). A Pester `@(` list holds one element per line with
+// no separator, and a helper's command row (`Row @('outline') ... 0`, R84 wrapsmith) stops parsing
+// after a comma ("Missing expression after ','"). The default comma ended 31 of 31 placed rows in
+// the 7 file-parts the host declines, and 7 of 7 files did not parse; the brief had to ask for
+// `separator: ""`. A command row in any language, and rows a list already holds without a
+// separator, now take none by default.
+describe("scenario: R111 skillgate, PowerShell and statement rows placed without a separator (#3069)", () => {
+  const PS = "tests/Outline.Tests.ps1";
+  const HASH_ROWS = ["@{ Argv = @('outline'); Out = \"a`n\" }", "@{ Argv = @('outline', '-d'); Out = \"b`n\" }"];
+  const CMD_ROWS = ["Row @('outline') 'a.md' 0 \"none`n\" ''", "Row @('outline', '-d') 'b.md' 1 '' \"bad`n\""];
+  const testCases = "Describe 'outline' {\n    It 'outline <Argv>' -TestCases @(\n    ) {\n        Invoke-It @Argv\n    }\n}\n";
+  const failures = "Describe 'outline' {\n    It 'part 2' {\n        $failures = @(\n        )\n        $failures | Should -BeNullOrEmpty\n    }\n}\n";
+
+  test("hashtable rows of `-TestCases @(` are placed as the request writes them", () => {
+    const placed = placeRows({ path: PS, after: "It 'outline <Argv>' -TestCases @(", rows: [1, 2] }, new Map([[PS, HASH_ROWS]]), testCases);
+    expect(placed).toMatchObject({ content: testCases.replace("@(\n", `@(\n        ${HASH_ROWS[0]}\n        ${HASH_ROWS[1]}\n`) });
+  });
+
+  test("command rows of `$failures = @(` get no comma, and a caller's separator still wins", () => {
+    const placed = placeRows({ path: PS, after: "$failures = @(", rows: [1, 2] }, new Map([[PS, CMD_ROWS]]), failures);
+    expect(placed).toMatchObject({ content: failures.replace("@(\n", `@(\n            ${CMD_ROWS[0]}\n            ${CMD_ROWS[1]}\n`) });
+    expect(placeRows({ path: PS, after: "$failures = @(", rows: [1], separator: ";" }, new Map([[PS, CMD_ROWS]]), failures)).toMatchObject({ first: `            ${CMD_ROWS[0]};` });
+  });
+
+  test("a Ruby command row in a block takes no comma; a Ruby array row in `ROWS = [` keeps it", () => {
+    const RB = "test/split_rows_test.rb";
+    const block = 'describe "split" do\nend\n';
+    expect(placeRows({ path: RB, line: 1, rows: [1] }, new Map([[RB, ['row "a,b", ["a", "b"]']]]), block)).toMatchObject({ first: 'row "a,b", ["a", "b"]' });
+    expect(placeRows({ path: RB, line: 1, rows: [1] }, new Map([[RB, ['["a,b", ["a", "b"]]']]]), "ROWS = [\n]\n")).toMatchObject({ first: '  ["a,b", ["a", "b"]],' });
+  });
+
+  test("a Lua call row follows the rows its list already holds without a separator", () => {
+    const LUA = "spec/split_spec.lua";
+    const rows = ['check("a,b", { "a", "b" })', 'check("a", { "a" })', 'check("", {})'];
+    const held = `describe("split", function()\n\t${rows[0]}\n\t${rows[1]}\nend)\n`;
+    expect(placeRows({ path: LUA, line: 3, rows: [3] }, new Map([[LUA, rows]]), held)).toMatchObject({ first: `\t${rows[2]}` });
+    // A list whose held rows end with commas keeps the comma.
+    const commas = `local rows = {\n\t${rows[0]},\n\t${rows[1]},\n}\n`;
+    expect(placeRows({ path: LUA, line: 3, rows: [3] }, new Map([[LUA, rows]]), commas)).toMatchObject({ first: `\t${rows[2]},` });
+  });
+
+  test("a keyword expression or a struct literal is a list element, not a command", () => {
+    const J = "src/test/java/RowsTest.java";
+    expect(placeRows({ path: J, line: 1, rows: [1] }, new Map([[J, ['new Row("a", 1)']]]), "static final List<Row> ROWS = List.of(\n);\n")).toMatchObject({ first: '    new Row("a", 1),' });
+    const RS = "tests/parse_rows.rs";
+    expect(placeRows({ path: RS, line: 1, rows: [1] }, new Map([[RS, ['Row { input: "a", events: &[] }']]]), "const ROWS: &[Row] = &[\n];\n")).toMatchObject({ first: '    Row { input: "a", events: &[] },' });
   });
 });
 
