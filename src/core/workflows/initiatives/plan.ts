@@ -479,7 +479,7 @@ export function featureRowSplit(
         );
         const rows = typed
           ? typed.rows.filter((n) => n <= total)
-          : scopeRowRanges(f.boundary.scope, names, total);
+          : scopeRowRanges(f.boundary.scope, names, total, path);
         return rows ? [[f.id, rows]] : [];
       }),
     );

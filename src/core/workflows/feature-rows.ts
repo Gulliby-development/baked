@@ -103,17 +103,34 @@ export function framedFeatureRows(request: string): Map<string, Set<number>> | n
 /**
  * The rows of a row file a feature's scope gives it in words (#2898): its block's name or file
  * stem followed by `rows 1-10`, `row 12`, `rows 1-17, 20 and 22`, or `all 28 rows`, `all 24` or `all rows` (every row).
+ * Given the file's `path`, a row phrase whose clause then names another file (`outline rows 6 and 8
+ * of the list of tests/Cli.Tests.ps1`) is that file's, not this one's, and `all of <path>` (or
+ * `owns all of`, `all rows of`) gives every row (#3067, R111 skillgate: the outline feature got
+ * rows 6 and 8 of Outline's 13 from a phrase about Cli, and 11 rows were never written).
  * Null when the scope names no rows of the file.
  */
 export function scopeRowRanges(
   scope: string,
   names: readonly string[],
   total: number,
+  path?: string,
 ): number[] | null {
   const text = scope.replace(/`/g, "");
-  const list = String.raw`\d+(?:\s*(?:-|–|—|to)\s*\d+)?(?:\s*(?:,\s*and|,|and)\s*\d+(?:\s*(?:-|–|—|to)\s*\d+)?)*`;
+  const every = () => Array.from({ length: total }, (_, i) => i + 1);
   const found = new Set<number>();
   let named = false;
+  if (path) {
+    const whole = new RegExp(
+      String.raw`\ball\s+(?:\d+\s+)?(?:rows?\s+)?of\s+(?:the\s+(?:file\s+)?)?(${PATH_TOKEN})`,
+      "gi",
+    );
+    for (const m of text.matchAll(whole))
+      if (samePath(m[1] ?? "", path)) {
+        named = true;
+        for (const row of every()) found.add(row);
+      }
+  }
+  const list = String.raw`\d+(?:\s*(?:-|–|—|to)\s*\d+)?(?:\s*(?:,\s*and|,|and)\s*\d+(?:\s*(?:-|–|—|to)\s*\d+)?)*`;
   for (const name of new Set(names.filter(Boolean))) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const re = new RegExp(
@@ -121,12 +138,35 @@ export function scopeRowRanges(
       "gi",
     );
     for (const m of text.matchAll(re)) {
+      if (path && namesOtherFile(text.slice((m.index ?? 0) + m[0].length), path)) continue;
       named = true;
-      const rows = m[1]
-        ? Array.from({ length: total }, (_, i) => i + 1)
-        : parseRowList(m[2] ?? "", total);
+      const rows = m[1] ? every() : parseRowList(m[2] ?? "", total);
       for (const row of rows) found.add(row);
     }
   }
   return named ? [...found].sort((a, b) => a - b) : null;
+}
+
+/** A file path in scope words: a directory and a name, or a name with an extension. */
+const PATH_TOKEN = String.raw`(?:[\w.-]+/)+[\w.-]*\w|[\w-]{2,}(?:\.[\w-]+)*\.[A-Za-z]\w*`;
+
+/** Whether a path in scope words is `path`: the same path, or one ends with the other after a `/`. */
+function samePath(token: string, path: string): boolean {
+  const a = token.replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
+  const b = path.replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
+  return a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
+}
+
+/**
+ * Whether the clause after a row phrase names a file other than `path` (#3067): the text up to the
+ * end of the sentence, a `;` or the next row phrase, whose first file path after `of` or `in` is
+ * another file.
+ */
+function namesOtherFile(after: string, path: string): boolean {
+  const end = after.search(/;|\.(?:\s|$)|\brows?\s+\d|\ball\s+(?:\d|rows?\b|of\b)/i);
+  const clause = end < 0 ? after : after.slice(0, end);
+  const token = new RegExp(String.raw`\b(?:of|in)\s+(${PATH_TOKEN})(?![\w/-])`, "i").exec(
+    clause,
+  )?.[1];
+  return token !== undefined && !samePath(token, path);
 }
