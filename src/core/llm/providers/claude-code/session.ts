@@ -185,6 +185,8 @@ interface SessionState {
     toolNames: ReadonlySet<string>;
     /** BAKED tool calls the model made as native ones; they answer the step once interrupted. */
     salvaged: Array<{ toolName: string; inputJson: string }> | null;
+    /** A `rate_limit_event` of this turn with `status: "rejected"`: the account's limit (#3056). */
+    rejected?: unknown;
   } | null;
 }
 
@@ -251,6 +253,22 @@ function resultError(event: ResultEvent): Error {
         ? event.errors.map(String).join("; ")
         : `Claude Code turn ended with ${event.subtype ?? "an error"}`;
   return new Error(detail);
+}
+
+/**
+ * The line a failed turn gains when Claude Code rejected it on a usage limit (#3056), so the
+ * refusal is a `limit` (`accountRefusal`) with its reset (`usageLimitReset`) whatever the turn's
+ * own words: the structured event names the window and its reset in epoch seconds.
+ */
+export function rejectedNote(info: unknown): string {
+  if (!info || typeof info !== "object") return "";
+  const event = info as { rateLimitType?: unknown; resetsAt?: unknown };
+  const window = typeof event.rateLimitType === "string" ? `${event.rateLimitType} ` : "";
+  const resets =
+    typeof event.resetsAt === "number" && Number.isFinite(event.resetsAt)
+      ? `, resets ${new Date(event.resetsAt * 1000).toISOString()}`
+      : "";
+  return `\nClaude Code rejected the turn on its ${window}usage limit (rate_limit_event)${resets}.`;
 }
 
 function abortError(signal: AbortSignal): Error {
@@ -508,7 +526,7 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
       if (session.idleTimer) clearTimeout(session.idleTimer);
       const pending = session.pending;
       session.pending = null;
-      if (pending) error.message += session.unparsed.note();
+      if (pending) error.message += session.unparsed.note() + rejectedNote(pending.rejected);
       pending?.reject(error);
     });
     this.sessions.push(session);
@@ -522,6 +540,8 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
     if (!event) return;
     if (event.type === "rate_limit_event") {
       recordClaudeRateLimit(event.rate_limit_info, undefined, session.account);
+      if ((event.rate_limit_info as { status?: unknown } | null)?.status === "rejected")
+        session.pending.rejected = event.rate_limit_info;
       return;
     }
     const live = session.pending;
@@ -580,7 +600,9 @@ export class ClaudeCodeSessionRunner implements ClaudeCodeRunner {
     }
     session.pending = null;
     if (result.is_error || (result.subtype && result.subtype !== "success")) {
-      pending.reject(resultError(result));
+      const error = resultError(result);
+      error.message += rejectedNote(pending.rejected);
+      pending.reject(error);
       return;
     }
     pending.resolve({

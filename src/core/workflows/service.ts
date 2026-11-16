@@ -126,6 +126,7 @@ import {
   closeProviderCircuit,
   isTransient,
   providerCircuitOpen,
+  usageLimitReset,
 } from "./retry.js";
 import {
   REFUSED_EDIT_PREFIX,
@@ -183,6 +184,7 @@ import type { StalledDriver } from "./supervisor.js";
 import { reusableImplementations } from "./task-graph.js";
 import { isTestTask } from "./tests-first.js";
 import { type AgentExecutor, type RuntimeState, RuntimeStateSchema } from "./types.js";
+import { noteUsageLimitResume } from "./usage-limit-reset.js";
 import { blocksRun, isAcceptanceRequest } from "./v2/acceptance.js";
 import { decideAcceptance } from "./v2/acceptance-gate.js";
 import {
@@ -858,17 +860,26 @@ export class NativeWorkflowService implements WorkflowService {
         } catch (error) {
           if (signal.aborted || !waiting()) return false;
           if (!isTransient(error)) {
+            const refusal = accountRefusal(error);
             this.store.transition(
               runId,
               "blocked",
-              accountRefusal(error) ? "provider_account" : "provider_unavailable",
+              refusal ? "provider_account" : "provider_unavailable",
             );
-            this.store.artifact(
+            const diagnostic = this.store.artifact(
               runId,
               "diagnostic",
               `errors/${newId()}.txt`,
               error instanceof Error ? error.message : String(error),
             );
+            // The probe met a usage limit that named its reset (#3056): shadow, as in the drive.
+            const reset = refusal === "limit" ? usageLimitReset(error) : null;
+            if (reset)
+              try {
+                noteUsageLimitResume(this.store, runId, diagnostic.id, reset, "provider-wait");
+              } catch {
+                // A shadow record never changes how the probe ends.
+              }
             return false;
           }
           const probe = saved.probe + 1;

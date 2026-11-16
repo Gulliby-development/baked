@@ -434,6 +434,15 @@ export const STOP_REASONS = {
     modes: NOT_ENFORCED,
     defaultMode: "shadow",
   },
+  "host-resume-on-usage-limit-reset": {
+    label:
+      "A run blocked provider_account on a usage limit whose reset the provider named: the host would resume it once at the reset plus a margin",
+    // Shadow only (#3056, R110: a Claude session limit said "resets 9:10pm (Europe/Warsaw)" and
+    // the run waited for a person). It records `decision.would_resume` with the resolved reset;
+    // a real timer is a pull request of its own after bench rounds show the resets are right.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   "host-settle-interrupted-check": {
     label:
       "A check's command of unknown outcome whose process is gone: the host would settle it as not applied and run the check again at its stage",
