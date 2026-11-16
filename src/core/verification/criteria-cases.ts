@@ -8,6 +8,7 @@ import { programName } from "../workflows/launcher.js";
 import { stripComments } from "../workflows/quality/code-mask.js";
 import { isTestCodePath } from "../workflows/quality/duplication.js";
 import { propertyTestKind } from "../workflows/quality/properties.js";
+import { rowTokens } from "../workflows/row-block-drift.js";
 import type { Spec } from "../workflows/schemas.js";
 import { toolchainCommand } from "../workflows/toolchain.js";
 import type { Check, Task } from "../workflows/types.js";
@@ -355,8 +356,29 @@ function citedNames(task: CaseTask, context: CaseContext): CitedNames {
   return {
     names: new Set(paths.flatMap(testFileNames)),
     counts: new Set([...counts, ...(counts.length > 1 ? [counts.reduce((a, b) => a + b, 0)] : [])]),
-    helpers: declaredNames([...planned, ...(context.suppliedFiles ?? [])]),
+    helpers: new Set([
+      ...declaredNames([...planned, ...(context.suppliedFiles ?? [])]),
+      ...plannedNames(
+        [task, ...(context.tasks ?? [])].flatMap((t) => (t.description ? [t.description] : [])),
+      ),
+    ]),
   };
+}
+
+/**
+ * The function names the plan's task descriptions give to code it writes (#3061): a name in a
+ * code span, or a snake_case word, which prose never is. R110 pathtree tree: `pt_cmd_tree`, a
+ * function the plan writes in `lib/cmd_tree.sh` and describes only in words, was read as a case.
+ */
+export function plannedNames(descriptions: readonly string[]): Set<string> {
+  const names = new Set<string>();
+  for (const text of descriptions) {
+    for (const match of text.matchAll(/`([A-Za-z_$][\w$]*)(?:\(\))?`/g))
+      if (match[1] && HELPER_NAME.test(match[1])) names.add(match[1]);
+    for (const match of text.matchAll(/(?<![\w$`])([a-z][a-z0-9]*(?:_[a-z0-9]+)+)(?![\w$])/g))
+      if (match[1]) names.add(match[1]);
+  }
+  return names;
 }
 
 /** A quoted output or argument value can be plain English, unlike a quoted scenario label. */
@@ -700,6 +722,7 @@ export function prescribedRowsHeld(
   perRow: boolean | RowHold = false,
 ): boolean {
   if (!rows.length) return false;
+  if (argumentWordsHeld(c, rows)) return true;
   const inRow = () => rows.some((row) => missingCases([c], [row]).length === 0);
   if (typeof perRow === "function") {
     const held = rows.map((row) => perRow(c.literal, row));
@@ -708,6 +731,31 @@ export function prescribedRowsHeld(
   }
   if (perRow && multiValue(c)) return inRow();
   return missingCases([c], [rows.join("\n")]).length === 0;
+}
+
+/**
+ * Whether one row holds a command-line literal as its argument words (#3061): the literal split on
+ * ASCII spaces (`count --by ext`) equals consecutive tokens of the row (`rowTokens`, the reader
+ * `row_block_drift` compares rows by): bats `$'count' $'--by' $'ext'`, C `ARGS("count", "--by",
+ * "ext")`, a list `["count", "--by", "ext"]`. R110: 13 of 13 `case_not_prescribed` records were
+ * such rows, compared as one string.
+ */
+function argumentWordsHeld(c: CriterionCase, rows: readonly string[]): boolean {
+  const text = asciiTrim(normalizeLiteral(c.literal));
+  if (/[\r\n]/.test(text)) return false;
+  const words = text.split(/[ \t]+/);
+  if (words.length < 2) return false;
+  const rowWords = rows.map((row) => rowTokens(row).map((t) => t.text));
+  const startsAt = (tokens: readonly string[], i: number, want: readonly string[]) =>
+    want.every((word, j) => tokens[i + j] === word);
+  if (rowWords.some((tokens) => tokens.some((_, i) => startsAt(tokens, i, words)))) return true;
+  // A criterion quotes the whole command line, the program first (`pathtree count --by ext`),
+  // where a row gives only its arguments: the program is a plain name no row holds, and the rest
+  // starts the row, so a word in the middle of a row is never taken for the program.
+  const [program, ...args] = words;
+  if (args.length < 2 || !program || !/^[A-Za-z][\w.-]*$/.test(program)) return false;
+  if (rowWords.some((tokens) => tokens.includes(program))) return false;
+  return rowWords.some((tokens) => startsAt(tokens, 0, args));
 }
 
 /**

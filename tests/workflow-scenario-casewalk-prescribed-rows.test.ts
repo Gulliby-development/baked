@@ -501,3 +501,56 @@ test("scenario: a row restated as a tuple is held by one row read per row, recor
   expect(inputs(`task-T001-AC-002-${ABSENT}`)).toEqual({ taskId: "T001", criterionId: "AC-002", literal: ABSENT, kind: "literal", perRow: "none" });
   expect((await service.get(run.runId)).status).toBe("completed");
 });
+
+// #3061: R110 recorded 13 `case_not_prescribed` would-stops, none true. A criterion quotes a
+// command line as one text (`count --by ext`), and the rows give it as separate argument words:
+// bats `$'count' $'--by' $'ext'` (pathtree), C `ARGS("count", "--by", "ext")` (bracelint), a
+// list in other languages. The walk compared the literal with the rows as one string. pathtree
+// tree's `pt_cmd_tree`, a function the plan writes and names only in its prose, was a case too.
+describe("scenario: R110 pathtree and bracelint, a command line held as argument words (#3061)", () => {
+  const ARGUMENT_ROWS = [
+    {
+      name: "bats",
+      path: "tests/count.bats",
+      row: (by: string) => `row $'count' $'--by' $'${by}' 0 $'a 1\\n'`,
+      rel: ["row $'rel' $'--from' $'/x/y' $'--style' $'dos' $'/x/z' 0 $'..\\\\z\\n'", "row $'rel' $'--from' $'/usr/bin' $'/usr/lib' 0 $'../lib\\n'"],
+    },
+    {
+      name: "C",
+      path: "tests/cli_test.c",
+      row: (by: string) => `failed += row(ARGS("count", "--by", "${by}"), 0, "a 1\\n", "");`,
+      rel: ['failed += row(ARGS("rel", "--from", "/x/y", "--style", "dos", "/x/z"), 0, "..\\\\z\\n", "");', 'failed += row(ARGS("rel", "--from", "/usr/bin", "/usr/lib"), 0, "../lib\\n", "");'],
+    },
+    {
+      name: "TypeScript",
+      path: "tests/count.test.ts",
+      row: (by: string) => `{ args: ["count", "--by", "${by}"], code: 0, stdout: "a 1\\n" },`,
+      rel: ['{ args: ["rel", "--from", "/x/y", "--style", "dos", "/x/z"], code: 0 },', '{ args: ["rel", "--from", "/usr/bin", "/usr/lib"], code: 0 },'],
+    },
+  ];
+  for (const n of ARGUMENT_ROWS) {
+    const rows: ReadonlyMap<string, readonly string[]> = new Map([[n.path, [n.row("ext"), n.row("depth"), ...n.rel]]]);
+    test(`${n.name}: the command line a row gives as argument words is the task's own`, () => {
+      for (const literal of ["count --by ext", "pathtree count --by depth", "rel --from /usr/bin", "rel --from /x/y --style dos"]) {
+        expect([literal, casePrescribed({ criterionId: "AC-001", literal }, [n.path], rows)]).toEqual([literal, "own"]);
+        expect([literal, casePrescribed({ criterionId: "AC-001", literal }, [n.path], rows, true)]).toEqual([literal, "own"]);
+      }
+    });
+    test(`${n.name}: a command line no row holds is still not prescribed`, () => {
+      expect(casePrescribed({ criterionId: "AC-001", literal: "count --by top" }, [n.path], rows)).toBe("none");
+      expect(casePrescribed({ criterionId: "AC-001", literal: "pathtree count --by top" }, [n.path], rows)).toBe("none");
+      // The program is dropped only before the row's first word, never before a middle one.
+      expect(casePrescribed({ criterionId: "AC-001", literal: "pathtree --by ext /x" }, [n.path], rows)).toBe("none");
+    });
+  }
+
+  test("a function only the plan's prose names is a helper, not a case", () => {
+    const criterion: Criterion = { ...CRITERION, when: "the user runs tree", then: "`pt_cmd_tree` prints the tree" };
+    const tree = task("T003", "Write lib/cmd_tree.sh with pt_cmd_tree, which prints the tree.", ["tests/tree.bats"]);
+    const rows: ReadonlyMap<string, readonly string[]> = new Map([["tests/tree.bats", ["row $'tree' 0 $'.\\n'"]]]);
+    const cases = criterionCases({ ...fixtureSpec, criteria: [criterion] }, tree, { checks: [], tasks: [tree], prescribedRows: rows });
+    const c = cases.find((x) => x.literal === "pt_cmd_tree");
+    expect(c?.cited).toBe("helper");
+    if (c) expect(casePrescribed(c, ["tests/tree.bats"], rows)).toBe("cited");
+  });
+});
