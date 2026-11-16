@@ -14,6 +14,7 @@
   },
   "expected": {
     "rowIndent": ["\"  row(1),\""],
+    "rowSeparator": ["\"  row(1),\""],
     "languagePitfalls": ["Scala"],
     "generatedValues": ["src/test/scala/GenSpec.scala:1 repeat","src/test/scala/GenSpec.scala:2 interpolate"],
     "exampleBuild": null,

@@ -10,6 +10,7 @@
   },
   "expected": {
     "rowIndent": ["\"    row(1),\""],
+    "rowSeparator": ["\"    row(1),\""],
     "languagePitfalls": null,
     "generatedValues": ["test/Gen.t.sol:1 format"],
     "exampleBuild": null,

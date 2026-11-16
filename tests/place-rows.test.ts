@@ -148,7 +148,39 @@ describe("place_rows separators: a row's own trailing separator", () => {
   });
 
   test("the description states the default separator", () => {
-    expect(placeRowsDescription(new Map([[PATH, ROWS]]))).toContain("the row's own trailing comma or semicolon, else a comma");
+    expect(placeRowsDescription(new Map([[PATH, ROWS]]))).toContain("the row's own trailing comma or semicolon, else the language's (nothing in Bash");
+  });
+});
+
+// #3060: R110 pathtree (bash 5, bats). A bats row is a command, `row $'a\n' 0 $'a\n' $'' $'norm'`,
+// and place_rows ended each with the default comma, which bash reads as part of the last
+// argument: 259 of 259 rows would have failed, so every session had to pass `separator: ""`. An
+// OCaml list row without its own `;` got `,`, which makes the list one tuple.
+describe("scenario: R110 pathtree, rows placed in a bats file without a separator (#3060)", () => {
+  const BATS = "tests/rel.bats";
+  const BATS_ROWS = ["row $'rel' $'--from' $'/usr/bin' 0 $'../bin\\n'", "row $'rel' $'--from' $'/x/y' 0 $'../../\\n'"];
+  const batsFrame = '#!/usr/bin/env bats\nload helper\n\n@test "rel rows" {\n}\n';
+
+  test("a bats row is placed as the request writes it, with nothing after it", () => {
+    const placed = placeRows({ path: BATS, after: '@test "rel rows" {', rows: [1, 2] }, new Map([[BATS, BATS_ROWS]]), batsFrame);
+    expect(placed).toMatchObject({
+      content: `#!/usr/bin/env bats\nload helper\n\n@test "rel rows" {\n  ${BATS_ROWS[0]}\n  ${BATS_ROWS[1]}\n}\n`,
+      first: `  ${BATS_ROWS[0]}`,
+    });
+    // A caller's separator still wins.
+    expect(placeRows({ path: BATS, line: 4, rows: [1], separator: ";" }, new Map([[BATS, BATS_ROWS]]), batsFrame)).toMatchObject({
+      first: `  ${BATS_ROWS[0]};`,
+    });
+  });
+
+  test("an OCaml list row without its own separator takes a semicolon, not a comma", () => {
+    const ML_PATH = "test/test_rows.ml";
+    const placed = placeRows({ path: ML_PATH, line: 1, rows: [1] }, new Map([[ML_PATH, ['row "a" 1']]]), "let rows = [\n]\n");
+    expect(placed).toMatchObject({ first: '  row "a" 1;' });
+  });
+
+  test("a comma-list language keeps the comma", () => {
+    expect(placeRows({ path: PATH, line: 1, rows: [1] }, new Map([[PATH, ROWS]]), frame)).toMatchObject({ first: `  ${ROWS[0]},` });
   });
 });
 

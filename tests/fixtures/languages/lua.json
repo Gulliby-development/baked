@@ -16,6 +16,7 @@
   },
   "expected": {
     "rowIndent": null,
+    "rowSeparator": ["\"    row(1),\""],
     "languagePitfalls": ["Lua"],
     "generatedValues": ["spec/gen_spec.lua:1 repeat","spec/gen_spec.lua:2 format"],
     "exampleBuild": null,

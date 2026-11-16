@@ -15,6 +15,7 @@
   },
   "expected": {
     "rowIndent": ["\"    row(1),\""],
+    "rowSeparator": ["\"    row(1),\""],
     "languagePitfalls": null,
     "generatedValues": ["tests/test_gen.py:1 repeat","tests/test_gen.py:2 format","tests/test_gen.py:3 loop"],
     "exampleBuild": null,

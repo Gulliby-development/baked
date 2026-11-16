@@ -15,6 +15,7 @@
   },
   "expected": {
     "rowIndent": ["\"    row(1),\""],
+    "rowSeparator": ["\"    row(1),\""],
     "languagePitfalls": ["Swift"],
     "generatedValues": ["Tests/GenTests.swift:1 repeat","Tests/GenTests.swift:2 interpolate"],
     "exampleBuild": ["swift run --skip-build; link .build"],

@@ -204,6 +204,44 @@ export function placeRowsRecord(
   };
 }
 
+/**
+ * What ends a placed row in each language's row lists when the request's row ends with neither
+ * `,` nor `;` and the caller gives no `separator` (#3060). A bats row is a command
+ * (`row $'a' 0 $'a'`) whose trailing comma bash reads as part of its last argument: R110
+ * pathtree placed 259 rows and every session had to pass `separator: ""`. An OCaml list separates
+ * with `;` (`[a, b]` is a tuple). A `none` row falls back to a comma.
+ */
+export const ROW_SEPARATOR: LanguageRecord<string> = {
+  typescript: ",",
+  javascript: ",",
+  python: ",",
+  go: ",",
+  rust: ",",
+  java: ",",
+  kotlin: ",",
+  scala: ",",
+  csharp: ",",
+  c: ",",
+  cpp: ",",
+  ruby: ",",
+  php: ",",
+  swift: ",",
+  lua: ",",
+  elixir: ",",
+  dart: ",",
+  zig: ",",
+  bash: "",
+  ocaml: ";",
+  objc: ",",
+  vue: none("a component's rows are tested from a TypeScript or JavaScript test file"),
+  svelte: none("a component's rows are tested from a TypeScript or JavaScript test file"),
+  rescript: ",",
+  solidity: ",",
+  sql: none("an SQL test file holds no row list to place rows into"),
+  powershell: ",",
+  r: ",",
+};
+
 /** The default indentation, as the description and the scheduler's note state it (#2618). */
 export const INDENT_DEFAULT =
   "the line's own; after a line that opens the list, the indentation of the rows the list already holds, else the column the request writes its own row lines at when that is deeper than the opening line, else one level deeper than the opening line, the level being the file's smallest indentation, else the language's convention (two spaces in TypeScript, JavaScript, Ruby, Scala, OCaml, R, Bash, Dart, Elixir and ReScript, a tab in Go, otherwise four spaces)";
@@ -214,7 +252,7 @@ export const INDENT_DEFAULT =
  * `separator` or `lastSeparator` replaces it, so a placed line never ends in two (`...;,`).
  */
 export const SEPARATOR_DEFAULT =
-  "the row's own trailing comma or semicolon, else a comma; right before the list's close, the last placed row ends as the request ends its last row of the file";
+  "the row's own trailing comma or semicolon, else the language's (nothing in Bash, where a row is a command; a semicolon in OCaml; otherwise a comma); right before the list's close, the last placed row ends as the request ends its last row of the file";
 
 export const placeRowsInput = z
   .object({
@@ -611,7 +649,7 @@ export function placeRows(
     const given = lastRow
       ? (input.lastSeparator ?? (endsList ? "" : input.separator))
       : input.separator;
-    const separator = given ?? own ?? ",";
+    const separator = given ?? own ?? rowOf(ROW_SEPARATOR, detectLanguageFromPath(path)) ?? ",";
     return restoredLine(`${indent}row${separator}${eol}`, own ? row.slice(0, -1).trimEnd() : row);
   });
   // Rows placed after the list's last row: that row is no longer the last and takes the

@@ -14,6 +14,7 @@
   },
   "expected": {
     "rowIndent": ["\"  row(1),\""],
+    "rowSeparator": ["\"  row(1),\""],
     "languagePitfalls": ["Dart"],
     "generatedValues": ["test/gen_test.dart:1 repeat","test/gen_test.dart:2 interpolate"],
     "exampleBuild": ["dart run; link .dart_tool"],

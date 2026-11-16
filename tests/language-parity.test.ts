@@ -39,7 +39,7 @@ import { DIAGNOSTIC_FORMATS, diagnostics } from "../src/core/verification/task-e
 import { colour } from "./helpers/coloured-runner-output.js";
 import { declaredTestClasses, TEST_CLASSES } from "../src/core/workflows/test-classes.js";
 import { ROW_FILE_SHAPES, rowFilePlan, rowFileRefusal } from "../src/core/workflows/row-file.js";
-import { placeRows, ROW_INDENT } from "../src/core/tools/place-rows.js";
+import { placeRows, ROW_INDENT, ROW_SEPARATOR } from "../src/core/tools/place-rows.js";
 import { writtenTestsCheck } from "../src/core/workflows/affected-tests.js";
 import { TreeSitterBackend } from "../src/core/intelligence/backends/tree-sitter.js";
 import { CALL_SYNTAX, callContext, functionsIn } from "../src/core/intelligence/call-context.js";
@@ -286,6 +286,17 @@ const RECORDS: Record<
   // rows nor the file show one (#2618): the placed line, quoted so its whitespace shows.
   rowIndent: {
     record: ROW_INDENT,
+    run: (language) => {
+      const ext = Object.entries(EXT_TO_LANGUAGE).find(([, l]) => l === language)?.[0] ?? `.${language}`;
+      const path = `tests/rows${ext}`;
+      const placed = placeRows({ path, line: 1, rows: [1] }, new Map([[path, ["row(1)"]]]), "rows = [\n]\n");
+      return "refusal" in placed ? [placed.refusal] : [JSON.stringify(placed.first)];
+    },
+  },
+  // What place_rows ends a row with when the row has no separator of its own and the caller
+  // gives none (#3060): the placed line, quoted so a missing separator shows.
+  rowSeparator: {
+    record: ROW_SEPARATOR,
     run: (language) => {
       const ext = Object.entries(EXT_TO_LANGUAGE).find(([, l]) => l === language)?.[0] ?? `.${language}`;
       const path = `tests/rows${ext}`;
