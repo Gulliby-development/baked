@@ -100,6 +100,15 @@ export const STOP_REASONS = {
     modes: STOP_MODES,
     defaultMode: "shadow",
   },
+  "initiative-rows-delivered": {
+    label:
+      "An initiative completes although a prescribed row file's rows are in no accepted feature's copy of the file",
+    // Shadow only (#3071): the initiative records `decision.would_stop` when it completes. Its
+    // promotion, after two bench rounds with no false would-stop, adds `enforce` and keeps the
+    // initiative from completing with the rows missing.
+    modes: NOT_ENFORCED,
+    defaultMode: "shadow",
+  },
   "initiative-plan-charge": {
     label:
       "An initiative's token pool holds an open feature run with a sized plan at its plan's need instead of its run limit",

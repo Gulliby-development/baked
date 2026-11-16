@@ -74,7 +74,7 @@ import {
 } from "../schemas.js";
 import type { StartSeed } from "../sdd-export/seed.js";
 import type { NativeWorkflowService, PlannedReroute } from "../service.js";
-import { sizingHistory, testCaseRate } from "../sizing.js";
+import { rowBlockFiles, sizingHistory, testCaseRate } from "../sizing.js";
 import { stageReserve } from "../stage-reserve.js";
 import { terminalStates } from "../state-machine.js";
 import { stopDetail, stopRecovery } from "../stop-detail.js";
@@ -103,6 +103,7 @@ import {
 } from "./calls-pool.js";
 import { criticalPathSummary, planWidth, remainingPath } from "./critical-path.js";
 import { DECOMPOSE_WORKFLOW_ID } from "./decompose.js";
+import { type UndeliveredRows, undeliveredRows, undeliveredSummary } from "./delivered-rows.js";
 import {
   boundaryKindOf,
   documentedSurfaceRate,
@@ -2018,8 +2019,10 @@ export class InitiativeService {
         case "rebase":
           await this.rebaseFeature(id, next.featureId ?? "");
           break;
-        case "complete":
+        case "complete": {
+          const undelivered = await this.undeliveredRows(id);
           this.store.transaction(() => {
+            this.noteRowsDeliveredWouldStop(id, undelivered);
             this.store.setStatus(id, "completed");
             this.store.emit(id, "initiative.completed", {
               features: this.view(id).features.map((f) => ({
@@ -2030,6 +2033,7 @@ export class InitiativeService {
             });
           });
           return;
+        }
         default: {
           const parked = view.features.find((f) => f.id === next.featureId);
           if (
@@ -2496,6 +2500,59 @@ export class InitiativeService {
           literal: found.literal,
           rows: found.rows,
           ...(found.shape === "row-split" ? { shape: found.shape } : {}),
+        },
+      });
+  }
+
+  /**
+   * The prescribed rows no accepted feature delivered (#3071): each row file of the request read in
+   * every feature run's accepted commit and in the working copy (`undeliveredRows`). Empty when the
+   * base policy turns `initiative-rows-delivered` off or the request prescribes no rows.
+   */
+  private async undeliveredRows(id: string): Promise<UndeliveredRows[]> {
+    const row = this.store.get(id);
+    const request = row.prompt;
+    if (!rowBlockFiles(request).length) return [];
+    const plan = this.approvedPlan(row);
+    const commits = (plan?.features ?? []).flatMap((feature) => {
+      const link = this.store.current(id, feature.id);
+      const commit = link ? this.workflows.store.state(link.run_id).worktree?.commit : null;
+      return commit ? [commit] : [];
+    });
+    const texts = new Map<string, string[] | null>();
+    for (const path of rowBlockFiles(request)) {
+      const found: string[] = [];
+      let unread = false;
+      for (const commit of commits) {
+        const shown = await git(this.workflows.workspace, ["show", `${commit}:${path}`]);
+        if (shown.code === 0) found.push(shown.stdout);
+        else if (!/does not exist|exists on disk, but not in/.test(shown.stderr)) unread = true;
+      }
+      const local = join(this.workflows.workspace, path);
+      if (existsSync(local)) found.push(readFileSync(local, "utf8"));
+      texts.set(path, unread && !found.length ? null : found);
+    }
+    return undeliveredRows(request, (path) => texts.get(path) ?? null);
+  }
+
+  /** A `decision.would_stop` of `initiative-rows-delivered` per undelivered row file (#3071). */
+  private noteRowsDeliveredWouldStop(id: string, undelivered: readonly UndeliveredRows[]): void {
+    const mode = stopMode(
+      this.store.settings(this.store.get(id)).basePolicy,
+      "initiative-rows-delivered",
+    );
+    if (mode === "enforce") return;
+    for (const found of undelivered)
+      this.store.emit(id, "decision.would_stop", {
+        reason: "initiative-rows-delivered",
+        mode,
+        key: `rows-delivered-${found.path}`,
+        summary: undeliveredSummary(found),
+        inputs: {
+          path: found.path,
+          total: found.total,
+          missing: found.missing,
+          copies: found.copies,
         },
       });
   }
