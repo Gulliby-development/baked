@@ -1078,6 +1078,7 @@ import {
   suppliedDriftSummary,
   suppliedDrifts,
   suppliedLineNumbers,
+  suppliedLinesOnce,
   suppliesWhole,
 } from "./supplied-drift.js";
 import {
@@ -13735,6 +13736,8 @@ ${note}`;
       testSources,
       specText: integrityRequirementText(state, this.store.requests(runId)),
       settledSuppressions: this.settledSuppressions(runId),
+      suppliedLines: (path, content) =>
+        suppliedLinesOnce(state.requestText || state.prompt, path, content),
     };
     const measures = measureTestIntegrity(changes, scanOptions);
     const found = integrityDecision(measures);
@@ -13749,7 +13752,7 @@ ${note}`;
         measures,
         found,
         shadowTitleFindings(changes, scanOptions, found),
-        prescribedExemptions(changes, scanOptions.specText ?? "", found),
+        prescribedExemptions(changes, scanOptions.specText ?? "", found, scanOptions.suppliedLines),
       ),
     );
     if (!found.length) return [];
@@ -14003,6 +14006,8 @@ ${note}`;
       ]),
       specText: integrityRequirementText(state, this.store.requests(runId)),
       settledSuppressions: this.settledSuppressions(runId),
+      suppliedLines: (path, content) =>
+        suppliedLinesOnce(state.requestText || state.prompt, path, content),
     };
     const measures = measureTestIntegrity(runChanges, scanOptions);
     const found = integrityDecision(measures);
@@ -14017,7 +14022,12 @@ ${note}`;
         measures,
         found,
         shadowTitleFindings(runChanges, scanOptions, found),
-        prescribedExemptions(runChanges, scanOptions.specText ?? "", found),
+        prescribedExemptions(
+          runChanges,
+          scanOptions.specText ?? "",
+          found,
+          scanOptions.suppliedLines,
+        ),
       ),
     );
     if (!found.length) return [];
