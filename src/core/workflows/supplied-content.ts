@@ -177,6 +177,7 @@ function prescribedCases(
       prescribedRows: rows,
       suppliedFiles,
       rowFiles,
+      request,
     });
     return cases.map((c) => ({
       task,

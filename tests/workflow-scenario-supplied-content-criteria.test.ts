@@ -504,3 +504,93 @@ describe("a glued table header and a named helper are not cases to remove (#2646
     expect(citedKind("cells", " and", names, true)).toBeUndefined();
   });
 });
+
+// #3068, bench round R111: all 11 `case_not_prescribed` records were false. inisift (C) and
+// skillgate (PowerShell) wrote their error pattern as `PROGRAM: bad value for OPTION`, a word
+// `PLACEHOLDER_WORD` does not list; their criteria named the list a row goes in (`It 'part 2'`,
+// `static void totals(void) {`), a line of the file's layout; and inisift lint AC-006's input cell
+// was one code span starting with a space, which `quotedSpans` did not trust.
+describe("request placeholders, a row file's structure and an indented table cell are not cases (#3068)", () => {
+  const fenceOf = (lang: string, lines: string[]) => `\`\`\`${lang}\n${lines.join("\n")}\n\`\`\``;
+  const criterion = (id: string, then: string): Spec["criteria"][number] => ({
+    id, requirementIds: ["FR-001"], given: "the prescribed rows", when: "the tests run", then, method: "automated",
+  });
+  const spec = (...criteria: Spec["criteria"]): Spec => ({ ...fixtureSpec, criteria: [...fixtureSpec.criteria, ...criteria] });
+  const notes = (s: Spec, path: string, request: string) =>
+    notPrescribedFindings(s, graph([task("T003", [{ path, action: "create" }], s.criteria.map((c) => c.id))]), request, { checks }).map((f) => f.id);
+
+  // C: inisift.
+  const C = "tests/lint_test.c";
+  const cRows = ['failed += row(ARGS("lint", "--nope"), "", 2, "", "inisift: bad value for --nope\\n");', 'failed += row(ARGS("lint"), " [a]\\n\\tk = 1\\n  ; c\\n", 1, "3: comment\\n", "");'];
+  const cRequest = [
+    "Build inisift. Errors print `inisift: bad value for OPTION` and exit 2.",
+    "",
+    fenceOf("c", ["// Layout of tests/lint_test.c", "static void totals(void) {", "}", "int main(void) {", "  totals();", "}"]),
+    "",
+    fenceOf("c", [`// Rows in ${C} (2 rows)`, ...cRows]),
+  ].join("\n");
+
+  test("C (inisift): a request placeholder, a function line and an indented input cell raise no note", () => {
+    const s = spec(
+      criterion("AC-003", "it writes `inisift: bad value for OPTION` to stderr and exits 2"),
+      criterion("AC-011", "the totals rows run inside `static void totals(void) {`"),
+      criterion("AC-006", "| input | output |\n|---|---|\n| ` [a]\\n\\tk = 1\\n  ; c\\n` | `3: comment\\n` |"),
+    );
+    expect(notes(s, C, cRequest)).toEqual([]);
+  });
+
+  test("C negatives: a real value no row holds, and an upper-case word a row holds, are still noted", () => {
+    const held = [...cRows, 'failed += row(ARGS("check"), "", 1, "", "inisift: FAIL in check\\n");'];
+    const request = cRequest.replace(`(2 rows)\n${cRows.join("\n")}`, `(3 rows)\n${held.join("\n")}`) + "\n\nA failure prints `inisift: FAIL in SECTION`.";
+    const s = spec(criterion("AC-004", "it writes `inisift: bad value for --strict`"), criterion("AC-005", "it writes `inisift: FAIL in parse`"));
+    expect(notes(s, C, request)).toEqual(["NOT-PRESCRIBED-AC-004", "NOT-PRESCRIBED-AC-005"]);
+  });
+
+  // PowerShell: skillgate.
+  const PS = "tests/Outline.Tests.ps1";
+  const psRows = ["Row @('outline', 'a.md') 0 \"# a`n\" ''", "Row @('outline', '--x') 2 '' \"skillgate: bad value for --x`n\""];
+  const psRequest = [
+    "Build skillgate. A bad option prints `skillgate: bad value for OPTION`.",
+    "",
+    fenceOf("powershell", ["Describe 'outline' {", "    It 'part 1' {", "    }", "    It 'part 2' {", "        $failures = @(", "        )", "    }", "}"]),
+    "",
+    fenceOf("powershell", [`# Rows in ${PS} (2 rows)`, ...psRows]),
+  ].join("\n");
+
+  test("PowerShell (skillgate): a request placeholder and the `It 'part 2'` block raise no note", () => {
+    const s = spec(
+      criterion("AC-004", "it writes `skillgate: bad value for OPTION\\n` and exits 2"),
+      criterion("AC-001", "both rows go in the `It 'part 2'` block's `$failures = @(` list"),
+    );
+    expect(notes(s, PS, psRequest)).toEqual([]);
+    expect(notes(spec(criterion("AC-009", "it prints `skillgate: no such file`")), PS, psRequest)).toEqual(["NOT-PRESCRIBED-AC-009"]);
+  });
+
+  // TypeScript.
+  const TS = "tests/get.test.ts";
+  const tsRows = ['["get a.b", 0, "1\\n"],', '["get a.c", 1, "tool: no key a.c\\n"],'];
+  const tsRequest = [
+    "Build the get command. A missing key prints `tool: no key SECTION.KEY`.",
+    "",
+    fenceOf("ts", ['describe("get", () => {', "  it.each([", "  ])(\"%s\", run);", "});"]),
+    "",
+    fenceOf("ts", [`// Rows in ${TS} (2 rows)`, ...tsRows]),
+  ].join("\n");
+
+  test("TypeScript: a dotted request placeholder and the `it.each([` table raise no note", () => {
+    const s = spec(
+      criterion("AC-002", "it writes `tool: no key SECTION.KEY` and exits 1"),
+      criterion("AC-003", "the rows sit in the `it.each([` table of `describe(\"get\", () => {`"),
+    );
+    expect(notes(s, TS, tsRequest)).toEqual([]);
+  });
+
+  test("each literal is cited, and how", () => {
+    const names = { names: new Set<string>(), counts: new Set<number>(), placeholders: new Set(["OPTION"]), structure: new Set(["It 'part 2' {", "It 'part 2'"]) };
+    expect(citedKind("skillgate: bad value for OPTION", "", names)).toBe("placeholder");
+    expect(citedKind("OPTION", "", names)).toBeUndefined();
+    expect(citedKind("It 'part 2'", " block", names)).toBe("structure");
+    expect(citedKind("It  'part 2' {", "", names)).toBe("structure");
+    expect(citedKind("It 'part 3'", "", names)).toBeUndefined();
+  });
+});
