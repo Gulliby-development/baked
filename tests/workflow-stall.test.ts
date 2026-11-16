@@ -103,6 +103,16 @@ describe("tool deadlines", () => {
     expect(stallSettings({}).maxToolTimeouts).toBe(3);
   });
 
+  // Hot module provider-timers (#3077): a run that stopped on a stall resumes by itself three
+  // times (docs/workflows/runtime.md, "Step watchdog"), counted together with the supervisor's
+  // takeovers in `stallResumes`. A fourth would spend another 20 minute step limit on a run that
+  // stalled three times in a row; after the third the run waits for a person.
+  test("a stalled run resumes by itself three times by default", () => {
+    expect(DEFAULT_STALL_SETTINGS.autoResumes).toBe(3);
+    expect(stallSettings({}).autoResumes).toBe(3);
+    expect(stallSettings({ workflows: { stall: { autoResumes: 0 } } }).autoResumes).toBe(0);
+  });
+
   test("an edit whose follow-up work hangs is recorded as applied and journaled with its deadline", async () => {
     const fixture = stallFixture(async (request) => {
       const result = await guardOf(fixture, request, 100).execute(
